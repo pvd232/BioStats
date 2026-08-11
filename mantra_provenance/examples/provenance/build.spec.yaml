@@ -1,0 +1,15 @@
+schema_version: 1
+kind: build
+inputs:
+  raw_data:
+    kind: repo
+    path: artifacts/raw/raw-expression.csv
+script: scripts/build.py
+environment:
+  kind: python-lock
+  lockfile: pylock.toml
+  requires_python: ">=3.12,<3.13"
+params:
+  normalize: true
+output: artifacts/processed/expression.pt
+

@@ -1,0 +1,69 @@
+schema_version: 1
+kind: download
+spec:
+  schema_version: 1
+  kind: download
+  inputs:
+    source:
+      kind: remote
+      url: https://example.org/mantra/raw-expression.csv
+  script: scripts/download.py
+  environment:
+    kind: python-lock
+    lockfile: pylock.toml
+    requires_python: ">=3.12,<3.13"
+  params:
+    timeout_seconds: 60
+  output: artifacts/raw/raw-expression.csv
+spec_source:
+  path: examples/provenance/download.spec.yaml
+  raw_sha256: b3ff22bf31740455d75164ac17e993138c467b9065d38cd252745dcfce2a1bce
+  repository: https://github.com/example/mantra
+  commit: dddddddddddddddddddddddddddddddddddddddd
+inputs:
+  source:
+    kind: external
+    artifact:
+      sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      bytes: 1048576
+      locations:
+        - kind: remote
+          url: https://example.org/mantra/raw-expression.csv
+code:
+  repository: https://github.com/example/mantra
+  commit: dddddddddddddddddddddddddddddddddddddddd
+  tree: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  entrypoint: scripts/download.py
+  entrypoint_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+environment:
+  kind: python-lock
+  lockfile:
+    sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    bytes: 4096
+    locations:
+      - kind: repo
+        path: pylock.toml
+  python_implementation: CPython
+  python_version: 3.12.4
+command:
+  - python
+  - scripts/download.py
+  - --source
+  - https://example.org/mantra/raw-expression.csv
+  - --output
+  - artifacts/raw/raw-expression.csv
+output:
+  sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  bytes: 1048576
+  locations:
+    - kind: repo
+      path: artifacts/raw/raw-expression.csv
+    - kind: remote
+      url: https://huggingface.co/datasets/example/mantra/resolve/0123456/raw-expression.csv
+execution_context:
+  operating_system: linux
+  architecture: x86_64
+  accelerator: null
+  device: null
+  runtime_versions:
+    pydantic: 2.12.3

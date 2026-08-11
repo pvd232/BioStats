@@ -1,0 +1,75 @@
+schema_version: 1
+kind: build
+spec:
+  schema_version: 1
+  kind: build
+  inputs:
+    raw_data:
+      kind: repo
+      path: artifacts/raw/raw-expression.csv
+  script: scripts/build.py
+  environment:
+    kind: python-lock
+    lockfile: pylock.toml
+    requires_python: ">=3.12,<3.13"
+  params:
+    normalize: true
+  output: artifacts/processed/expression.pt
+spec_source:
+  path: examples/provenance/build.spec.yaml
+  raw_sha256: 0fc321a37a13a445bd3d14b0f68b5fff099f86ee0b841670fb4d5a663962d20a
+  repository: https://github.com/example/mantra
+  commit: ffffffffffffffffffffffffffffffffffffffff
+inputs:
+  raw_data:
+    kind: produced
+    artifact:
+      sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      bytes: 1048576
+      locations:
+        - kind: repo
+          path: artifacts/raw/raw-expression.csv
+    producer:
+      sha256: 9d2e9df4b2b7b75f12a1ab79a3aac730d2c02d3c5b88d694dd94186a0d324958
+      locations:
+        - kind: repo
+          path: examples/provenance/download.fixture.resolved.spec.yaml
+code:
+  repository: https://github.com/example/mantra
+  commit: ffffffffffffffffffffffffffffffffffffffff
+  tree: "1111111111111111111111111111111111111111"
+  entrypoint: scripts/build.py
+  entrypoint_sha256: "2222222222222222222222222222222222222222222222222222222222222222"
+environment:
+  kind: python-lock
+  lockfile:
+    sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    bytes: 4096
+    locations:
+      - kind: repo
+        path: pylock.toml
+  python_implementation: CPython
+  python_version: 3.12.4
+command:
+  - python
+  - scripts/build.py
+  - --input
+  - artifacts/raw/raw-expression.csv
+  - --output
+  - artifacts/processed/expression.pt
+  - --normalize
+output:
+  sha256: "3333333333333333333333333333333333333333333333333333333333333333"
+  bytes: 524288
+  locations:
+    - kind: repo
+      path: artifacts/processed/expression.pt
+    - kind: remote
+      url: https://huggingface.co/datasets/example/mantra/resolve/7654321/expression.pt
+execution_context:
+  operating_system: linux
+  architecture: x86_64
+  accelerator: null
+  device: null
+  runtime_versions:
+    pydantic: 2.12.3

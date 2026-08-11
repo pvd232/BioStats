@@ -1,0 +1,15 @@
+schema_version: 1
+kind: download
+inputs:
+  source:
+    kind: remote
+    url: https://example.org/mantra/raw-expression.csv
+script: scripts/download.py
+environment:
+  kind: python-lock
+  lockfile: pylock.toml
+  requires_python: ">=3.12,<3.13"
+params:
+  timeout_seconds: 60
+output: artifacts/raw/raw-expression.csv
+
