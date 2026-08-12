@@ -1,4 +1,4 @@
-"""Version 2 Pydantic models for the MANTRA provenance protocol.
+"""Version 3 Pydantic models for the MANTRA provenance protocol.
 
 This version distinguishes an artifact's logical workspace binding from its
 durable storage location. An input's provenance boundary is expressed by a
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from typing import Annotated, Literal
-
+import datetime
 from pydantic import (
     AnyHttpUrl,
     AfterValidator,
@@ -52,11 +52,11 @@ class ProtocolModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class RepoFileRef(ProtocolModel):
-    """A logical file location inside the MANTRA repository."""
+# class RepoFileRef(ProtocolModel):
+#     """A logical file location inside the MANTRA repository."""
 
-    kind: Literal["repo"] = "repo"
-    path: RepoRelPath
+#     kind: Literal["repo"] = "repo"
+#     path: RepoRelPath
 
 
 class RemoteFileRef(ProtocolModel):
@@ -81,52 +81,46 @@ class GitFileRef(ProtocolModel):
     commit: GitObjectID
     path: RepoRelPath 
 
-FileRef = Annotated[
-    RepoFileRef | RemoteFileRef | HuggingFaceFileRef,
-    Field(discriminator="kind"),
-]
-
 StorageRef = Annotated[
     GitFileRef | HuggingFaceFileRef,
     Field(discriminator="kind"),
 ]
 
+FileRef = Annotated[
+    StorageRef | RemoteFileRef,
+]
+
+
 
 class ResolvedFileRef(ProtocolModel):
     """Exact bytes, local path and global storage path."""
-
     sha256: SHA256
     bytes: ByteCount
-    path: RepoRelPath | None
-    stored_at: StorageRef | None
+    stored_at: StorageRef 
 
 
-class ResolvedSpecRef(ProtocolModel):
-    """Reference to a canonical, validated resolved-spec execution record."""
-
-    record_id: SHA256
-    location: StorageRef
-
-
-class ResolvedInput(ProtocolModel):
+class Manifest(ProtocolModel):
     """A verified input and its optional prior MANTRA producer."""
-
     artifact: ResolvedFileRef
+    build_record: ResolvedFileRef
+    spec: ResolvedFileRef
+    producer: ResolvedFileRef
+    created: datetime
+    
 
-    # Required but nullable: explicit null is an external provenance boundary.
-    producer: ResolvedSpecRef | None
-
+class ResolvedInputRef(ProtocolModel):
+    artifact: FileRef | ResolvedFileRef
+    manifest: ResolvedFileRef | None
     @property
     def is_external(self) -> bool:
-        return self.producer is None
+        return self.manifest is None
 
-
-class PythonLockEnvironmentSpec(ProtocolModel):
+class PythonEnvironmentSpec(ProtocolModel):
     """A requested Python environment defined by a repository lockfile."""
 
-    kind: Literal["python-lock"] = "python-lock"
-    lockfile: RepoRelPath
-    requires_python: Annotated[str, Field(min_length=1)]
+    kind: Literal["python"] = "python"    
+    lockfile: RepoRelPath    
+    # requires_python: Annotated[str, Field(min_length=1)]
 
 
 class OCIEnvironmentSpec(ProtocolModel):
@@ -136,10 +130,16 @@ class OCIEnvironmentSpec(ProtocolModel):
     image: Annotated[str, Field(min_length=1)]
 
 
-EnvironmentSpec = Annotated[
-    PythonLockEnvironmentSpec | OCIEnvironmentSpec,
-    Field(discriminator="kind"),
-]
+class BenchmarkDeterminismEnvironmentSpec(ProtocolModel):    
+    torch_use_deterministic_algorithms: bool
+    torch_backends_cudnn_benchmark: bool
+    CUBLAS_WORKSPACE_CONFIG: str
+    
+class RNGSeedEnvironmentSpec(ProtocolModel):
+    python_seed:int
+    torch_seed: int
+    numpy_seed: int
+
 
 
 class ResolvedPythonEnvironment(ProtocolModel):
@@ -159,10 +159,15 @@ class ResolvedOCIEnvironment(ProtocolModel):
     image_digest: Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
 
 
-ResolvedEnvironment = Annotated[
-    ResolvedPythonEnvironment | ResolvedOCIEnvironment,
-    Field(discriminator="kind"),
-]
+class ResolvedBenchmarkDeterminismEnvironment(ProtocolModel):
+    torch_use_deterministic_algorithms: bool
+    torch_backends_cudnn_benchmark: bool
+    CUBLAS_WORKSPACE_CONFIG: str
+
+class ResolvedRNGSeedEnvironment(ProtocolModel):
+    python_seed:int
+    torch_seed: int
+    numpy_seed: int
 
 
 class ResolvedCodeRef(ProtocolModel):
@@ -175,22 +180,14 @@ class ResolvedCodeRef(ProtocolModel):
     entrypoint_sha256: SHA256
 
 
-class ResolvedSpecSource(ProtocolModel):
-    """The exact human-authored spec source from which execution was resolved."""
-
-    path: RepoRelPath
-    sha256: SHA256
-    repository: AnyHttpUrl | None = None
-    commit: GitObjectID
-
 
 class ExecutionContext(ProtocolModel):
     """Observed runtime facts useful for diagnosing replay differences."""
 
     operating_system: Annotated[str, Field(min_length=1)]
     architecture: Annotated[str, Field(min_length=1)]
+    device: Annotated[str, Field(min_length=1)]
     accelerator: str | None = None
-    device: str | None = None
     runtime_versions: dict[str, str] = Field(default_factory=dict)
 
 
@@ -238,11 +235,14 @@ Spec = Annotated[
 
 class BaseResolvedSpec(ProtocolModel):
     """Immutable execution receipt produced after a successful spec run."""
-    spec: BaseSpec
-    spec_file: ResolvedSpecRef
-    inputs: dict[InputName, ResolvedInput]
+    schema_version: int
+    spec: Spec
+    inputs: dict[InputName, ResolvedInputRef]
     code: ResolvedCodeRef
-    environment: ResolvedEnvironment
+    python_environment: ResolvedPythonEnvironment
+    oci_environment: ResolvedOCIEnvironment
+    rng_seed_environment: ResolvedRNGSeedEnvironment
+    benchmark_determinism_environment: ResolvedBenchmarkDeterminismEnvironment
     command: tuple[str, ...] = Field(min_length=1)
     output: ResolvedFileRef
     execution_context: ExecutionContext
@@ -268,16 +268,23 @@ class BaseResolvedSpec(ProtocolModel):
                     raise ValueError(
                         f"resolved input {name!r} workspace path must match its spec"
                     )
-
-        if isinstance(self.spec.environment, PythonLockEnvironmentSpec):
-            assert isinstance(self.environment, ResolvedPythonEnvironment)
+        
             if (
-                self.environment.lockfile.path
-                != self.spec.environment.lockfile
+                self.python_environment.lockfile.path
+                != self.spec.python_environment.lockfile
             ):
                 raise ValueError(
                     "resolved environment workspace path must match its lockfile spec"
                 )
+        return self
+    
+    @model_validator(mode="after")
+    def validate_resolved_input(self) -> BaseResolvedSpec:
+        if isinstance(self.spec, DownloadSpec):
+            assert(len(self.values ==1) and isinstance(self.values[0], RemoteFileRef))
+        else:
+            for item in self.values():
+                assert(isinstance(item, ResolvedInput))
         return self
 
 
