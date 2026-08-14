@@ -78,7 +78,7 @@ class HuggingFaceFileRef(ProtocolModel):
 
     kind: Literal["huggingface"] = "huggingface"
     repository: str = Field(min_length=1)
-    revision: str = Field(min_length=1)
+    commit: GitCommit
     path: RepoRelPath
     repo_type: Literal["model", "dataset", "space"]
 
@@ -118,7 +118,7 @@ class ResolvedGitFileRef(GitFileRef):
     """
     sha256 identifies the file contents.
     bytes records the file length.
-    path is the entrypoint of the producing script.
+
     """
 
     sha256: SHA256
@@ -159,7 +159,7 @@ class ContainerEnvironmentSpec(ProtocolModel):
     """
 
     image: str = Field(min_length=1)
-    lockfile: ResolvedGitFileRef
+    lockfile: GitFileRef
 
 
 class ResolvedContainerEnvironment(ContainerEnvironmentSpec):
@@ -168,10 +168,13 @@ class ResolvedContainerEnvironment(ContainerEnvironmentSpec):
     """
 
     sha256: SHA256
+    lockfile: ResolvedGitFileRef
+
 
 # ---------------------------------------------------------------------------
 # Randomness, determinism, and precision
 # ---------------------------------------------------------------------------
+
 
 class RNGSeedSpec(ProtocolModel):
     """
@@ -209,9 +212,7 @@ class TorchPrecisionSpec(ProtocolModel):
     @model_validator(mode="after")
     def validate_autocast(self) -> TorchPrecisionSpec:
         if self.autocast_enabled and self.autocast_dtype is None:
-            raise ValueError(
-                "autocast_dtype is required when autocast_enabled is true"
-            )
+            raise ValueError("autocast_dtype is required when autocast_enabled is true")
 
         if not self.autocast_enabled and self.autocast_dtype is not None:
             raise ValueError(
@@ -238,24 +239,16 @@ class StrictReproducibilitySpec(ProtocolModel):
         determinism = self.determinism
 
         if not determinism.deterministic_algorithms:
-            raise ValueError(
-                "strict mode requires deterministic_algorithms=true"
-            )
+            raise ValueError("strict mode requires deterministic_algorithms=true")
 
         if determinism.deterministic_warn_only:
-            raise ValueError(
-                "strict mode requires deterministic_warn_only=false"
-            )
+            raise ValueError("strict mode requires deterministic_warn_only=false")
 
         if not determinism.cudnn_deterministic:
-            raise ValueError(
-                "strict mode requires cudnn_deterministic=true"
-            )
+            raise ValueError("strict mode requires cudnn_deterministic=true")
 
         if determinism.cudnn_benchmark:
-            raise ValueError(
-                "strict mode requires cudnn_benchmark=false"
-            )
+            raise ValueError("strict mode requires cudnn_benchmark=false")
 
         return self
 
@@ -282,6 +275,7 @@ ReproducibilitySpec = Annotated[
 # Observed execution context
 # ---------------------------------------------------------------------------
 
+
 class GCEHostContext(ProtocolModel):
     provider: Literal["gce"] = "gce"
 
@@ -302,14 +296,14 @@ class CPUContext(ProtocolModel):
 
     architecture: str
     model: str
-    instruction_features: tuple[str, ...]
+    instruction_features: tuple[str, ...] = Field(min_length=1)
 
 
 class CPUBackendContext(ProtocolModel):
     """Records that PyTorch executed without a GPU backend."""
 
     kind: Literal["cpu"] = "cpu"
-    device: str = "cpu"
+    device: Literal["cpu"] = "cpu"
 
 
 class CUDADeviceContext(ProtocolModel):
@@ -327,7 +321,10 @@ class CUDABackendContext(ProtocolModel):
 
     kind: Literal["cuda"] = "cuda"
 
-    gpu_devices: tuple[CUDADeviceContext, ...] = Field(min_length=1)
+    gpu_devices: tuple[CUDADeviceContext, ...] = Field(
+        min_length=1,
+        max_length=1,
+    )
 
     nvidia_driver_version: str
     pytorch_cuda_version: str
@@ -346,7 +343,7 @@ class NativeLibraryContext(ProtocolModel):
 
 
 class NativeThreadPoolContext(NativeLibraryContext):
-    threads: int = Field(ge=1)
+    threads: Literal[1] = 1
 
 
 class NumericalRuntimeContext(ProtocolModel):
@@ -356,40 +353,16 @@ class NumericalRuntimeContext(ProtocolModel):
 
     blas: NativeLibraryContext
     lapack: NativeLibraryContext
-
     native_thread_pools: tuple[NativeThreadPoolContext, ...]
-
-
-class DistributedContext(ProtocolModel):
-    """Distributed process layout, when distributed execution is used."""
-
-    backend: Literal["nccl", "gloo", "mpi", "ucc"]
-    world_size: int = Field(ge=2)
-    rank_device_map: dict[int, str]
-
-    @model_validator(mode="after")
-    def validate_rank_map(self) -> DistributedContext:
-        expected_ranks = set(range(self.world_size))
-
-        if set(self.rank_device_map) != expected_ranks:
-            raise ValueError(
-                "rank_device_map must contain every rank from zero through "
-                "world_size - 1"
-            )
-
-        return self
 
 
 class ParallelismContext(ProtocolModel):
     """Process, thread, worker, and distributed settings actually used."""
 
-    process_count: int = Field(ge=1)
-
-    torch_intraop_threads: int = Field(ge=1)
-    torch_interop_threads: int = Field(ge=1)
-
-    dataloader_workers: int = Field(ge=0)
-    distributed: DistributedContext | None
+    process_count: Literal[1] = 1
+    torch_intraop_threads: Literal[1] = 1
+    torch_interop_threads: Literal[1] = 1
+    dataloader_workers: Literal[0] = 0
 
 
 class ExecutionContext(ProtocolModel):
@@ -434,26 +407,12 @@ class BaseSpec(ProtocolModel):
 
 class DownloadSpec(BaseSpec):
     kind: Literal["download"] = "download"
-
-    @model_validator(mode="after")
-    def require_remote_inputs(self) -> DownloadSpec:
-        for name, input_ref in self.inputs.items():
-            if not isinstance(input_ref, RemoteFileRef):
-                raise TypeError(f"download input {name!r} must be a RemoteFileRef")
-
-        return self
-
+    inputs: dict[InputName, RemoteFileRef] = Field(min_length=1)
 
 class InternalSpec(BaseSpec):
     """Base class for stages that consume previously produced artifacts."""
 
-    @model_validator(mode="after")
-    def prohibit_remote_inputs(self) -> InternalSpec:
-        for name, input_ref in self.inputs.items():
-            if isinstance(input_ref, RemoteFileRef):
-                raise TypeError(f"internal input {name!r} cannot be a RemoteFileRef")
-
-        return self
+    inputs: dict[InputName, StorageRef] = Field(min_length=1)
 
 class BuildParams(ProtocolModel):
     pass
@@ -564,31 +523,6 @@ class BaseResolvedSpec(ProtocolModel):
             or resolved_lockfile.path != requested_lockfile.path
         ):
             raise ValueError("resolved lockfile must match the requested Git file")
-    
-        if self.spec.reproducibility.mode == "strict":
-            if isinstance(self.execution_context.backend, CUDABackendContext):
-                workspace_config = (
-                    self.spec.reproducibility
-                    .determinism
-                    .cublas_workspace_config
-                )
-
-                if workspace_config not in {":16:8", ":4096:8"}:
-                    raise ValueError(
-                        "strict CUDA execution requires an explicit "
-                        "CUBLAS_WORKSPACE_CONFIG"
-                    )
-
-            workers = self.execution_context.parallelism.dataloader_workers
-            dataloader_seed = (
-                self.spec.reproducibility.randomness.dataloader_seed
-            )
-
-            if workers > 0 and dataloader_seed is None:
-                raise ValueError(
-                    "strict execution with DataLoader workers requires "
-                    "dataloader_seed"
-                )
 
         return self
 
