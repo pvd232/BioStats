@@ -1,0 +1,2 @@
+pydantic<3,>=2.12
+PyYAML<7,>=6

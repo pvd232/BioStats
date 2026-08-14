@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from typing import Annotated, Literal
-import datetime
+
 from pydantic import (
     AfterValidator,
     AwareDatetime,
@@ -56,6 +56,7 @@ class ProtocolModel(BaseModel):
 # File locations
 # ---------------------------------------------------------------------------
 
+
 class RemoteFileRef(ProtocolModel):
     """A mutable or externally controlled source URL."""
 
@@ -98,6 +99,7 @@ FileRef = Annotated[
 # Verified files and code
 # ---------------------------------------------------------------------------
 
+
 class ResolvedFileRef(ProtocolModel):
     """
     An exact file whose bytes have been hashed.
@@ -112,17 +114,21 @@ class ResolvedFileRef(ProtocolModel):
     stored_at: StorageRef
 
 
-class ResolvedGitSourceRef(ProtocolModel):
-    repository: HttpUrl
-    commit: GitCommit
+class ResolvedGitFileRef(GitFileRef):
+    """
+    sha256 identifies the file contents.
+    bytes records the file length.
+    path is the entrypoint of the producing script.
+    """
 
-    entrypoint: RepoRelPath
-    entrypoint_sha256: SHA256
-    entrypoint_bytes: int = Field(ge=0)
+    sha256: SHA256
+    bytes: int = Field(ge=0)
+
 
 # ---------------------------------------------------------------------------
 # Artifact manifest
 # ---------------------------------------------------------------------------
+
 
 class ArtifactManifest(ProtocolModel):
     """
@@ -136,13 +142,15 @@ class ArtifactManifest(ProtocolModel):
     artifact: ResolvedFileRef
     resolved_spec: ResolvedFileRef
     spec: ResolvedFileRef
-    source: ResolvedGitSourceRef
+    source: ResolvedGitFileRef
 
     created_at: AwareDatetime
+
 
 # ---------------------------------------------------------------------------
 # Authored container environment
 # ---------------------------------------------------------------------------
+
 
 class ContainerEnvironmentSpec(ProtocolModel):
     """
@@ -151,17 +159,15 @@ class ContainerEnvironmentSpec(ProtocolModel):
     """
 
     image: str = Field(min_length=1)
-    lockfile: GitFileRef
+    lockfile: ResolvedGitFileRef
 
 
-class ResolvedContainerEnvironment(ProtocolModel):
+class ResolvedContainerEnvironment(ContainerEnvironmentSpec):
     """
     Records the exact container image and lockfile used by the executor.
     """
 
-    image: str = Field(min_length=1)
     sha256: SHA256
-    lockfile: ResolvedFileRef
 
 # ---------------------------------------------------------------------------
 # Randomness, determinism, and precision
@@ -201,7 +207,7 @@ class TorchPrecisionSpec(ProtocolModel):
     autocast_dtype: Literal["float16", "bfloat16"] | None
 
     @model_validator(mode="after")
-    def validate_autocast(self) -> "TorchPrecisionSpec":
+    def validate_autocast(self) -> TorchPrecisionSpec:
         if self.autocast_enabled and self.autocast_dtype is None:
             raise ValueError(
                 "autocast_dtype is required when autocast_enabled is true"
@@ -228,7 +234,7 @@ class StrictReproducibilitySpec(ProtocolModel):
     precision: TorchPrecisionSpec
 
     @model_validator(mode="after")
-    def validate_strict_policy(self) -> "StrictReproducibilitySpec":
+    def validate_strict_policy(self) -> StrictReproducibilitySpec:
         determinism = self.determinism
 
         if not determinism.deterministic_algorithms:
@@ -334,14 +340,12 @@ ComputeBackendContext = Annotated[
 ]
 
 
-class NativeMathLibraryContext(ProtocolModel):
+class NativeLibraryContext(ProtocolModel):
     implementation: str
     version: str
 
 
-class NativeThreadPoolContext(ProtocolModel):
-    implementation: str
-    version: str
+class NativeThreadPoolContext(NativeLibraryContext):
     threads: int = Field(ge=1)
 
 
@@ -350,8 +354,8 @@ class NumericalRuntimeContext(ProtocolModel):
     pytorch_version: str
     numpy_version: str
 
-    blas: NativeMathLibraryContext
-    lapack: NativeMathLibraryContext
+    blas: NativeLibraryContext
+    lapack: NativeLibraryContext
 
     native_thread_pools: tuple[NativeThreadPoolContext, ...]
 
@@ -364,7 +368,7 @@ class DistributedContext(ProtocolModel):
     rank_device_map: dict[int, str]
 
     @model_validator(mode="after")
-    def validate_rank_map(self) -> "DistributedContext":
+    def validate_rank_map(self) -> DistributedContext:
         expected_ranks = set(range(self.world_size))
 
         if set(self.rank_device_map) != expected_ranks:
@@ -432,12 +436,10 @@ class DownloadSpec(BaseSpec):
     kind: Literal["download"] = "download"
 
     @model_validator(mode="after")
-    def require_remote_inputs(self) -> "DownloadSpec":
+    def require_remote_inputs(self) -> DownloadSpec:
         for name, input_ref in self.inputs.items():
             if not isinstance(input_ref, RemoteFileRef):
-                raise ValueError(
-                    f"download input {name!r} must be a RemoteFileRef"
-                )
+                raise TypeError(f"download input {name!r} must be a RemoteFileRef")
 
         return self
 
@@ -446,12 +448,10 @@ class InternalSpec(BaseSpec):
     """Base class for stages that consume previously produced artifacts."""
 
     @model_validator(mode="after")
-    def prohibit_remote_inputs(self) -> "InternalSpec":
+    def prohibit_remote_inputs(self) -> InternalSpec:
         for name, input_ref in self.inputs.items():
             if isinstance(input_ref, RemoteFileRef):
-                raise ValueError(
-                    f"internal input {name!r} cannot be a RemoteFileRef"
-                )
+                raise TypeError(f"internal input {name!r} cannot be a RemoteFileRef")
 
         return self
 
@@ -527,7 +527,7 @@ class BaseResolvedSpec(ProtocolModel):
     kind: str
 
     spec: BaseSpec
-    code: ResolvedGitSourceRef
+    source: ResolvedGitFileRef
 
     environment: ResolvedContainerEnvironment
     execution_context: ExecutionContext
@@ -539,13 +539,13 @@ class BaseResolvedSpec(ProtocolModel):
     completed_at: AwareDatetime
 
     @model_validator(mode="after")
-    def validate_common_invariants(self) -> "BaseResolvedSpec":
+    def validate_common_invariants(self) -> BaseResolvedSpec:
         if self.kind != self.spec.kind:
             raise ValueError(
                 "resolved spec kind must match the embedded authored spec kind"
             )
 
-        if self.source.entrypoint != self.spec.script:
+        if self.source.path != self.spec.script:
             raise ValueError(
                 "resolved source entrypoint must match the authored script path"
             )
@@ -555,13 +555,15 @@ class BaseResolvedSpec(ProtocolModel):
                 "resolved container image must match the requested image"
             )
 
+        resolved_lockfile = self.environment.lockfile
+        requested_lockfile = self.spec.environment.lockfile
+
         if (
-            self.environment.lockfile.stored_at
-            != self.spec.environment.lockfile
+            resolved_lockfile.repository != requested_lockfile.repository
+            or resolved_lockfile.commit != requested_lockfile.commit
+            or resolved_lockfile.path != requested_lockfile.path
         ):
-            raise ValueError(
-                "resolved lockfile location must match the requested lockfile"
-            )
+            raise ValueError("resolved lockfile must match the requested Git file")
     
         if self.spec.reproducibility.mode == "strict":
             if isinstance(self.execution_context.backend, CUDABackendContext):
@@ -605,7 +607,7 @@ class ResolvedDownloadSpec(BaseResolvedSpec):
     inputs: dict[InputName, RemoteFileRef]
 
     @model_validator(mode="after")
-    def validate_download_inputs(self) -> "ResolvedDownloadSpec":
+    def validate_download_inputs(self) -> ResolvedDownloadSpec:
         if self.inputs != self.spec.inputs:
             raise ValueError(
                 "resolved download inputs must match the authored remote inputs"
@@ -622,7 +624,7 @@ class ResolvedInternalSpec(BaseResolvedSpec):
     inputs: dict[InputName, ResolvedInternalInputRef]
 
     @model_validator(mode="after")
-    def validate_internal_inputs(self) -> "ResolvedInternalSpec":
+    def validate_internal_inputs(self) -> ResolvedInternalSpec:
         if set(self.inputs) != set(self.spec.inputs):
             raise ValueError(
                 "resolved input names must match the authored input names"
