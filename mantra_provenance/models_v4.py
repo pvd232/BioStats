@@ -1,8 +1,8 @@
 """Fourth draft of the Pydantic models for the MANTRA provenance protocol.
 
 This version separates authored execution requests, verified data artifacts,
-the exact Git source tree, the container environment, observed execution
-conditions, and the manifest connecting an artifact to its producer.
+the exact Git source tree, the GCE machine-image environment, observed
+execution conditions, and the manifest connecting an artifact to its producer.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ def validate_repo_rel_path(value: str) -> str:
 
 RepoRelPath = Annotated[str, AfterValidator(validate_repo_rel_path)]
 SHA256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+NonEmptyStr = Annotated[str, Field(min_length=1)]
 GitCommit = Annotated[
     str,
     Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"),
@@ -47,7 +48,7 @@ GitCommit = Annotated[
 
 
 class ProtocolModel(BaseModel):
-    """Closed, immutable-by-convention protocol object."""
+    """Closed, frozen protocol object."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -126,7 +127,7 @@ class ResolvedGitFileRef(GitFileRef):
 
 
 # ---------------------------------------------------------------------------
-# Artifact manifest
+# Artifact connectors
 # ---------------------------------------------------------------------------
 
 
@@ -147,27 +148,44 @@ class ArtifactManifest(ProtocolModel):
     created_at: AwareDatetime
 
 
-# ---------------------------------------------------------------------------
-# Authored container environment
-# ---------------------------------------------------------------------------
-
-
-class ContainerEnvironmentSpec(ProtocolModel):
+class ArtifactPointer(ProtocolModel):
     """
-    Declares the container image and Python dependency lockfile requested
-    for an execution.
+    Persistent pointer that allows for offloading of local artifact bytes
+
+    It resolves the RepoRelPath pointer of the original instantiation while allowing for exclusive artifact residency in the cloud
+
+    Provides concrete link between artifact and its describing manifest
     """
 
-    image: str = Field(min_length=1)
+    schema_version: Literal[1] = 1
+
+    manifest: ResolvedFileRef
+    artifact: ResolvedFileRef
+
+
+# ---------------------------------------------------------------------------
+# Authored and resolved GCE environment
+# ---------------------------------------------------------------------------
+
+
+class GCEMachineImageRef(ProtocolModel):
+    project: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+
+
+class ResolvedGCEMachineImageRef(GCEMachineImageRef):
+    id: str = Field(min_length=1)
+
+
+class GCEEnvironmentSpec(ProtocolModel):
+    kind: Literal["gce"] = "gce"
+
+    machine_image: GCEMachineImageRef
     lockfile: GitFileRef
 
 
-class ResolvedContainerEnvironment(ContainerEnvironmentSpec):
-    """
-    Records the exact container image and lockfile used by the executor.
-    """
-
-    sha256: SHA256
+class ResolvedGCEEnvironment(GCEEnvironmentSpec):
+    machine_image: ResolvedGCEMachineImageRef
     lockfile: ResolvedGitFileRef
 
 
@@ -272,6 +290,11 @@ ReproducibilitySpec = Annotated[
 ]
 
 # ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
 # Observed execution context
 # ---------------------------------------------------------------------------
 
@@ -279,24 +302,23 @@ ReproducibilitySpec = Annotated[
 class GCEHostContext(ProtocolModel):
     provider: Literal["gce"] = "gce"
 
-    machine_type: str
-    zone: str
-    boot_image: str
+    machine_type: NonEmptyStr
+    zone: NonEmptyStr
 
-    guest_os_name: str
-    guest_os_version: str
-    kernel_release: str
+    guest_os_name: NonEmptyStr
+    guest_os_version: NonEmptyStr
+    kernel_release: NonEmptyStr
 
 
 class CPUContext(ProtocolModel):
     """
-    The CPU available to the container, including instruction sets that can
+    The CPU available to the execution, including instruction sets that can
     change numerical-library implementation choices.
     """
 
-    architecture: str
-    model: str
-    instruction_features: tuple[str, ...] = Field(min_length=1)
+    architecture: NonEmptyStr
+    model: NonEmptyStr
+    instruction_features: tuple[NonEmptyStr, ...] = Field(min_length=1)
 
 
 class CPUBackendContext(ProtocolModel):
@@ -308,7 +330,7 @@ class CPUBackendContext(ProtocolModel):
 
 class CUDADeviceContext(ProtocolModel):
     ordinal: int = Field(ge=0)
-    model: str
+    model: NonEmptyStr
 
     compute_capability_major: int = Field(ge=0)
     compute_capability_minor: int = Field(ge=0)
@@ -326,9 +348,9 @@ class CUDABackendContext(ProtocolModel):
         max_length=1,
     )
 
-    nvidia_driver_version: str
-    pytorch_cuda_version: str
-    cudnn_version: str
+    nvidia_driver_version: NonEmptyStr
+    pytorch_cuda_version: NonEmptyStr
+    cudnn_version: NonEmptyStr
 
 
 ComputeBackendContext = Annotated[
@@ -338,8 +360,8 @@ ComputeBackendContext = Annotated[
 
 
 class NativeLibraryContext(ProtocolModel):
-    implementation: str
-    version: str
+    implementation: NonEmptyStr
+    version: NonEmptyStr
 
 
 class NativeThreadPoolContext(NativeLibraryContext):
@@ -347,9 +369,9 @@ class NativeThreadPoolContext(NativeLibraryContext):
 
 
 class NumericalRuntimeContext(ProtocolModel):
-    python_version: str
-    pytorch_version: str
-    numpy_version: str
+    python_version: NonEmptyStr
+    pytorch_version: NonEmptyStr
+    numpy_version: NonEmptyStr
 
     blas: NativeLibraryContext
     lapack: NativeLibraryContext
@@ -369,8 +391,9 @@ class ExecutionContext(ProtocolModel):
     """
     Facts observed from the host and running process.
 
-    The container environment records what was supplied to the execution.
-    This class records the host and runtime conditions under which it ran.
+    The GCE environment records the machine image and dependency lockfile
+    supplied to the execution. This class records the host and runtime
+    conditions under which it ran.
     """
 
     host: GCEHostContext
@@ -399,7 +422,7 @@ class BaseSpec(ProtocolModel):
     inputs: dict[InputName, FileRef]
     script: RepoRelPath
 
-    environment: ContainerEnvironmentSpec
+    environment: GCEEnvironmentSpec
     reproducibility: ReproducibilitySpec
 
     output: RepoRelPath
@@ -461,7 +484,7 @@ class ResolvedInternalInputRef(ProtocolModel):
 
     manifest:
         The ArtifactManifest file that links the artifact to its producing
-        spec, resolved spec, and script.
+        spec, resolved spec, and source.
 
     path:
         The repository-relative path at which the executor made the artifact
@@ -477,7 +500,7 @@ class ResolvedInternalInputRef(ProtocolModel):
 # Resolved execution records
 # ---------------------------------------------------------------------------
 
-class BaseResolvedSpec(ProtocolModel):
+class ResolvedBaseSpec(ProtocolModel):
     """
     Record written after an execution has produced and hashed its output.
     """
@@ -488,7 +511,7 @@ class BaseResolvedSpec(ProtocolModel):
     spec: BaseSpec
     source: ResolvedGitFileRef
 
-    environment: ResolvedContainerEnvironment
+    environment: ResolvedGCEEnvironment
     execution_context: ExecutionContext
 
     command: tuple[str, ...] = Field(min_length=1)
@@ -498,20 +521,34 @@ class BaseResolvedSpec(ProtocolModel):
     completed_at: AwareDatetime
 
     @model_validator(mode="after")
-    def validate_common_invariants(self) -> BaseResolvedSpec:
+    def validate_common_invariants(self) -> ResolvedBaseSpec:
         if self.kind != self.spec.kind:
             raise ValueError(
                 "resolved spec kind must match the embedded authored spec kind"
             )
+
+        if not self.command[0]:
+            raise ValueError("command executable must be nonempty")
 
         if self.source.path != self.spec.script:
             raise ValueError(
                 "resolved source entrypoint must match the authored script path"
             )
 
-        if self.environment.image != self.spec.environment.image:
+        if self.output.stored_at.path != self.spec.output:
             raise ValueError(
-                "resolved container image must match the requested image"
+                "resolved output path must match intended spec output path"
+            )
+
+        resolved_image = self.environment.machine_image
+        requested_image = self.spec.environment.machine_image
+
+        if (
+            resolved_image.project != requested_image.project
+            or resolved_image.name != requested_image.name
+        ):
+            raise ValueError(
+                "resolved machine image must match the requested machine image"
             )
 
         resolved_lockfile = self.environment.lockfile
@@ -524,10 +561,20 @@ class BaseResolvedSpec(ProtocolModel):
         ):
             raise ValueError("resolved lockfile must match the requested Git file")
 
+        reproducibility = self.spec.reproducibility
+        backend = self.execution_context.backend
+
+        if (
+            reproducibility.mode == "strict"
+            and backend.kind == "cuda"
+            and reproducibility.determinism.cublas_workspace_config is None
+        ):
+            raise ValueError("strict CUDA execution requires cublas_workspace_config")
+
         return self
 
 
-class ResolvedDownloadSpec(BaseResolvedSpec):
+class ResolvedDownloadSpec(ResolvedBaseSpec):
     """
     Download receipt.
 
@@ -550,7 +597,7 @@ class ResolvedDownloadSpec(BaseResolvedSpec):
         return self
 
 
-class ResolvedInternalSpec(BaseResolvedSpec):
+class ResolvedInternalSpec(ResolvedBaseSpec):
     """
     Receipt for an operation that consumes previously produced artifacts.
     """
