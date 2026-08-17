@@ -14,7 +14,7 @@ Stage 1 implements:
 - Stored and same-run inputs.
 - One primary artifact per stage.
 - Metric declarations and measurements.
-- Artifact manifests and pointers.
+- Artifact manifests and promoted-input pointers.
 - Terminal resolved-run records.
 - Local Pydantic validation.
 - External provenance verification.
@@ -42,13 +42,13 @@ Until benchmark gating exists, promotion remains a manual decision.
 4. Byte count is a secondary integrity check.
 5. Every SHA-256 is calculated from the exact published file bytes.
 6. Every artifact manifest binds the artifact to its authored spec, resolved spec, and source.
-7. Every artifact pointer binds an artifact to its manifest.
+7. Every artifact pointer selects exactly one artifact manifest.
 8. Every internal input is resolved to verified artifact bytes before execution.
 9. Every resolved stage record embeds the authored spec it resolves.
 10. Every run binds one experiment variant and replicate seed to one source repository and Git commit.
 11. Every attempt executes the same frozen run plan.
 12. Retries are attempts, not experimental replicates.
-13. Only a successful attempt contributes the run’s accepted stage records, artifact pointers, and measurements.
+13. Only a successful attempt contributes the run’s accepted stage records, artifact manifests, and measurements.
 14. Pydantic validates local structure.
 15. A separate verifier retrieves referenced files and proves cross-file relationships.
 16. Strict mode expects replay under the recorded conditions to reproduce artifact bytes.
@@ -96,8 +96,11 @@ Artifact
 ├── SHA-256
 ├── byte count
 ├── immutable storage location
-├── manifest
+└── manifest
+
+Promoted input
 └── pointer
+    └── selected artifact manifest
 
 Measurement
 ├── metric ID
@@ -111,7 +114,7 @@ ResolvedRun
 ├── attempts
 ├── successful attempt, if any
 ├── resolved stage-spec files
-├── artifact-pointer files
+├── artifact-manifest files
 ├── measurement files
 └── completion timestamp
 ```
@@ -194,6 +197,26 @@ Local bytes may be removed after publication. MANTRA can restore them from remot
 
 ## 5. Artifact manifest and pointer
 
+Role-specific resolved references state what schema the referenced file is
+expected to contain:
+
+```python
+class ArtifactPointerRef(GitFileRef):
+    """A Git reference to the pointer selecting a promoted artifact manifest."""
+
+
+class ResolvedArtifactManifestRef(ResolvedFileRef):
+    kind: Literal["artifact_manifest"] = "artifact_manifest"
+
+
+class ResolvedArtifactPointerRef(ResolvedFileRef):
+    kind: Literal["artifact_pointer"] = "artifact_pointer"
+    stored_at: ArtifactPointerRef
+```
+
+The external verifier still retrieves each referenced file, verifies its
+SHA-256 and byte count, and parses it using the stated schema.
+
 ### Manifest
 
 ```python
@@ -233,22 +256,26 @@ The Git commit covers project source imports from the repository tree.
 class ArtifactPointer(ProtocolModel):
     schema_version: Literal[1] = 1
 
-    artifact: ResolvedFileRef
-    manifest: ResolvedFileRef
+    manifest: ResolvedArtifactManifestRef
 ```
 
-The pointer is the durable entry point for retrieving an artifact and its provenance.
+The pointer separates the stable, version-controlled selection of a promoted
+input from the immutable storage location of the artifact and its production
+manifest.
 
 ```text
 pointer
-├── artifact
 └── manifest
+    ├── artifact
     ├── authored spec
     ├── resolved spec
     └── source
 ```
 
-A promoted artifact is represented by a Git-tracked pointer under `inputs/`. The artifact bytes remain in immutable remote storage.
+A promoted artifact is represented by a Git-tracked pointer under `inputs/`.
+The artifact bytes and production manifest remain in immutable remote storage.
+Ordinary stage outputs receive manifests but not pointers. Creating or updating
+a pointer is an explicit promotion or reusable-input selection step.
 
 ---
 
@@ -260,7 +287,7 @@ An internal stage can consume either:
 StoredInputRef
 └── an artifact that exists before this run
 
-StageOutputInputRef
+FutureInputRef
 └── an artifact that an earlier stage in this run will produce
 ```
 
@@ -269,11 +296,12 @@ StageOutputInputRef
 ```python
 class StoredInputRef(ProtocolModel):
     kind: Literal["stored"] = "stored"
-    pointer: StorageRef
+    pointer: ArtifactPointerRef
     path: RepoRelPath
 ```
 
-- `pointer` identifies an immutable `*.pointer.yaml` file.
+- `pointer` identifies an immutable Git revision of a tracked
+  `*.pointer.yaml` file under `inputs/`.
 - `path` identifies where the consuming command receives the artifact locally.
 
 Example:
@@ -296,35 +324,26 @@ The executor:
 
 1. Retrieves the pointer file.
 2. Validates it as an `ArtifactPointer`.
-3. Retrieves the referenced artifact and manifest.
-4. Verifies their SHA-256 values and byte counts.
-5. Materializes the artifact at the declared local path.
+3. Retrieves and validates the referenced `ArtifactManifest`.
+4. Retrieves the artifact identified by that manifest.
+5. Verifies every retrieved file's SHA-256 and byte count.
+6. Materializes the artifact at the declared local path.
 
-The local materialization may be a regular file or a symlink into a MANTRA-managed cache. The command must see the verified bytes at the declared path.
+Materialization means ensuring that the command can read the verified bytes at
+the declared path. If matching bytes already exist there, the executor may
+reuse them. Otherwise, it may retrieve the artifact or create a symlink into a
+MANTRA-managed cache. Existing bytes with the wrong SHA-256 must not be used.
 
-A pointer may reference either:
-
-```text
-Canonical promoted input:
-inputs/models/baseline_weights.pt.pointer.yaml
-```
-
-or:
-
-```text
-Artifact from an earlier run:
-experiments/e001_low_rank/runs/low_rank_32/01JABC/
-└── artifacts/
-    └── weights.pt.pointer.yaml
-```
+A stored-input pointer lives under `inputs/`. Its selected manifest may identify
+an artifact produced by any earlier run, but the producing run does not create
+the pointer automatically.
 
 ### Same-run stage output
 
 ```python
-class StageOutputInputRef(ProtocolModel):
-    kind: Literal["stage_output"] = "stage_output"
-    stage_id: StageId
-    path: RepoRelPath
+class FutureInputRef(ProtocolModel):
+    kind: Literal["future"] = "future"
+    producer_stage_id: StageId
 ```
 
 Example:
@@ -332,53 +351,82 @@ Example:
 ```yaml
 inputs:
   embedding:
-    kind: stage_output
-    stage_id: embed
-    path: inputs/embeddings/current.pt
+    kind: future
+    producer_stage_id: embed
 ```
 
-The upstream artifact does not exist when the run plan is frozen, so the authored reference identifies the producer stage rather than a pointer file.
+The upstream artifact does not exist when the run plan is frozen, so the
+authored reference identifies the producer stage rather than a pointer file or
+a second local path. MANTRA resolves `producer_stage_id` through the run's
+stage list, loads that stage's authored spec, and uses its declared `output`
+path as the consumer's input path.
 
 Execution proceeds as follows:
 
 1. Validate that `embed` precedes the consuming stage.
 2. Execute `embed`.
 3. Hash and publish the embedding.
-4. Publish its resolved spec, manifest, and pointer.
-5. Materialize the verified embedding at the consumer’s declared path.
+4. Publish its resolved spec and manifest.
+5. Verify that the producer's declared output path still contains the recorded
+   bytes, restoring those bytes there if necessary.
 6. Execute the consuming stage.
 
 ### Authored input union
 
 ```python
 InternalInputRef = Annotated[
-    StoredInputRef | StageOutputInputRef,
+    StoredInputRef | FutureInputRef,
     Field(discriminator="kind"),
 ]
 ```
 
 ### Resolved internal input
 
-Both authored forms resolve to the same exact representation:
+The two authored forms resolve to role-specific representations containing
+only the exact file identity learned during resolution:
 
 ```python
-class ResolvedInternalInputRef(ProtocolModel):
-    pointer: ResolvedFileRef
-    artifact: ResolvedFileRef
-    manifest: ResolvedFileRef
-    path: RepoRelPath
+class ResolvedStoredInputRef(ProtocolModel):
+    kind: Literal["stored"] = "stored"
+    pointer: ResolvedArtifactPointerRef
+
+
+class ResolvedFutureInputRef(ProtocolModel):
+    kind: Literal["future"] = "future"
+    manifest: ResolvedArtifactManifestRef
+
+
+ResolvedInternalInputRef = Annotated[
+    ResolvedStoredInputRef | ResolvedFutureInputRef,
+    Field(discriminator="kind"),
+]
 ```
+
+The embedded authored spec remains authoritative for a stored input's local
+materialization path and a future input's producer stage. A future input's
+local path is the producer spec's declared output path. The resolved input does
+not duplicate those fields.
 
 Input invariants:
 
 - Authored and resolved input names match.
-- Authored and resolved local paths match.
-- Input materialization paths are unique.
-- No input path collides with the stage output path.
+- Stored-input materialization paths are unique within a stage.
+- No stored-input path collides with the stage script or stage output path.
+- Because these names denote files, equality and ancestor-descendant overlap
+  both count as collisions: `data.bin` cannot coexist with `data.bin/part`.
+- A stored input's local `path` and its pointer's remote Git `path` are separate
+  namespaces. They may use the same relative spelling without colliding.
+- Stage output paths are unique within a run.
+- A future input's producer output does not collide with the consumer's stored
+  input paths, script, or output path.
 - A same-run reference identifies an earlier stage.
-- The resolved pointer contains the recorded artifact and manifest.
-- A same-run resolved artifact equals the producer stage’s output.
-- A same-run resolved pointer equals the producer stage’s published pointer.
+- A resolved stored-input pointer selects a valid artifact manifest.
+- A resolved future-input manifest is the manifest published by its producer
+  stage.
+- The artifact identified by a future-input manifest equals the producer
+  stage’s output.
+- Materialized bytes equal the artifact identified through the pointer or
+  manifest chain.
 - Every retrieved file passes SHA-256 and byte-count verification.
 
 ---
@@ -666,7 +714,7 @@ class RunAttempt(ProtocolModel):
 
     completed_stage_ids: tuple[StageId, ...]
     resolved_stage_specs: tuple[ResolvedFileRef, ...]
-    artifact_pointers: tuple[ResolvedFileRef, ...]
+    artifact_manifests: tuple[ResolvedArtifactManifestRef, ...]
     measurement_files: tuple[ResolvedFileRef, ...]
     log_files: tuple[ResolvedFileRef, ...]
 
@@ -679,14 +727,14 @@ Attempt invariants:
 - Every attempt in a resolved run is terminal.
 - Every attempt has a completion timestamp.
 - Completed stage IDs are unique and preserve the run's declared stage order.
-- Resolved-stage, artifact-pointer, measurement-file, and log-file references
+- Resolved-stage, artifact-manifest, measurement-file, and log-file references
   are unique within each attempt.
 - Retrying may not modify the frozen run plan.
 - A successful attempt completes every stage in order and has no failure
   reason.
 - A failed, preempted, or cancelled attempt has a nonempty failure reason.
 - No attempt may occur after a successful attempt.
-- An unsuccessful attempt may retain partial stage, pointer, measurement, and
+- An unsuccessful attempt may retain partial stage, manifest, measurement, and
   log references.
 - Partial unsuccessful-attempt outputs do not become accepted run outputs.
 - Deliberate reproducibility confirmations are separate runs, not attempts.
@@ -864,7 +912,7 @@ class ResolvedRun(ProtocolModel):
     successful_attempt_id: int | None
 
     resolved_stage_specs: tuple[ResolvedFileRef, ...]
-    artifact_pointers: tuple[ResolvedFileRef, ...]
+    artifact_manifests: tuple[ResolvedArtifactManifestRef, ...]
     measurement_files: tuple[ResolvedFileRef, ...]
 
     completed_at: AwareDatetime
@@ -879,14 +927,15 @@ Resolved-run invariants:
   successful attempt.
 - A failed or cancelled run has no successful attempt and requires
   `successful_attempt_id` to be null.
-- Top-level stage specs, artifact pointers, and measurements come only from the successful attempt.
+- Top-level stage specs, artifact manifests, and measurements come only from
+  the successful attempt.
 - A failed or cancelled run has no top-level accepted stage specs, artifact
-  pointers, or measurements.
+  manifests, or measurements.
 - The successful attempt completed every declared stage in order.
 - Failed attempts may retain partial references inside their attempt records.
 - Retrying never modifies the embedded `RunSpec`.
 
-Checks that require loading `run_file`, resolved-stage files, artifact-pointer
+Checks that require loading `run_file`, resolved-stage files, artifact-manifest
 files, or measurement files belong to the external verifier described in
 Section 21.
 
@@ -918,16 +967,15 @@ snapshot.
 4. Upload it to immutable remote storage.
 5. Write and publish `<stage_id>.spec.resolved.yaml`.
 6. Write and publish `<artifact>.manifest.yaml`.
-7. Write and publish `<artifact>.pointer.yaml`.
-8. Close and publish measurement files.
-9. Record all resulting exact references in the attempt.
+7. Close and publish measurement files.
+8. Record all resulting exact references in the attempt.
 
 ### After an attempt terminates
 
 1. Close and publish its logs.
 2. Record its terminal status.
 3. Record completed stage IDs.
-4. Record exact stage, pointer, measurement, and log references.
+4. Record exact stage, manifest, measurement, and log references.
 5. Record a failure reason when applicable.
 6. Retry under a new attempt ID only if the run plan remains unchanged.
 
@@ -935,7 +983,7 @@ snapshot.
 
 1. Validate all attempt records.
 2. Identify the successful attempt, if one exists.
-3. Collect its resolved stages, artifact pointers, and measurements.
+3. Collect its resolved stages, artifact manifests, and measurements.
 4. Write and publish `<run_id>.run.resolved.yaml`.
 
 ---
@@ -959,7 +1007,8 @@ snapshot.
 14. Resolve same-run inputs from earlier stage outputs.
 15. Execute stages in declared order.
 16. Record observed metric values as measurements.
-17. Publish each successful stage’s artifact, resolved spec, manifest, pointer, and measurements.
+17. Publish each successful stage’s artifact, resolved spec, manifest, and
+    measurements.
 18. If execution fails:
 
     - Finish the attempt record.
@@ -973,7 +1022,10 @@ snapshot.
 21. Compare measurements across variants.
 22. Summarize variation across replicates.
 23. Select candidate code or artifacts.
-24. Perform any Stage 1 promotion manually.
+24. Perform any Stage 1 promotion manually by creating or updating a
+    Git-tracked pointer under `inputs/` that selects the accepted artifact's
+    manifest. Commit the pointer without moving or copying the artifact or its
+    manifest.
 
 ---
 
@@ -1027,13 +1079,10 @@ repository/
                     ├── artifacts/
                     │   ├── prior.pt
                     │   ├── prior.pt.manifest.yaml
-                    │   ├── prior.pt.pointer.yaml
                     │   ├── embedding.pt
                     │   ├── embedding.pt.manifest.yaml
-                    │   ├── embedding.pt.pointer.yaml
                     │   ├── weights.pt
-                    │   ├── weights.pt.manifest.yaml
-                    │   └── weights.pt.pointer.yaml
+                    │   └── weights.pt.manifest.yaml
                     │
                     ├── measurements/
                     │   ├── build.<metric_id>.jsonl
@@ -1053,7 +1102,8 @@ repository/
 
 Attempts remain embedded in `run.resolved.yaml`. Attempt IDs appear in log filenames so retries cannot overwrite previous logs.
 
-Artifact, resolved-spec, pointer, and measurement paths remain stable. Immutable storage commits distinguish files published by different attempts.
+Artifact, resolved-spec, manifest, and measurement paths remain stable.
+Immutable storage commits distinguish files published by different attempts.
 
 ---
 
@@ -1071,7 +1121,8 @@ Artifact, resolved-spec, pointer, and measurement paths remain stable. Immutable
 
 <artifact-native-name>
 <artifact-native-name>.manifest.yaml
-<artifact-native-name>.pointer.yaml
+
+inputs/<category>/<selection-name>.pointer.yaml
 
 <stage_id>.<metric_id>.jsonl
 
@@ -1110,7 +1161,6 @@ experiments/*/runs/
 artifact bytes
 resolved stage specs
 run-scoped manifests
-run-scoped pointers
 measurement files
 logs
 resolved-run records
@@ -1138,9 +1188,12 @@ Pydantic validates facts available inside loaded objects:
 - Discriminated unions.
 - Unique factor, level, variant, metric, stage, and attempt IDs.
 - Unique stage-spec paths within a run.
-- Input-name and materialization-path uniqueness.
-- Input/output path collisions.
-- Valid `StageOutputInputRef` structure.
+- Input-name and stored-input materialization-path uniqueness.
+- Locally visible stored-input, script, and output path collisions.
+- Valid `FutureInputRef` structure.
+- Authored and resolved input names and kinds correspond.
+- A resolved stored-input pointer has the same Git storage location as its
+  authored pointer.
 - Valid experiment, variant, stage, and metric ID syntax.
 - Attempt terminal-status consistency.
 - Attempt completion timestamps.
@@ -1162,7 +1215,7 @@ The verifier performs filesystem, Git, and network operations:
 
 - Retrieve referenced files.
 - Recalculate SHA-256 and byte count.
-- Load and verify artifact pointers.
+- Load and verify artifact pointers used by stored inputs.
 - Load and verify artifact manifests.
 - Verify authored and resolved spec files.
 - Verify that `run_file` contains the same run embedded in `ResolvedRun`.
@@ -1174,13 +1227,15 @@ The verifier performs filesystem, Git, and network operations:
   and variant files.
 - Verify that every stage path in the run loads the expected authored stage
   spec.
-- Verify that every `StageOutputInputRef` names an earlier stage in the run.
-- Verify that each stored-input pointer contains the artifact and manifest
-  recorded by the resolved input.
+- Verify that every `FutureInputRef` names an earlier stage in the run.
+- Verify that stage output paths are unique within the run.
+- Verify that each future input's producer output path does not collide with
+  the consumer's stored-input paths, script, or output path.
+- Verify that each stored-input pointer selects a valid artifact manifest.
 - Verify same-run producer-output edges.
-- Verify that each same-run pointer was published by the referenced producer
-  stage.
-- Verify that every accepted artifact pointer corresponds to an output of a
+- Verify that each future-input manifest was published by the referenced
+  producer stage.
+- Verify that every accepted artifact manifest corresponds to an output of a
   referenced resolved stage.
 - Verify that measurement rows contain the expected run, attempt, stage, and
   metric IDs.
@@ -1192,19 +1247,19 @@ The verifier performs filesystem, Git, and network operations:
 The verifier proves:
 
 ```text
-pointer.artifact == retrieved artifact
 pointer.manifest == retrieved manifest
 
+retrieved artifact == manifest.artifact
 manifest.artifact == producing resolved-spec output
 manifest.spec == producing authored-spec file
 manifest.resolved_spec == producing resolved-spec file
 manifest.source == producing resolved-spec source
 
-same-run resolved input artifact == producer output
-same-run resolved input pointer == producer pointer
+future-input manifest == producer manifest
+future-input manifest.artifact == producer output
 
 resolved run.run_file == resolved run.run
-accepted artifact pointer.artifact == resolved-stage output
+accepted artifact manifest.artifact == resolved-stage output
 measurement run, attempt, stage, and metric IDs == containing records
 ```
 
@@ -1214,25 +1269,30 @@ Pydantic validators must not fetch remote files or inspect the filesystem.
 
 ## 22. Implementation order
 
-1. Finalize shared identifiers and file-reference primitives.
-2. Implement `StoredInputRef`.
-3. Implement `StageOutputInputRef`.
-4. Implement the discriminated authored input union.
-5. Add the resolved pointer to `ResolvedInternalInputRef`.
-6. Add local input-path and collision validators.
-7. Add metric declarations and measurement records.
-8. Add experiment and variant models.
-9. Add run and attempt models.
-10. Add `ResolvedRun` and its validators.
-11. Complete the external verifier.
-12. Add the remaining observed CUDA-runtime fields when reliably collectible.
-13. Point package exports at the authoritative model module.
-14. Update YAML loading and exact-byte serialization.
-15. Replace legacy fixtures with Stage 1 fixtures.
-16. Add construction, rejection, round-trip, and verifier tests.
-17. Rewrite the README from this protocol.
-18. Remove legacy package wiring and tracked Python cache files.
-19. Run compilation, schema generation, and the complete test suite in the `mantra` Conda environment.
+1. Define the Stage 1 identifier types.
+2. Add ArtifactPointerRef, ResolvedArtifactPointerRef, and ResolvedArtifactManifestRef.
+3. Update ArtifactPointer to select only a manifest.
+4. Add primitive and file-reference tests.
+5. Implement `StoredInputRef`.
+6. Implement `FutureInputRef`.
+7. Implement the discriminated authored input union.
+8. Implement `ResolvedStoredInputRef`, `ResolvedFutureInputRef`, and their
+   discriminated union.
+9. Add their authored-to-resolved correspondence validators.
+10. Add local input-path and collision validators.
+11. Add metric declarations and measurement records.
+12. Add experiment and variant models.
+13. Add run and attempt models.
+14. Add `ResolvedRun` and its validators.
+15. Complete the external verifier.
+16. Add the remaining observed CUDA-runtime fields when reliably collectible.
+17. Point package exports at the authoritative model module.
+18. Update YAML loading and exact-byte serialization.
+19. Replace legacy fixtures with Stage 1 fixtures.
+20. Add construction, rejection, round-trip, and verifier tests.
+21. Rewrite the README from this protocol.
+22. Remove legacy package wiring and tracked Python cache files.
+23. Run compilation, schema generation, and the complete test suite in the `mantra` Conda environment.
 
 Only after Stage 1 passes should MANTRA implement final evaluation, diagnostics,
 benchmarks, confirmation parity, and automatic promotion gating.
@@ -1345,7 +1405,7 @@ experiments/<experiment_id>/runs/<variant_id>/<run_id>/
 A resolved benchmark will contain exact references to:
 
 - The authored benchmark definition.
-- The candidate source commit and artifact pointers.
+- The candidate source commit and artifact manifests.
 - Both resolved confirmation runs.
 - The measurement files produced by each confirmation run.
 - The declared parity artifacts from each confirmation run.
@@ -1397,6 +1457,10 @@ benchmarks/
 means replacing the pointer in a new Git commit after the candidate passes the
 required benchmarks.
 
+This file will validate as a future `BenchmarkResultPointer`, not as an
+`ArtifactPointer`: it selects a resolved benchmark-result record rather than an
+artifact manifest.
+
 The pointer will lead through the complete provenance chain:
 
 ```text
@@ -1405,7 +1469,7 @@ SOTA result pointer
     ├── confirmation resolved runs
     ├── measurement files
     ├── diagnostic records and artifacts
-    └── parity artifact pointers
+    └── parity artifact manifests
         └── stage resolved specs
             └── input pointers and manifests
                 └── download resolved specs

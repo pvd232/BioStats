@@ -1,44 +1,11 @@
-"""MANTRA artifact provenance protocol models."""
+"""MANTRA artifact provenance protocol."""
 
-from .models import (
-    BaseResolvedSpec,
-    BaseSpec,
-    BuildSpec,
-    DownloadSpec,
-    EmbedSpec,
-    ExternalResolvedInput,
-    ProducedResolvedInput,
-    RepoFileRef,
-    RemoteFileRef,
-    ResolvedBuildSpec,
-    ResolvedCodeRef,
-    ResolvedDownloadSpec,
-    ResolvedEmbedSpec,
-    ResolvedFileRef,
-    ResolvedSpecRef,
-    ResolvedTrainSpec,
-    TrainSpec,
-)
+from . import ids, models_v4
 from .serialization import canonical_json_bytes, resolved_spec_sha256
 
 __all__ = [
-    "BaseResolvedSpec",
-    "BaseSpec",
-    "BuildSpec",
-    "DownloadSpec",
-    "EmbedSpec",
-    "ExternalResolvedInput",
-    "ProducedResolvedInput",
-    "RepoFileRef",
-    "RemoteFileRef",
-    "ResolvedBuildSpec",
-    "ResolvedCodeRef",
-    "ResolvedDownloadSpec",
-    "ResolvedEmbedSpec",
-    "ResolvedFileRef",
-    "ResolvedSpecRef",
-    "ResolvedTrainSpec",
-    "TrainSpec",
     "canonical_json_bytes",
+    "ids",
+    "models_v4",
     "resolved_spec_sha256",
 ]

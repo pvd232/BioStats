@@ -20,6 +20,8 @@ from pydantic import (
     model_validator,
 )
 
+from .ids import InputName, StageId
+
 
 def validate_repo_rel_path(value: str) -> str:
     """Validate a normalized, POSIX, repository-relative path."""
@@ -32,6 +34,11 @@ def validate_repo_rel_path(value: str) -> str:
     if any(part in {"", ".", ".."} for part in value.split("/")):
         raise ValueError("repository-relative path contains an invalid component")
     return value
+
+
+def repo_file_paths_overlap(left: str, right: str) -> bool:
+    """Return whether either file path equals or sits below the other."""
+    return left == right or left.startswith(f"{right}/") or right.startswith(f"{left}/")
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +79,10 @@ class GitFileRef(ProtocolModel):
     repository: HttpUrl
     commit: GitCommit
     path: RepoRelPath
+
+
+class ArtifactPointerRef(GitFileRef):
+    """A Git reference to the pointer selecting a promoted artifact manifest."""
 
 
 class HuggingFaceFileRef(ProtocolModel):
@@ -126,6 +137,15 @@ class ResolvedGitFileRef(GitFileRef):
     bytes: int = Field(ge=0)
 
 
+class ResolvedArtifactManifestRef(ResolvedFileRef):
+    kind: Literal["artifact_manifest"] = "artifact_manifest"
+
+
+class ResolvedArtifactPointerRef(ResolvedFileRef):
+    kind: Literal["artifact_pointer"] = "artifact_pointer"
+    stored_at: ArtifactPointerRef
+
+
 # ---------------------------------------------------------------------------
 # Artifact connectors
 # ---------------------------------------------------------------------------
@@ -150,17 +170,15 @@ class ArtifactManifest(ProtocolModel):
 
 class ArtifactPointer(ProtocolModel):
     """
-    Persistent pointer that allows for offloading of local artifact bytes
+    Selects the manifest for an artifact chosen as a reusable input.
 
-    It resolves the RepoRelPath pointer of the original instantiation while allowing for exclusive artifact residency in the cloud
-
-    Provides concrete link between artifact and its describing manifest
+    The manifest identifies the artifact bytes and records the execution that
+    created them. Updating the Git-tracked pointer selects a different manifest
+    without moving or overwriting either artifact.
     """
 
     schema_version: Literal[1] = 1
-
-    manifest: ResolvedFileRef
-    artifact: ResolvedFileRef
+    manifest: ResolvedArtifactManifestRef
 
 
 # ---------------------------------------------------------------------------
@@ -402,11 +420,51 @@ class ExecutionContext(ProtocolModel):
     numerical_runtime: NumericalRuntimeContext
     parallelism: ParallelismContext
 
+
+# ---------------------------------------------------------------------------
+# Authored input references
+# ---------------------------------------------------------------------------
+
+"""
+
+Git pointer file
+inputs/models/current_weights.pt.pointer.yaml
+        ↓
+remote artifact manifest
+        ↓
+remote weights.pt bytes
+        ↓
+local execution binding
+inputs/models/current_weights.pt
+
+"""
+
+
+class StoredInputRef(ProtocolModel):
+    """A promoted artifact selected before the run begins."""
+
+    kind: Literal["stored"] = "stored"
+    pointer: ArtifactPointerRef
+    path: RepoRelPath
+
+
+class FutureInputRef(ProtocolModel):
+    """The declared output of an earlier stage in the same run."""
+
+    kind: Literal["future"] = "future"
+    producer_stage_id: StageId
+
+
+InternalInputRef = Annotated[
+    StoredInputRef | FutureInputRef,
+    Field(discriminator="kind"),
+]
+
+
 # ---------------------------------------------------------------------------
 # Authored specifications
 # ---------------------------------------------------------------------------
 
-InputName = Annotated[str, Field(min_length=1)]
 
 class BaseSpec(ProtocolModel):
     """
@@ -432,10 +490,39 @@ class DownloadSpec(BaseSpec):
     kind: Literal["download"] = "download"
     inputs: dict[InputName, RemoteFileRef] = Field(min_length=1)
 
-class InternalSpec(BaseSpec):
-    """Base class for stages that consume previously produced artifacts."""
 
-    inputs: dict[InputName, StorageRef] = Field(min_length=1)
+class InternalSpec(BaseSpec):
+    inputs: dict[InputName, InternalInputRef] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_local_path_collisions(self) -> InternalSpec:
+        stored_inputs = {
+            name: ref for name, ref in self.inputs.items() if ref.kind == "stored"
+        }
+
+        materialization_paths: dict[RepoRelPath, InputName] = {}
+
+        for name, ref in stored_inputs.items():
+            for previous_path, previous_name in materialization_paths.items():
+                if repo_file_paths_overlap(ref.path, previous_path):
+                    raise ValueError(
+                        f"input materialization paths for {previous_name!r} and "
+                        f"{name!r} collide: {previous_path} and {ref.path}"
+                    )
+
+            materialization_paths[ref.path] = name
+
+            if repo_file_paths_overlap(ref.path, self.script):
+                raise ValueError(f"input {name!r} path collides with the stage script")
+
+            if repo_file_paths_overlap(self.output, ref.path):
+                raise ValueError(f"stage output path collides with input {name!r}")
+
+        if repo_file_paths_overlap(self.output, self.script):
+            raise ValueError("stage output path collides with the stage script")
+
+        return self
+
 
 class BuildParams(ProtocolModel):
     pass
@@ -445,11 +532,11 @@ class EmbedParams(ProtocolModel):
     pass
 
 
-
 class TrainParams(ProtocolModel):
     epochs: int = Field(ge=1)
     batch_size: int = Field(ge=1)
     learning_rate: float = Field(gt=0)
+
 
 class BuildSpec(InternalSpec):
     kind: Literal["build"] = "build"
@@ -458,7 +545,7 @@ class BuildSpec(InternalSpec):
 
 class EmbedSpec(InternalSpec):
     kind: Literal["embed"] = "embed"
-    params:EmbedParams
+    params: EmbedParams
 
 
 class TrainSpec(InternalSpec):
@@ -472,28 +559,24 @@ Spec = Annotated[
 ]
 
 # ---------------------------------------------------------------------------
-# Resolved internal inputs
+# Resolved input refs
 # ---------------------------------------------------------------------------
 
-class ResolvedInternalInputRef(ProtocolModel):
-    """
-    A previously produced artifact bound into the current execution.
 
-    artifact:
-        The exact input file.
+class ResolvedStoredInputRef(ProtocolModel):
+    kind: Literal["stored"] = "stored"
+    pointer: ResolvedArtifactPointerRef
 
-    manifest:
-        The ArtifactManifest file that links the artifact to its producing
-        spec, resolved spec, and source.
 
-    path:
-        The repository-relative path at which the executor made the artifact
-        available to the command. This is not its durable storage path.
-    """
+class ResolvedFutureInputRef(ProtocolModel):
+    kind: Literal["future"] = "future"
+    manifest: ResolvedArtifactManifestRef
 
-    artifact: ResolvedFileRef
-    manifest: ResolvedFileRef
-    path: RepoRelPath
+
+ResolvedInternalInputRef = Annotated[
+    ResolvedStoredInputRef | ResolvedFutureInputRef,
+    Field(discriminator="kind"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -602,6 +685,7 @@ class ResolvedInternalSpec(ResolvedBaseSpec):
     Receipt for an operation that consumes previously produced artifacts.
     """
 
+    spec: InternalSpec
     inputs: dict[InputName, ResolvedInternalInputRef]
 
     @model_validator(mode="after")
@@ -612,12 +696,21 @@ class ResolvedInternalSpec(ResolvedBaseSpec):
             )
 
         for name, resolved_input in self.inputs.items():
-            requested_location = self.spec.inputs[name]
+            authored_input = self.spec.inputs[name]
 
-            if resolved_input.artifact.stored_at != requested_location:
+            if resolved_input.kind != authored_input.kind:
                 raise ValueError(
-                    f"resolved input {name!r} does not match the authored "
-                    "storage location"
+                    f"resolved input {name!r} kind must match the authored input"
+                )
+
+            if (
+                resolved_input.kind == "stored"
+                and authored_input.kind == "stored"
+                and resolved_input.pointer.stored_at != authored_input.pointer
+            ):
+                raise ValueError(
+                    f"resolved input {name!r} pointer location must match "
+                    "the authored pointer location"
                 )
 
         return self

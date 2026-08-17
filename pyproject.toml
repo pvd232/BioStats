@@ -12,6 +12,10 @@ dependencies = [
     "PyYAML>=6,<7",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=9,<10",
+]
+
 [tool.setuptools.packages.find]
 include = ["mantra_provenance*"]
-

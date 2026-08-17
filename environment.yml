@@ -1,0 +1,11 @@
+name: mantra
+channels:
+  - defaults
+dependencies:
+  - pydantic
+  - pyyaml
+  - validators
+  - pytest
+  - numpy
+  - pytorch
+prefix: /Users/machina/miniconda3/envs/mantra
