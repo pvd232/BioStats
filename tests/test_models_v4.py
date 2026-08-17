@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 
 import yaml
 from pydantic import TypeAdapter, ValidationError
@@ -15,6 +16,8 @@ from mantra_provenance.models_v4 import (
     GitFileRef,
     HuggingFaceFileRef,
     InternalInputRef,
+    Measurement,
+    MetricDeclaration,
     RemoteFileRef,
     RepoRelPath,
     ResolvedArtifactManifestRef,
@@ -302,6 +305,92 @@ class FileReferenceTests(unittest.TestCase):
                 )
                 from_yaml = type(model).model_validate(yaml.safe_load(dumped))
                 self.assertEqual(from_yaml, model)
+
+
+class MetricAndMeasurementTests(unittest.TestCase):
+    def test_metric_declaration_accepts_comparison_direction(self) -> None:
+        minimize = MetricDeclaration(
+            metric_id="mean_squared_error",
+            direction="minimize",
+        )
+        maximize = MetricDeclaration(
+            metric_id="pearson_correlation",
+            direction="maximize",
+        )
+
+        self.assertEqual(minimize.direction, "minimize")
+        self.assertEqual(maximize.direction, "maximize")
+
+    def test_metric_declaration_rejects_invalid_id_and_direction(self) -> None:
+        with self.assertRaises(ValidationError):
+            MetricDeclaration(metric_id="Mean Squared Error", direction="minimize")
+
+        with self.assertRaises(ValidationError):
+            MetricDeclaration(metric_id="mean_squared_error", direction="neutral")
+
+    def test_measurement_accepts_finite_value_and_optional_position(self) -> None:
+        measurement = Measurement(
+            run_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            attempt_id=1,
+            stage_id="train",
+            metric_id="mean_squared_error",
+            value=0.184,
+            measured_at=datetime(2026, 8, 14, 8, 30, tzinfo=timezone.utc),
+            epoch=4,
+            step=100,
+        )
+
+        self.assertEqual(measurement.value, 0.184)
+        self.assertEqual(measurement.epoch, 4)
+        self.assertEqual(measurement.step, 100)
+
+    def test_measurement_rejects_nonfinite_values(self) -> None:
+        common = {
+            "run_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "attempt_id": 1,
+            "stage_id": "train",
+            "metric_id": "mean_squared_error",
+            "measured_at": datetime(2026, 8, 14, 8, 30, tzinfo=timezone.utc),
+        }
+
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                Measurement(value=value, **common)
+
+    def test_measurement_rejects_invalid_attempt_epoch_and_step(self) -> None:
+        common = {
+            "run_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "attempt_id": 1,
+            "stage_id": "train",
+            "metric_id": "mean_squared_error",
+            "value": 0.184,
+            "measured_at": datetime(2026, 8, 14, 8, 30, tzinfo=timezone.utc),
+        }
+
+        for field, value in (("attempt_id", 0), ("epoch", -1), ("step", -1)):
+            payload = common | {field: value}
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                Measurement(**payload)
+
+    def test_measurement_round_trips_through_json_and_yaml(self) -> None:
+        measurement = Measurement(
+            run_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            attempt_id=1,
+            stage_id="train",
+            metric_id="pearson_correlation",
+            value=0.91,
+            measured_at=datetime(2026, 8, 14, 8, 30, tzinfo=timezone.utc),
+        )
+
+        from_json = Measurement.model_validate_json(measurement.model_dump_json())
+        self.assertEqual(from_json, measurement)
+
+        dumped = yaml.safe_dump(
+            measurement.model_dump(mode="json"),
+            sort_keys=False,
+        )
+        from_yaml = Measurement.model_validate(yaml.safe_load(dumped))
+        self.assertEqual(from_yaml, measurement)
 
 
 class InternalInputValidationTests(unittest.TestCase):

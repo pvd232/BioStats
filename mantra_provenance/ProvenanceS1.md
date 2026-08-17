@@ -1269,30 +1269,78 @@ Pydantic validators must not fetch remote files or inspect the filesystem.
 
 ## 22. Implementation order
 
-1. Define the Stage 1 identifier types.
-2. Add ArtifactPointerRef, ResolvedArtifactPointerRef, and ResolvedArtifactManifestRef.
-3. Update ArtifactPointer to select only a manifest.
-4. Add primitive and file-reference tests.
-5. Implement `StoredInputRef`.
-6. Implement `FutureInputRef`.
-7. Implement the discriminated authored input union.
-8. Implement `ResolvedStoredInputRef`, `ResolvedFutureInputRef`, and their
-   discriminated union.
-9. Add their authored-to-resolved correspondence validators.
-10. Add local input-path and collision validators.
-11. Add metric declarations and measurement records.
-12. Add experiment and variant models.
-13. Add run and attempt models.
-14. Add `ResolvedRun` and its validators.
-15. Complete the external verifier.
-16. Add the remaining observed CUDA-runtime fields when reliably collectible.
-17. Point package exports at the authoritative model module.
-18. Update YAML loading and exact-byte serialization.
-19. Replace legacy fixtures with Stage 1 fixtures.
-20. Add construction, rejection, round-trip, and verifier tests.
-21. Rewrite the README from this protocol.
-22. Remove legacy package wiring and tracked Python cache files.
-23. Run compilation, schema generation, and the complete test suite in the `mantra` Conda environment.
+The checked items are implemented in [the authoritative models](models_v4.py),
+[the identifier definitions](ids.py), and [the focused model tests](../tests/test_models_v4.py).
+
+### Artifact and input foundation
+
+- [x] **1.** Define the Stage 1 identifier types.
+- [x] **2.** Add `ArtifactPointerRef`, `ResolvedArtifactPointerRef`, and
+  `ResolvedArtifactManifestRef`.
+- [x] **3.** Update `ArtifactPointer` to select only a manifest.
+- [x] **4.** Add primitive and file-reference tests.
+- [x] **5.** Implement `StoredInputRef`.
+- [x] **6.** Implement `FutureInputRef`.
+- [x] **7.** Implement the discriminated authored input union.
+- [x] **8.** Implement `ResolvedStoredInputRef`, `ResolvedFutureInputRef`, and
+  their discriminated union.
+- [x] **9.** Add authored-to-resolved input correspondence validators.
+- [x] **10.** Add local input-path and collision validators.
+
+### Deterministic dummy-data completion pass
+
+Steps 11–23 use small deterministic dummy artifacts to complete and verify the
+implementation skeleton. The data and stage calculations may be trivial, but
+the pass must use the real models, serialization, hashing, byte counting,
+pointer and manifest traversal, stage execution, measurement recording,
+attempt handling, resolved-run construction, and cross-file verification.
+
+- [x] **11.** Add metric declarations and measurement records.
+- [ ] **12.** Add experiment and variant models.
+- [ ] **13.** Add run and attempt models.
+- [ ] **14.** Add `ResolvedRun` and its validators.
+- [ ] **15.** Complete the external verifier.
+- [ ] **16.** Add the remaining observed CUDA-runtime fields when they can be
+  collected reliably.
+- [ ] **17.** Point package exports at the authoritative model module.
+- [ ] **18.** Update YAML loading and exact-byte serialization.
+- [ ] **19.** Replace legacy fixtures with a complete Stage 1 dummy provenance
+  tree.
+- [ ] **20.** Add construction, rejection, round-trip, verifier, successful
+  attempt, and controlled failed-attempt tests.
+- [ ] **21.** Rewrite the README from the implemented and tested protocol.
+- [ ] **22.** Remove legacy package wiring and tracked Python cache files.
+- [ ] **23.** Run compilation, schema generation, the dummy end-to-end run, and
+  the complete test suite in the `mantra` Conda environment.
+
+The dummy end-to-end run must exercise this complete chain:
+
+```text
+run plan and authored stage specs
+→ stored input pointer
+→ stored artifact manifest and bytes
+→ successful stage output and manifest
+→ same-run future input
+→ measurements
+→ attempt record
+→ resolved run
+→ external verifier passes
+```
+
+Stage 1 is complete only when the implementation can build this chain from
+scratch, verify every referenced file's SHA-256 and byte count, and reproduce
+the strict dummy run's stage-output SHA-256 values under the same recorded
+conditions.
+
+### Real-data handoff
+
+After the dummy-data completion gate passes:
+
+- [ ] Implement the real training-data download stage.
+- [ ] Download, hash, and publish the training-data artifact and manifest.
+- [ ] Create the Git-tracked pointer that selects the training-data manifest.
+- [ ] Run the complete pipeline on a small real-data smoke-test subset.
+- [ ] Run the complete live training workflow.
 
 Only after Stage 1 passes should MANTRA implement final evaluation, diagnostics,
 benchmarks, confirmation parity, and automatic promotion gating.

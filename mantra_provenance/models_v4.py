@@ -20,7 +20,7 @@ from pydantic import (
     model_validator,
 )
 
-from .ids import InputName, StageId
+from .ids import InputName, MetricId, RunId, StageId
 
 
 def validate_repo_rel_path(value: str) -> str:
@@ -310,6 +310,28 @@ ReproducibilitySpec = Annotated[
 # ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------
+
+
+class MetricDeclaration(ProtocolModel):
+    """A metric selected for comparison across experiment runs."""
+
+    metric_id: MetricId
+    direction: Literal["minimize", "maximize"]
+
+
+class Measurement(ProtocolModel):
+    """One observed metric value produced during a run stage."""
+
+    run_id: RunId
+    attempt_id: int = Field(ge=1)
+    stage_id: StageId
+    metric_id: MetricId
+
+    value: float = Field(allow_inf_nan=False)
+    measured_at: AwareDatetime
+
+    epoch: int | None = Field(default=None, ge=0)
+    step: int | None = Field(default=None, ge=0)
 
 
 # ---------------------------------------------------------------------------
