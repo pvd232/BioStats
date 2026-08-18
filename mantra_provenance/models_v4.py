@@ -20,7 +20,17 @@ from pydantic import (
     model_validator,
 )
 
-from .ids import InputName, MetricId, RunId, StageId
+from .ids import (
+    ExperimentId,
+    FactorId,
+    InputName,
+    LevelId,
+    MetricId,
+    ReplicateId,
+    RunId,
+    StageId,
+    VariantId,
+)
 
 
 def validate_repo_rel_path(value: str) -> str:
@@ -71,13 +81,16 @@ class RemoteFileRef(ProtocolModel):
     kind: Literal["remote"] = "remote"
     url: HttpUrl
 
-
-class GitFileRef(ProtocolModel):
+class GitSource(ProtocolModel):
     """A file stored at an exact Git revision."""
 
     kind: Literal["git"] = "git"
     repository: HttpUrl
     commit: GitCommit
+
+
+class GitFileRef(GitSource):
+    """A file stored at an exact Git revision."""
     path: RepoRelPath
 
 
@@ -308,15 +321,8 @@ ReproducibilitySpec = Annotated[
 ]
 
 # ---------------------------------------------------------------------------
-# Metrics
+# Measurement
 # ---------------------------------------------------------------------------
-
-
-class MetricDeclaration(ProtocolModel):
-    """A metric selected for comparison across experiment runs."""
-
-    metric_id: MetricId
-    direction: Literal["minimize", "maximize"]
 
 
 class Measurement(ProtocolModel):
@@ -332,6 +338,250 @@ class Measurement(ProtocolModel):
 
     epoch: int | None = Field(default=None, ge=0)
     step: int | None = Field(default=None, ge=0)
+
+
+# ---------------------------------------------------------------------------
+# Experiment Specs
+# ---------------------------------------------------------------------------
+
+"""
+Factors and levels
+→ describe the available experimental dimensions
+
+Variants
+→ explicitly select the combinations we actually want to test
+
+E.g., imagine the following ->
+
+factors:
+  - factor_id: aggregation
+    levels:
+      - dense
+      - low_rank
+      - attention
+
+  - factor_id: rank
+    levels:
+      - not_applicable
+      - rank_32
+      - rank_64
+
+  - factor_id: optimizer
+    levels:
+      - adamw
+      - lion
+
+  - factor_id: dropout
+    levels:
+      - dropout_0
+      - dropout_01
+
+The cartesian product would be 3 x 3 x 2 x 2 = 36 combinations. But we only specify four meaningful variants:
+
+variants:
+  - baseline
+  - low_rank_32
+  - low_rank_64
+  - attention_adamw
+
+"""
+
+
+class FactorSpec(ProtocolModel):
+    factor_id: FactorId
+    levels: tuple[LevelId, ...] = Field(min_length=2)
+
+
+class ReplicateSpec(ProtocolModel):
+    replicate_id: ReplicateId
+    seed: int
+
+
+class ExperimentSpec(ProtocolModel):
+    schema_version: Literal[1] = 1
+    experiment_id: ExperimentId
+
+    factors: tuple[FactorSpec, ...]
+    variant_ids: tuple[VariantId, ...] = Field(min_length=1)
+    replicates: tuple[ReplicateSpec, ...] = Field(min_length=1)
+    metric_ids: tuple[MetricId, ...]
+
+    @model_validator(mode="after")
+    def validate_common_invariants(self) -> ExperimentSpec:
+        factor_ids = tuple(factor.factor_id for factor in self.factors)
+        if len(set(factor_ids)) != len(factor_ids):
+            raise ValueError("factor IDs must be unique")
+
+        if len(set(self.variant_ids)) != len(self.variant_ids):
+            raise ValueError("variant IDs must be unique")
+
+        replicate_ids = tuple(replicate.replicate_id for replicate in self.replicates)
+        if len(set(replicate_ids)) != len(replicate_ids):
+            raise ValueError("replicate IDs must be unique")
+
+        if len(set(self.metric_ids)) != len(self.metric_ids):
+            raise ValueError("metric IDs must be unique")
+
+        return self
+
+
+class VariantSpec(ProtocolModel):
+    schema_version: Literal[1] = 1
+    experiment_id: ExperimentId
+    variant_id: VariantId
+
+    levels: dict[FactorId, LevelId]
+
+
+# ---------------------------------------------------------------------------
+# Run primitives
+# ---------------------------------------------------------------------------
+
+AttemptStatus = Literal[
+    "succeeded",
+    "failed",
+    "preempted",
+    "cancelled",
+]
+
+
+class ResolvedStageRef(ProtocolModel):
+    """Binds a completed run stage to its resolved execution record."""
+
+    stage_id: StageId
+    resolved_spec: ResolvedFileRef
+
+
+class RunAttempt(ProtocolModel):
+    attempt_id: int = Field(ge=1)
+    status: AttemptStatus
+
+    started_at: AwareDatetime
+    completed_at: AwareDatetime
+
+    completed_stages: tuple[ResolvedStageRef, ...]
+    artifact_manifests: tuple[ResolvedArtifactManifestRef, ...]
+    measurement_files: tuple[ResolvedFileRef, ...]
+    log_files: tuple[ResolvedFileRef, ...]
+
+    failure_reason: str | None
+
+    @model_validator(mode="after")
+    def validate_common_invariants(self) -> RunAttempt:
+        if self.status == "succeeded" and self.failure_reason is not None:
+            raise ValueError("Successful runs should not have a failure reason")
+
+        if (
+            self.status != "succeeded"
+            and self.failure_reason is None
+            or self.failure_reason == ""
+        ):
+            raise ValueError("Must give a valid reason for legitimate failure")
+
+        if self.completed_at <= self.started_at:
+            raise ValueError("Invalid chronological order of timestamps")
+
+        unique = set()
+        for stage in self.completed_stages:
+            if stage.stage_id in unique:
+                raise ValueError("No duplicate stages")
+            unique.add(stage.stage_id)
+        return self
+
+
+class StageSpec(ProtocolModel):
+    stage_id: StageId
+    spec: RepoRelPath
+
+
+class RunSpec(ProtocolModel):
+    schema_version: Literal[1] = 1
+    run_id: RunId
+    experiment_id: ExperimentId
+    variant_id: VariantId
+    replicate_id: ReplicateId
+
+    seed: int
+    source: GitSource
+
+    stages: tuple[StageSpec, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_common_invariants(self) -> RunSpec:
+        stage_ids = tuple(stage.stage_id for stage in self.stages)
+        if len(set(stage_ids)) != len(stage_ids):
+            raise ValueError("stage IDs must be unique")
+
+        stage_spec_paths = tuple(stage.spec for stage in self.stages)
+        if len(set(stage_spec_paths)) != len(stage_spec_paths):
+            raise ValueError("stage spec paths must be unique")
+
+        return self
+
+
+class ResolvedRun(ProtocolModel):
+    schema_version: Literal[1] = 1
+
+    run: RunSpec
+    run_file: ResolvedFileRef
+
+    status: Literal["succeeded", "failed", "cancelled"]
+
+    attempts: tuple[RunAttempt, ...] = Field(min_length=1)
+    successful_attempt_id: int | None
+
+    completed_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_common_invariants(self) -> ResolvedRun:
+        unique_attempt_ids = set()
+        successful_attempts = []
+        expected_stage_ids = tuple(stage.stage_id for stage in self.run.stages)
+
+        for index, attempt in enumerate(self.attempts):
+            if attempt.attempt_id in unique_attempt_ids:
+                raise ValueError("No duplicative attempts")
+            unique_attempt_ids.add(attempt.attempt_id)
+
+            completed_stage_ids = tuple(
+                stage.stage_id for stage in attempt.completed_stages
+            )
+            if completed_stage_ids != expected_stage_ids[: len(completed_stage_ids)]:
+                raise ValueError(
+                    "Completed stages must follow the run's declared stage order"
+                )
+
+            if attempt.status == "succeeded":
+                successful_attempts.append(attempt)
+                if index != len(self.attempts) - 1:
+                    raise ValueError("No attempt may occur after a successful attempt")
+
+        if self.status == "succeeded":
+            if len(successful_attempts) != 1:
+                raise ValueError("A succeeded run requires one successful attempt")
+
+            successful_attempt = successful_attempts[0]
+            if self.successful_attempt_id != successful_attempt.attempt_id:
+                raise ValueError(
+                    "successful_attempt_id must identify the successful attempt"
+                )
+
+            completed_stage_ids = tuple(
+                stage.stage_id for stage in successful_attempt.completed_stages
+            )
+            if completed_stage_ids != expected_stage_ids:
+                raise ValueError(
+                    "The successful attempt must complete every run stage in order"
+                )
+        else:
+            if successful_attempts:
+                raise ValueError("A failed or cancelled run cannot have a success")
+            if self.successful_attempt_id is not None:
+                raise ValueError(
+                    "successful_attempt_id must be null without a successful attempt"
+                )
+
+        return self
 
 
 # ---------------------------------------------------------------------------

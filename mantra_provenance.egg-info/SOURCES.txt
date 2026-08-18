@@ -1,10 +1,10 @@
 README.md
 pyproject.toml
 mantra_provenance/__init__.py
-mantra_provenance/models_v3.py
-mantra_provenance/models_v3_draft.py
+mantra_provenance/ids.py
 mantra_provenance/models_v4.py
 mantra_provenance/serialization.py
+mantra_provenance/verifier.py
 mantra_provenance/yaml_io.py
 mantra_provenance.egg-info/PKG-INFO
 mantra_provenance.egg-info/SOURCES.txt
@@ -13,5 +13,7 @@ mantra_provenance.egg-info/requires.txt
 mantra_provenance.egg-info/top_level.txt
 mantra_provenance/archive/models.py
 mantra_provenance/archive/models_v2.py
-tests/test_models.py
-tests/test_models_v2.py
+mantra_provenance/archive/models_v3.py
+mantra_provenance/archive/models_v3_draft.py
+tests/test_models_v4.py
+tests/test_verifier.py

@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Artifact provenance models for MANTRA"
 requires-python = ">=3.11"
 dependencies = [
+    "huggingface_hub>=1,<2",
     "pydantic>=2.12,<3",
     "PyYAML>=6,<7",
 ]

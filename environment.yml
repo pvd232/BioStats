@@ -6,6 +6,7 @@ dependencies:
   - pyyaml
   - validators
   - pytest
+  - huggingface_hub
   - numpy
   - pytorch
 prefix: /Users/machina/miniconda3/envs/mantra

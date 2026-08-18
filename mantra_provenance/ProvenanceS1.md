@@ -705,6 +705,11 @@ AttemptStatus = Literal[
 ]
 
 
+class ResolvedStageRef(ProtocolModel):
+    stage_id: StageId
+    resolved_spec: ResolvedFileRef
+
+
 class RunAttempt(ProtocolModel):
     attempt_id: int = Field(ge=1)
     status: AttemptStatus
@@ -712,8 +717,7 @@ class RunAttempt(ProtocolModel):
     started_at: AwareDatetime
     completed_at: AwareDatetime
 
-    completed_stage_ids: tuple[StageId, ...]
-    resolved_stage_specs: tuple[ResolvedFileRef, ...]
+    completed_stages: tuple[ResolvedStageRef, ...]
     artifact_manifests: tuple[ResolvedArtifactManifestRef, ...]
     measurement_files: tuple[ResolvedFileRef, ...]
     log_files: tuple[ResolvedFileRef, ...]
@@ -724,11 +728,10 @@ class RunAttempt(ProtocolModel):
 Attempt invariants:
 
 - Attempt IDs are unique within a run.
-- Every attempt in a resolved run is terminal.
 - Every attempt has a completion timestamp.
-- Completed stage IDs are unique and preserve the run's declared stage order.
-- Resolved-stage, artifact-manifest, measurement-file, and log-file references
-  are unique within each attempt.
+- Completed-stage IDs are unique and preserve the run's declared stage order.
+- Each `ResolvedStageRef` explicitly binds its stage ID to the resolved-spec
+  file produced by that stage.
 - Retrying may not modify the frozen run plan.
 - A successful attempt completes every stage in order and has no failure
   reason.
@@ -772,6 +775,11 @@ ResolvedSpec
 ├── exact output artifact
 └── completion timestamp
 ```
+
+There is no `spec_id`. The resolved-spec file is identified by its
+`ResolvedFileRef`. The associated `stage_id` belongs to the `ResolvedStageRef`
+that binds the file into a `RunAttempt`; the containing `ResolvedRun` and
+`RunAttempt` supply the run and attempt identities.
 
 Current concrete stage types are:
 
@@ -911,33 +919,34 @@ class ResolvedRun(ProtocolModel):
     attempts: tuple[RunAttempt, ...] = Field(min_length=1)
     successful_attempt_id: int | None
 
-    resolved_stage_specs: tuple[ResolvedFileRef, ...]
-    artifact_manifests: tuple[ResolvedArtifactManifestRef, ...]
-    measurement_files: tuple[ResolvedFileRef, ...]
-
     completed_at: AwareDatetime
 ```
 
 Resolved-run invariants:
 
 - Attempt IDs are unique.
-- Every attempt is terminal.
 - A succeeded run has exactly one successful attempt.
 - A succeeded run requires `successful_attempt_id`, and that ID identifies the
   successful attempt.
 - A failed or cancelled run has no successful attempt and requires
   `successful_attempt_id` to be null.
-- Top-level stage specs, artifact manifests, and measurements come only from
-  the successful attempt.
-- A failed or cancelled run has no top-level accepted stage specs, artifact
-  manifests, or measurements.
+- A failed or cancelled run has no accepted successful attempt.
 - The successful attempt completed every declared stage in order.
 - Failed attempts may retain partial references inside their attempt records.
 - Retrying never modifies the embedded `RunSpec`.
 
-Checks that require loading `run_file`, resolved-stage files, artifact-manifest
-files, or measurement files belong to the external verifier described in
-Section 21.
+`ResolvedRun` validators check only the embedded `RunSpec` and `RunAttempt`
+records. The external verifier defined in Section 21 loads the referenced files
+and confirms that:
+
+- `run_file` parses as a `RunSpec` equal to the `RunSpec` embedded in
+  `ResolvedRun`;
+- each resolved-stage file belongs to the expected run, attempt, and stage;
+- each artifact manifest identifies the corresponding resolved stage's recorded
+  output; and
+- each measurement row identifies the expected run, attempt, stage, and metric.
+
+The verifier also recalculates every referenced file's SHA-256 and byte count.
 
 ---
 
@@ -1186,7 +1195,7 @@ Pydantic validates facts available inside loaded objects:
 - Frozen models.
 - Unexpected-field rejection.
 - Discriminated unions.
-- Unique factor, level, variant, metric, stage, and attempt IDs.
+- Unique factor, variant, replicate, metric, stage, and attempt IDs.
 - Unique stage-spec paths within a run.
 - Input-name and stored-input materialization-path uniqueness.
 - Locally visible stored-input, script, and output path collisions.
@@ -1197,12 +1206,12 @@ Pydantic validates facts available inside loaded objects:
 - Valid experiment, variant, stage, and metric ID syntax.
 - Attempt terminal-status consistency.
 - Attempt completion timestamps.
-- Unique completed-stage IDs and file references within each attempt.
+- Unique completed-stage IDs within each attempt.
 - Successful attempts have no failure reason.
 - Failed, preempted, and cancelled attempts have a nonempty failure reason.
 - No attempt occurs after a successful attempt.
 - Successful-run and successful-attempt consistency.
-- Failed and cancelled runs have no accepted top-level outputs.
+- Failed and cancelled runs have no accepted successful attempt.
 - Measurement IDs and finite values.
 - Source entry point matches the authored script.
 - Output storage path matches the authored output path.
@@ -1218,7 +1227,8 @@ The verifier performs filesystem, Git, and network operations:
 - Load and verify artifact pointers used by stored inputs.
 - Load and verify artifact manifests.
 - Verify authored and resolved spec files.
-- Verify that `run_file` contains the same run embedded in `ResolvedRun`.
+- Verify that `run_file` parses as a `RunSpec` equal to the `RunSpec` embedded
+  in `ResolvedRun`.
 - Resolve experiment and variant IDs at their deterministic paths in the
   recorded source repository and commit.
 - Verify that the variant assigns exactly one permitted level to every factor
@@ -1242,7 +1252,8 @@ The verifier performs filesystem, Git, and network operations:
 - Verify that every published file matches its recorded SHA-256 and byte count.
 - Verify exact clean source checkout.
 - Verify Git submodules and LFS objects.
-- Verify that the successful attempt supplied the final resolved-run references.
+- Verify every stage, manifest, measurement, and log reference retained by the
+  successful attempt.
 
 The verifier proves:
 
@@ -1289,29 +1300,127 @@ The checked items are implemented in [the authoritative models](models_v4.py),
 
 ### Deterministic dummy-data completion pass
 
-Steps 11–23 use small deterministic dummy artifacts to complete and verify the
+Steps 11–22 use small deterministic dummy artifacts to complete and verify the
 implementation skeleton. The data and stage calculations may be trivial, but
 the pass must use the real models, serialization, hashing, byte counting,
 pointer and manifest traversal, stage execution, measurement recording,
 attempt handling, resolved-run construction, and cross-file verification.
 
 - [x] **11.** Add metric declarations and measurement records.
-- [ ] **12.** Add experiment and variant models.
-- [ ] **13.** Add run and attempt models.
-- [ ] **14.** Add `ResolvedRun` and its validators.
-- [ ] **15.** Complete the external verifier.
-- [ ] **16.** Add the remaining observed CUDA-runtime fields when they can be
-  collected reliably.
-- [ ] **17.** Point package exports at the authoritative model module.
-- [ ] **18.** Update YAML loading and exact-byte serialization.
-- [ ] **19.** Replace legacy fixtures with a complete Stage 1 dummy provenance
+- [x] **12.** Add experiment and variant models.
+- [x] **13.** Add run and attempt models.
+- [x] **14.** Add `ResolvedRun` and its validators.
+- [ ] **15. Complete the external verifier.**
+
+  - [x] **15.1. Retrieve and verify referenced files.**
+    - Dispatch `GitFileRef` and `HuggingFaceFileRef` values to their respective
+      retrieval backends.
+    - Retrieve the file from the recorded repository, commit, and path.
+    - Reject files whose byte count or SHA-256 differs from the corresponding
+      `ResolvedFileRef`.
+
+  - [x] **15.2. Verify the resolved run's authored run file.**
+    - Retrieve and verify `ResolvedRun.run_file`.
+    - Parse it as `RunSpec`.
+    - Require the parsed `RunSpec` to equal `ResolvedRun.run`.
+
+  - [x] **15.3. Verify the experiment and variant.**
+    - Load the experiment and variant from their deterministic paths at the
+      run's recorded source commit.
+    - Require the run, experiment, and variant IDs to agree.
+    - Require the variant to assign exactly one permitted level to every factor
+      defined by the experiment.
+    - Require the run's replicate ID and seed to match one replicate declared by
+      the experiment.
+
+  - [x] **15.4. Verify the authored stage plan.**
+    - Retrieve and parse every authored stage spec referenced by `RunSpec`.
+    - Bind each loaded authored spec to the `stage_id` carried by its enclosing
+      `StageSpec` and preserve the declared run order.
+    - Require every `FutureInputRef` to name an earlier stage in the run.
+    - Require stage output paths to be unique within the run.
+    - Reject future-output paths that collide with the consumer's stored-input
+      paths, script, or output path.
+
+  - [ ] **15.5. Verify every resolved stage.**
+    - Retrieve and parse the resolved-stage spec in every `ResolvedStageRef`
+      retained by the successful attempt.
+    - Require completed-stage IDs to equal the run's declared stage IDs in
+      order.
+    - Require its embedded authored spec to equal the corresponding loaded
+      authored stage spec.
+    - Require its source, environment, inputs, script, and output to correspond
+      to the authored request.
+    - Require its output path to equal the authored output path.
+    - Require its output to be a verified `ResolvedFileRef`.
+
+  - [ ] **15.6. Verify stored inputs.**
+    - Retrieve the `ArtifactPointer` selected by each stored input.
+    - Require the resolved pointer location to equal the authored pointer
+      location.
+    - Retrieve the pointer's `ArtifactManifest` and require the pointer to select
+      that manifest.
+    - Retrieve the manifest's artifact and require its SHA-256 and byte count to
+      match `manifest.artifact`.
+    - Require the verified artifact to be materialized at the stored input's
+      local `path` before execution.
+
+  - [ ] **15.7. Verify same-run future inputs.**
+    - Locate the resolved spec and artifact manifest belonging to the referenced
+      producer stage.
+    - Require the future input's manifest to equal the producer's manifest.
+    - Require `manifest.artifact` to equal the producer's resolved output.
+    - Retrieve and verify the artifact before the consumer stage executes.
+    - Do not require an `ArtifactPointer` for a same-run dependency.
+
+  - [ ] **15.8. Verify artifact manifests.**
+    - Require `manifest.artifact` to equal the producing resolved stage's
+      output.
+    - Require `manifest.spec` to equal the producing authored stage-spec file.
+    - Require `manifest.resolved_spec` to equal the producing resolved-stage
+      file.
+    - Require `manifest.source` to equal the producing resolved stage's source.
+    - Retrieve and verify every file referenced by the manifest.
+
+  - [ ] **15.9. Verify measurement files.**
+    - Retrieve and verify every measurement file referenced by the successful
+      attempt.
+    - Parse every row as `Measurement`.
+    - Require every row's run, attempt, stage, and metric IDs to match the
+      containing records.
+    - Require every measurement's metric ID to belong to the experiment.
+    - Require every measurement to belong to a referenced successful stage.
+
+  - [ ] **15.10. Verify the source checkout.**
+    - Fetch the exact recorded Git commit.
+    - Require every stage entry point to exist at that commit.
+    - Reject modified tracked source and uncontrolled source files in the
+      execution checkout.
+    - Verify Git submodules at their recorded commits.
+    - Verify referenced Git LFS objects.
+
+  - [ ] **15.11. Orchestrate complete resolved-run verification.**
+    - Implement one `verify_resolved_run()` entry point that performs checks
+      15.1 through 15.10 in dependency order.
+    - Select the successful attempt and verify every file referenced by that
+      attempt.
+    - Raise `VerificationError` on the first broken reference or relationship.
+    - Return successfully only after the complete provenance chain passes.
+
+- [ ] **16.** Point package exports at the authoritative model module.
+- [ ] **17.** Update YAML loading and exact-byte serialization.
+- [ ] **18.** Replace legacy fixtures with a complete Stage 1 dummy provenance
   tree.
-- [ ] **20.** Add construction, rejection, round-trip, verifier, successful
+- [ ] **19.** Add construction, rejection, round-trip, verifier, successful
   attempt, and controlled failed-attempt tests.
-- [ ] **21.** Rewrite the README from the implemented and tested protocol.
-- [ ] **22.** Remove legacy package wiring and tracked Python cache files.
-- [ ] **23.** Run compilation, schema generation, the dummy end-to-end run, and
-  the complete test suite in the `mantra` Conda environment.
+- [ ] **20.** Rewrite the README from the implemented and tested protocol.
+- [ ] **21.** Remove legacy package wiring and tracked Python cache files.
+- [ ] **22. Run the Stage 1 end-to-end completion gate.**
+  - Compile the authoritative protocol modules.
+  - Generate the Pydantic schemas.
+  - Execute the complete deterministic dummy run.
+  - Verify its complete provenance chain using `verify_resolved_run()`.
+  - Run the complete test suite in the `mantra` Conda environment.
 
 The dummy end-to-end run must exercise this complete chain:
 
@@ -1347,7 +1456,15 @@ benchmarks, confirmation parity, and automatic promotion gating.
 
 ---
 
-## 23. Future work: observability, benchmarks, and promotion
+## 23. Future work: execution context, observability, benchmarks, and promotion
+
+### Execution-context extensions
+
+Add observed CUDA-runtime fields only when MANTRA can collect them reliably.
+These extensions do not block the Stage 1 provenance skeleton or its dummy
+end-to-end completion gate.
+
+### Observability
 
 After Stage 1 passes, MANTRA will extend its metric and measurement records
 with an observability layer that groups the records used to inspect and

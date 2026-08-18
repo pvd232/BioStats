@@ -1,34 +1,41 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
 
 import yaml
 from pydantic import TypeAdapter, ValidationError
 
 from mantra_provenance.ids import HumanId, RunId
 from mantra_provenance.models_v4 import (
+    SHA256,
     ArtifactPointer,
     ArtifactPointerRef,
     BuildSpec,
+    CompletedStageRef,
+    ExperimentSpec,
+    FactorSpec,
     FutureInputRef,
     GitCommit,
     GitFileRef,
+    GitSource,
     HuggingFaceFileRef,
     InternalInputRef,
     Measurement,
-    MetricDeclaration,
+    ReplicateSpec,
     RemoteFileRef,
     RepoRelPath,
     ResolvedArtifactManifestRef,
     ResolvedArtifactPointerRef,
     ResolvedFileRef,
     ResolvedGitFileRef,
-    SHA256,
-    StoredInputRef,
+    ResolvedRun,
+    RunAttempt,
+    RunSpec,
     StorageRef,
+    StoredInputRef,
+    VariantSpec,
 )
-
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64
@@ -308,26 +315,6 @@ class FileReferenceTests(unittest.TestCase):
 
 
 class MetricAndMeasurementTests(unittest.TestCase):
-    def test_metric_declaration_accepts_comparison_direction(self) -> None:
-        minimize = MetricDeclaration(
-            metric_id="mean_squared_error",
-            direction="minimize",
-        )
-        maximize = MetricDeclaration(
-            metric_id="pearson_correlation",
-            direction="maximize",
-        )
-
-        self.assertEqual(minimize.direction, "minimize")
-        self.assertEqual(maximize.direction, "maximize")
-
-    def test_metric_declaration_rejects_invalid_id_and_direction(self) -> None:
-        with self.assertRaises(ValidationError):
-            MetricDeclaration(metric_id="Mean Squared Error", direction="minimize")
-
-        with self.assertRaises(ValidationError):
-            MetricDeclaration(metric_id="mean_squared_error", direction="neutral")
-
     def test_measurement_accepts_finite_value_and_optional_position(self) -> None:
         measurement = Measurement(
             run_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -335,7 +322,7 @@ class MetricAndMeasurementTests(unittest.TestCase):
             stage_id="train",
             metric_id="mean_squared_error",
             value=0.184,
-            measured_at=datetime(2026, 8, 14, 8, 30, tzinfo=timezone.utc),
+            measured_at=datetime(2026, 8, 14, 8, 30, tzinfo=UTC),
             epoch=4,
             step=100,
         )
@@ -350,7 +337,7 @@ class MetricAndMeasurementTests(unittest.TestCase):
             "attempt_id": 1,
             "stage_id": "train",
             "metric_id": "mean_squared_error",
-            "measured_at": datetime(2026, 8, 14, 8, 30, tzinfo=timezone.utc),
+            "measured_at": datetime(2026, 8, 14, 8, 30, tzinfo=UTC),
         }
 
         for value in (float("nan"), float("inf"), float("-inf")):
@@ -364,7 +351,7 @@ class MetricAndMeasurementTests(unittest.TestCase):
             "stage_id": "train",
             "metric_id": "mean_squared_error",
             "value": 0.184,
-            "measured_at": datetime(2026, 8, 14, 8, 30, tzinfo=timezone.utc),
+            "measured_at": datetime(2026, 8, 14, 8, 30, tzinfo=UTC),
         }
 
         for field, value in (("attempt_id", 0), ("epoch", -1), ("step", -1)):
@@ -379,7 +366,7 @@ class MetricAndMeasurementTests(unittest.TestCase):
             stage_id="train",
             metric_id="pearson_correlation",
             value=0.91,
-            measured_at=datetime(2026, 8, 14, 8, 30, tzinfo=timezone.utc),
+            measured_at=datetime(2026, 8, 14, 8, 30, tzinfo=UTC),
         )
 
         from_json = Measurement.model_validate_json(measurement.model_dump_json())
@@ -391,6 +378,313 @@ class MetricAndMeasurementTests(unittest.TestCase):
         )
         from_yaml = Measurement.model_validate(yaml.safe_load(dumped))
         self.assertEqual(from_yaml, measurement)
+
+
+class ExperimentAndVariantTests(unittest.TestCase):
+    def test_experiment_and_variant_accept_selected_factor_assembly(self) -> None:
+        experiment = ExperimentSpec(
+            experiment_id="e001_low_rank",
+            factors=(
+                FactorSpec(
+                    factor_id="aggregation",
+                    levels=("dense", "low_rank"),
+                ),
+                FactorSpec(
+                    factor_id="rank",
+                    levels=("not_applicable", "rank_32", "rank_64"),
+                ),
+            ),
+            variant_ids=("baseline", "low_rank_32"),
+            replicates=(
+                ReplicateSpec(replicate_id="replicate_01", seed=42),
+                ReplicateSpec(replicate_id="replicate_02", seed=93),
+            ),
+            metric_ids=("mean_squared_error", "pearson_correlation"),
+        )
+        variant = VariantSpec(
+            experiment_id="e001_low_rank",
+            variant_id="low_rank_32",
+            levels={
+                "aggregation": "low_rank",
+                "rank": "rank_32",
+            },
+        )
+
+        self.assertIn(variant.variant_id, experiment.variant_ids)
+        self.assertEqual(variant.levels["rank"], "rank_32")
+
+    def test_experiment_rejects_duplicate_factor_ids(self) -> None:
+        with self.assertRaises(ValidationError):
+            ExperimentSpec(
+                experiment_id="e001_low_rank",
+                factors=(
+                    FactorSpec(factor_id="rank", levels=("rank_32", "rank_64")),
+                    FactorSpec(factor_id="rank", levels=("small", "large")),
+                ),
+                variant_ids=("low_rank_32",),
+                replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
+                metric_ids=("mean_squared_error",),
+            )
+
+    def test_experiment_rejects_duplicate_variant_replicate_and_metric_ids(
+        self,
+    ) -> None:
+        base = {
+            "experiment_id": "e001_low_rank",
+            "factors": (
+                FactorSpec(factor_id="rank", levels=("rank_32", "rank_64")),
+            ),
+            "variant_ids": ("low_rank_32",),
+            "replicates": (
+                ReplicateSpec(replicate_id="replicate_01", seed=42),
+            ),
+            "metric_ids": ("mean_squared_error",),
+        }
+        duplicates = {
+            "variant_ids": ("low_rank_32", "low_rank_32"),
+            "replicates": (
+                ReplicateSpec(replicate_id="replicate_01", seed=42),
+                ReplicateSpec(replicate_id="replicate_01", seed=93),
+            ),
+            "metric_ids": ("mean_squared_error", "mean_squared_error"),
+        }
+
+        for field, value in duplicates.items():
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                ExperimentSpec(**(base | {field: value}))
+
+class RunAndAttemptTests(unittest.TestCase):
+    RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
+    @staticmethod
+    def run_spec(**updates) -> RunSpec:
+        payload = {
+            "run_id": RunAndAttemptTests.RUN_ID,
+            "experiment_id": "e001_low_rank",
+            "variant_id": "low_rank_32",
+            "replicate_id": "replicate_01",
+            "seed": 42,
+            "source": GitSource(
+                repository=REPOSITORY,
+                commit=GIT_A,
+            ),
+            "stages": (
+                {"stage_id": "embed", "spec": "stages/embed.spec.yaml"},
+                {"stage_id": "train", "spec": "stages/train.spec.yaml"},
+            ),
+        }
+        return RunSpec.model_validate(payload | updates)
+
+    @staticmethod
+    def completed_stage(
+        stage_id: str,
+        path: str | None = None,
+    ) -> CompletedStageRef:
+        resolved_path = path or f"stages/{stage_id}.spec.resolved.yaml"
+        return CompletedStageRef(
+            stage_id=stage_id,
+            resolved_spec=ResolvedFileRef(
+                sha256=SHA_A,
+                bytes=1024,
+                stored_at=hf_location(resolved_path),
+            ),
+        )
+
+    @staticmethod
+    def attempt(**updates) -> RunAttempt:
+        started_at = datetime(2026, 8, 14, 8, 30, tzinfo=UTC)
+        payload = {
+            "attempt_id": 1,
+            "status": "succeeded",
+            "started_at": started_at,
+            "completed_at": started_at + timedelta(seconds=1),
+            "completed_stages": (
+                RunAndAttemptTests.completed_stage("embed"),
+                RunAndAttemptTests.completed_stage("train"),
+            ),
+            "artifact_manifests": (),
+            "measurement_files": (),
+            "log_files": (),
+            "failure_reason": None,
+        }
+        return RunAttempt.model_validate(payload | updates)
+
+    def test_run_accepts_ordered_nonempty_stage_plan(self) -> None:
+        run = self.run_spec()
+        self.assertEqual(tuple(stage.stage_id for stage in run.stages), ("embed", "train"))
+
+    def test_run_rejects_empty_stage_plan(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.run_spec(stages=())
+
+    def test_run_rejects_duplicate_stage_ids(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.run_spec(
+                stages=(
+                    {"stage_id": "train", "spec": "stages/train_a.spec.yaml"},
+                    {"stage_id": "train", "spec": "stages/train_b.spec.yaml"},
+                )
+            )
+
+    def test_run_rejects_duplicate_stage_spec_paths(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.run_spec(
+                stages=(
+                    {"stage_id": "embed", "spec": "stages/shared.spec.yaml"},
+                    {"stage_id": "train", "spec": "stages/shared.spec.yaml"},
+                )
+            )
+
+    def test_attempt_accepts_success_and_failure_terminal_states(self) -> None:
+        succeeded = self.attempt()
+        failed = self.attempt(status="failed", failure_reason="process exited")
+
+        self.assertEqual(succeeded.status, "succeeded")
+        self.assertEqual(failed.failure_reason, "process exited")
+
+    def test_successful_attempt_rejects_failure_reason(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.attempt(failure_reason="unexpected reason")
+
+    def test_unsuccessful_attempt_requires_nonempty_failure_reason(self) -> None:
+        for status in ("failed", "preempted", "cancelled"):
+            for reason in (None, ""):
+                with (
+                    self.subTest(status=status, reason=reason),
+                    self.assertRaises(ValidationError),
+                ):
+                    self.attempt(status=status, failure_reason=reason)
+
+    def test_attempt_rejects_completion_before_start(self) -> None:
+        started_at = datetime(2026, 8, 14, 8, 30, tzinfo=UTC)
+        with self.assertRaises(ValidationError):
+            self.attempt(
+                started_at=started_at,
+                completed_at=started_at - timedelta(seconds=1),
+            )
+
+    def test_attempt_rejects_duplicate_completed_stage_ids(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.attempt(
+                completed_stages=(
+                    self.completed_stage("train", "stages/train_a.resolved.yaml"),
+                    self.completed_stage("train", "stages/train_b.resolved.yaml"),
+                )
+            )
+
+    def test_run_and_attempt_round_trip_through_json(self) -> None:
+        run = self.run_spec()
+        attempt = self.attempt()
+
+        self.assertEqual(RunSpec.model_validate_json(run.model_dump_json()), run)
+        self.assertEqual(
+            RunAttempt.model_validate_json(attempt.model_dump_json()),
+            attempt,
+        )
+
+    def test_resolved_run_accepts_one_successful_attempt(self) -> None:
+        run = self.run_spec()
+        attempt = self.attempt()
+        resolved = ResolvedRun(
+            run=run,
+            run_file=ResolvedFileRef(
+                sha256=SHA_A,
+                bytes=1024,
+                stored_at=hf_location("runs/run.yaml"),
+            ),
+            status="succeeded",
+            attempts=(attempt,),
+            successful_attempt_id=attempt.attempt_id,
+            completed_at=attempt.completed_at,
+        )
+
+        self.assertEqual(resolved.successful_attempt_id, 1)
+
+    def test_successful_attempt_must_complete_run_stages_in_order(self) -> None:
+        attempt = self.attempt(
+            completed_stages=(
+                self.completed_stage("train"),
+                self.completed_stage("embed"),
+            )
+        )
+
+        with self.assertRaisesRegex(ValidationError, "declared stage order"):
+            ResolvedRun(
+                run=self.run_spec(),
+                run_file=ResolvedFileRef(
+                    sha256=SHA_A,
+                    bytes=1024,
+                    stored_at=hf_location("runs/run.yaml"),
+                ),
+                status="succeeded",
+                attempts=(attempt,),
+                successful_attempt_id=attempt.attempt_id,
+                completed_at=attempt.completed_at,
+            )
+
+    def test_unsuccessful_attempt_may_retain_completed_stage_references(self) -> None:
+        attempt = self.attempt(
+            status="failed",
+            completed_stages=(self.completed_stage("embed"),),
+            failure_reason="training failed",
+        )
+        resolved = ResolvedRun(
+            run=self.run_spec(),
+            run_file=ResolvedFileRef(
+                sha256=SHA_A,
+                bytes=1024,
+                stored_at=hf_location("runs/run.yaml"),
+            ),
+            status="failed",
+            attempts=(attempt,),
+            successful_attempt_id=None,
+            completed_at=attempt.completed_at,
+        )
+
+        self.assertEqual(resolved.attempts[0].completed_stages[0].stage_id, "embed")
+
+    def test_unsuccessful_attempt_stages_must_be_a_run_prefix(self) -> None:
+        attempt = self.attempt(
+            status="failed",
+            completed_stages=(self.completed_stage("train"),),
+            failure_reason="embedding failed",
+        )
+
+        with self.assertRaisesRegex(ValidationError, "declared stage order"):
+            ResolvedRun(
+                run=self.run_spec(),
+                run_file=ResolvedFileRef(
+                    sha256=SHA_A,
+                    bytes=1024,
+                    stored_at=hf_location("runs/run.yaml"),
+                ),
+                status="failed",
+                attempts=(attempt,),
+                successful_attempt_id=None,
+                completed_at=attempt.completed_at,
+            )
+
+    def test_no_attempt_may_follow_a_successful_attempt(self) -> None:
+        succeeded = self.attempt()
+        failed = self.attempt(
+            attempt_id=2,
+            status="failed",
+            failure_reason="unexpected retry",
+        )
+
+        with self.assertRaisesRegex(ValidationError, "after a successful attempt"):
+            ResolvedRun(
+                run=self.run_spec(),
+                run_file=ResolvedFileRef(
+                    sha256=SHA_A,
+                    bytes=1024,
+                    stored_at=hf_location("runs/run.yaml"),
+                ),
+                status="succeeded",
+                attempts=(succeeded, failed),
+                successful_attempt_id=succeeded.attempt_id,
+                completed_at=failed.completed_at,
+            )
 
 
 class InternalInputValidationTests(unittest.TestCase):
