@@ -21,8 +21,10 @@ from .models_v4 import (
     GitFileRef,
     HuggingFaceFileRef,
     InternalSpec,
+    ResolvedBaseSpec,
     ResolvedFileRef,
     ResolvedRun,
+    ResolvedSpec,
     RunSpec,
     Spec,
     StorageModel,
@@ -33,6 +35,7 @@ from .models_v4 import (
 
 StorageFetcher = Callable[[StorageModel], bytes]
 SPEC_ADAPTER = TypeAdapter(Spec)
+RESOLVED_SPEC_ADAPTER = TypeAdapter(ResolvedSpec)
 
 
 class VerificationError(ValueError):
@@ -259,22 +262,39 @@ def verify_experiment_and_variant(
 
 def verify_authored_stage_plan(
     run: RunSpec,
+    run_file: ResolvedFileRef,
     *,
     fetcher: StorageFetcher | None = None,
 ) -> dict[StageId, BaseSpec]:
-    """Load the run's authored stage specs and verify their dependency plan."""
+    """Load and verify authored stage specs from the run-plan snapshot."""
     retrieve = fetch_storage_bytes if fetcher is None else fetcher
     loaded_stages: dict[StageId, BaseSpec] = {}
 
     for stage in run.stages:
-        location = GitFileRef(
-            repository=run.source.repository,
-            commit=run.source.commit,
-            path=stage.spec,
+        plan_location = run_file.stored_at
+        if isinstance(plan_location, GitFileRef):
+            location: StorageModel = GitFileRef(
+                repository=plan_location.repository,
+                commit=plan_location.commit,
+                path=stage.spec,
+            )
+        else:
+            location = HuggingFaceFileRef(
+                repository=plan_location.repository,
+                commit=plan_location.commit,
+                path=stage.spec,
+                repo_type=plan_location.repo_type,
+            )
+
+        stage_reference = ResolvedFileRef(
+            sha256=stage.sha256,
+            bytes=stage.bytes,
+            stored_at=location,
         )
+        raw = verify_resolved_file_bytes(stage_reference, retrieve(location))
 
         try:
-            spec = SPEC_ADAPTER.validate_python(yaml.safe_load(retrieve(location)))
+            spec = SPEC_ADAPTER.validate_python(yaml.safe_load(raw))
         except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
             raise VerificationError(
                 f"stage {stage.stage_id!r} file is not a valid authored stage spec"
@@ -329,3 +349,87 @@ def verify_authored_stage_plan(
         loaded_stages[stage.stage_id] = spec
 
     return loaded_stages
+
+
+def verify_resolved_stages(
+    resolved_run: ResolvedRun,
+    authored_stages: dict[StageId, BaseSpec],
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> dict[StageId, ResolvedBaseSpec]:
+    """Verify the resolved stages retained by a successful run attempt."""
+    if resolved_run.status != "succeeded":
+        raise VerificationError(
+            "resolved-stage verification requires a succeeded run"
+        )
+
+    successful_attempt = next(
+        (
+            attempt
+            for attempt in resolved_run.attempts
+            if attempt.attempt_id == resolved_run.successful_attempt_id
+        ),
+        None,
+    )
+    if successful_attempt is None or successful_attempt.status != "succeeded":
+        raise VerificationError("successful attempt could not be identified")
+
+    expected_stage_ids = tuple(stage.stage_id for stage in resolved_run.run.stages)
+    resolved_stage_ids = tuple(
+        stage.stage_id for stage in successful_attempt.resolved_stages
+    )
+    if resolved_stage_ids != expected_stage_ids:
+        raise VerificationError(
+            "successful attempt resolved stages do not match the run stage order"
+        )
+
+    if set(authored_stages) != set(expected_stage_ids):
+        raise VerificationError(
+            "loaded authored stages do not match the run stage plan"
+        )
+
+    verified_stages: dict[StageId, ResolvedBaseSpec] = {}
+
+    for stage_reference in successful_attempt.resolved_stages:
+        raw = read_resolved_file(stage_reference.resolved_spec, fetcher=fetcher)
+        try:
+            resolved_spec = RESOLVED_SPEC_ADAPTER.validate_python(yaml.safe_load(raw))
+        except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+            raise VerificationError(
+                f"stage {stage_reference.stage_id!r} file is not a valid "
+                "resolved stage spec"
+            ) from exc
+
+        authored_spec = authored_stages[stage_reference.stage_id]
+        if resolved_spec.spec != authored_spec:
+            raise VerificationError(
+                f"stage {stage_reference.stage_id!r} does not embed its authored spec"
+            )
+
+        source_location = resolved_spec.source.stored_at
+        if (
+            source_location.repository != resolved_run.run.source.repository
+            or source_location.commit != resolved_run.run.source.commit
+        ):
+            raise VerificationError(
+                f"stage {stage_reference.stage_id!r} source does not match the "
+                "run source snapshot"
+            )
+
+        if not (
+            successful_attempt.started_at
+            < resolved_spec.completed_at
+            <= successful_attempt.completed_at
+        ):
+            raise VerificationError(
+                f"stage {stage_reference.stage_id!r} completion time falls outside "
+                "the successful attempt"
+            )
+
+        read_resolved_file(resolved_spec.source, fetcher=fetcher)
+        read_resolved_file(resolved_spec.environment.lockfile, fetcher=fetcher)
+        read_resolved_file(resolved_spec.output, fetcher=fetcher)
+
+        verified_stages[stage_reference.stage_id] = resolved_spec
+
+    return verified_stages

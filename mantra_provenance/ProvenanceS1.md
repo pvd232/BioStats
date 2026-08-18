@@ -630,13 +630,45 @@ source:
 stages:
   - stage_id: build
     spec: stages/build.spec.yaml
+    sha256: <build-spec-sha256>
+    bytes: <build-spec-byte-count>
 
   - stage_id: embed
     spec: stages/embed.spec.yaml
+    sha256: <embed-spec-sha256>
+    bytes: <embed-spec-byte-count>
 
   - stage_id: train
     spec: stages/train.spec.yaml
+    sha256: <train-spec-sha256>
+    bytes: <train-spec-byte-count>
 ```
+
+Each stage-plan entry uses this model:
+
+```python
+class RunStageRef(ProtocolModel):
+    stage_id: StageId
+    spec: RepoRelPath
+    sha256: SHA256
+    bytes: int = Field(ge=0)
+```
+
+Two immutable snapshots have separate roles:
+
+```text
+source snapshot
+└── source code, experiment, variants, lockfile, and input pointers
+
+run-plan snapshot
+└── run.yaml and the generated authored stage specs
+```
+
+`RunSpec.source` identifies the source snapshot. `ResolvedRun.run_file.stored_at`
+identifies the run-plan snapshot. Every `RunStageRef.spec` is resolved within
+the run-plan snapshot, while its `sha256` and `bytes` verify the exact stage
+file. The run plan does not contain its own run-plan commit because that commit
+depends on the bytes of the run plan itself.
 
 A new run is required if any planned scientific input changes:
 
@@ -717,7 +749,7 @@ class RunAttempt(ProtocolModel):
     started_at: AwareDatetime
     completed_at: AwareDatetime
 
-    completed_stages: tuple[ResolvedStageRef, ...]
+    resolved_stages: tuple[ResolvedStageRef, ...]
     artifact_manifests: tuple[ResolvedArtifactManifestRef, ...]
     measurement_files: tuple[ResolvedFileRef, ...]
     log_files: tuple[ResolvedFileRef, ...]
@@ -728,8 +760,10 @@ class RunAttempt(ProtocolModel):
 Attempt invariants:
 
 - Attempt IDs are unique within a run.
+- Attempts appear in execution order, and their IDs strictly increase.
+- An attempt cannot begin before the preceding attempt finishes.
 - Every attempt has a completion timestamp.
-- Completed-stage IDs are unique and preserve the run's declared stage order.
+- Resolved-stage IDs are unique and preserve the run's declared stage order.
 - Each `ResolvedStageRef` explicitly binds its stage ID to the resolved-spec
   file produced by that stage.
 - Retrying may not modify the frozen run plan.
@@ -925,6 +959,9 @@ class ResolvedRun(ProtocolModel):
 Resolved-run invariants:
 
 - Attempt IDs are unique.
+- Attempts appear in execution order, their IDs strictly increase, and their
+  time intervals do not overlap.
+- The resolved run cannot complete before any of its attempts completes.
 - A succeeded run has exactly one successful attempt.
 - A succeeded run requires `successful_attempt_id`, and that ID identifies the
   successful attempt.
@@ -941,7 +978,10 @@ and confirms that:
 
 - `run_file` parses as a `RunSpec` equal to the `RunSpec` embedded in
   `ResolvedRun`;
-- each resolved-stage file belongs to the expected run, attempt, and stage;
+- each `ResolvedStageRef` binds the declared stage ID to an exact resolved-spec
+  file whose embedded authored spec matches the corresponding run-plan stage;
+- each resolved stage uses the run's source snapshot and completed within the
+  successful attempt's time interval;
 - each artifact manifest identifies the corresponding resolved stage's recorded
   output; and
 - each measurement row identifies the expected run, attempt, stage, and metric.
@@ -966,7 +1006,9 @@ The verifier also recalculates every referenced file's SHA-256 and byte count.
 
 Publishing the plan and its stage specs in one commit guarantees that every
 stage-spec path in `<run_id>.run.yaml` resolves within the same fixed remote
-snapshot.
+snapshot. The resulting run-file location records the snapshot's repository
+and commit; each `RunStageRef` records its stage file's path, SHA-256, and byte
+count.
 
 ### After each successful stage
 
@@ -983,7 +1025,7 @@ snapshot.
 
 1. Close and publish its logs.
 2. Record its terminal status.
-3. Record completed stage IDs.
+3. Record `ResolvedStageRef` values for stages that completed successfully.
 4. Record exact stage, manifest, measurement, and log references.
 5. Record a failure reason when applicable.
 6. Retry under a new attempt ID only if the run plan remains unchanged.
@@ -1206,7 +1248,10 @@ Pydantic validates facts available inside loaded objects:
 - Valid experiment, variant, stage, and metric ID syntax.
 - Attempt terminal-status consistency.
 - Attempt completion timestamps.
-- Unique completed-stage IDs within each attempt.
+- Unique resolved-stage IDs within each attempt.
+- Strictly increasing attempt IDs in execution order.
+- Nonoverlapping attempt time intervals.
+- A resolved-run completion time no earlier than any attempt completion time.
 - Successful attempts have no failure reason.
 - Failed, preempted, and cancelled attempts have a nonempty failure reason.
 - No attempt occurs after a successful attempt.
@@ -1235,8 +1280,9 @@ The verifier performs filesystem, Git, and network operations:
   defined by the experiment.
 - Verify that the run's experiment and variant IDs match the loaded experiment
   and variant files.
-- Verify that every stage path in the run loads the expected authored stage
-  spec.
+- Resolve every stage path within the immutable snapshot identified by
+  `ResolvedRun.run_file.stored_at`, then verify the stage file against the
+  corresponding `RunStageRef.sha256` and `RunStageRef.bytes`.
 - Verify that every `FutureInputRef` names an earlier stage in the run.
 - Verify that stage output paths are unique within the run.
 - Verify that each future input's producer output path does not collide with
@@ -1318,6 +1364,8 @@ attempt handling, resolved-run construction, and cross-file verification.
     - Retrieve the file from the recorded repository, commit, and path.
     - Reject files whose byte count or SHA-256 differs from the corresponding
       `ResolvedFileRef`.
+    - Handle Git-only resolved references through the same
+      `stored_at`/SHA-256/byte-count interface.
 
   - [x] **15.2. Verify the resolved run's authored run file.**
     - Retrieve and verify `ResolvedRun.run_file`.
@@ -1334,25 +1382,32 @@ attempt handling, resolved-run construction, and cross-file verification.
       the experiment.
 
   - [x] **15.4. Verify the authored stage plan.**
-    - Retrieve and parse every authored stage spec referenced by `RunSpec`.
+    - Resolve every authored stage path in the immutable run-plan snapshot
+      identified by `ResolvedRun.run_file.stored_at`.
+    - Verify each stage file against the SHA-256 and byte count in its
+      `RunStageRef` before parsing it.
     - Bind each loaded authored spec to the `stage_id` carried by its enclosing
-      `StageSpec` and preserve the declared run order.
+      `RunStageRef` and preserve the declared run order.
     - Require every `FutureInputRef` to name an earlier stage in the run.
     - Require stage output paths to be unique within the run.
     - Reject future-output paths that collide with the consumer's stored-input
       paths, script, or output path.
 
-  - [ ] **15.5. Verify every resolved stage.**
+  - [x] **15.5. Verify every resolved stage.**
     - Retrieve and parse the resolved-stage spec in every `ResolvedStageRef`
       retained by the successful attempt.
-    - Require completed-stage IDs to equal the run's declared stage IDs in
+    - Require resolved-stage IDs to equal the run's declared stage IDs in
       order.
     - Require its embedded authored spec to equal the corresponding loaded
       authored stage spec.
     - Require its source, environment, inputs, script, and output to correspond
       to the authored request.
     - Require its output path to equal the authored output path.
-    - Require its output to be a verified `ResolvedFileRef`.
+    - Require its source repository and commit to equal the run's source
+      snapshot.
+    - Require its completion timestamp to fall inside the successful attempt.
+    - Retrieve and verify the source entry point, environment lockfile, and
+      output using their recorded SHA-256 values and byte counts.
 
   - [ ] **15.6. Verify stored inputs.**
     - Retrieve the `ArtifactPointer` selected by each stored input.

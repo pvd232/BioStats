@@ -139,15 +139,10 @@ class ResolvedFileRef(ProtocolModel):
     stored_at: StorageRef
 
 
-class ResolvedGitFileRef(GitFileRef):
-    """
-    sha256 identifies the file contents.
-    bytes records the file length.
+class ResolvedGitFileRef(ResolvedFileRef):
+    """An exact, verified file stored at an immutable Git revision."""
 
-    """
-
-    sha256: SHA256
-    bytes: int = Field(ge=0)
+    stored_at: GitFileRef
 
 
 class ResolvedArtifactManifestRef(ResolvedFileRef):
@@ -446,7 +441,7 @@ AttemptStatus = Literal[
 
 
 class ResolvedStageRef(ProtocolModel):
-    """Binds a completed run stage to its resolved execution record."""
+    """Binds a run stage to its resolved execution record."""
 
     stage_id: StageId
     resolved_spec: ResolvedFileRef
@@ -459,7 +454,7 @@ class RunAttempt(ProtocolModel):
     started_at: AwareDatetime
     completed_at: AwareDatetime
 
-    completed_stages: tuple[ResolvedStageRef, ...]
+    resolved_stages: tuple[ResolvedStageRef, ...]
     artifact_manifests: tuple[ResolvedArtifactManifestRef, ...]
     measurement_files: tuple[ResolvedFileRef, ...]
     log_files: tuple[ResolvedFileRef, ...]
@@ -469,29 +464,34 @@ class RunAttempt(ProtocolModel):
     @model_validator(mode="after")
     def validate_common_invariants(self) -> RunAttempt:
         if self.status == "succeeded" and self.failure_reason is not None:
-            raise ValueError("Successful runs should not have a failure reason")
+            raise ValueError("successful attempts must not have a failure reason")
 
-        if (
-            self.status != "succeeded"
-            and self.failure_reason is None
-            or self.failure_reason == ""
+        if self.status != "succeeded" and (
+            self.failure_reason is None or not self.failure_reason.strip()
         ):
-            raise ValueError("Must give a valid reason for legitimate failure")
+            raise ValueError(
+                "failed, preempted, and cancelled attempts require a nonempty "
+                "failure reason"
+            )
 
         if self.completed_at <= self.started_at:
-            raise ValueError("Invalid chronological order of timestamps")
+            raise ValueError("attempt completion must be after attempt start")
 
         unique = set()
-        for stage in self.completed_stages:
+        for stage in self.resolved_stages:
             if stage.stage_id in unique:
-                raise ValueError("No duplicate stages")
+                raise ValueError("resolved stage IDs must be unique")
             unique.add(stage.stage_id)
         return self
 
 
-class StageSpec(ProtocolModel):
+class RunStageRef(ProtocolModel):
+    """Identifies and verifies one authored stage spec in a run-plan snapshot."""
+
     stage_id: StageId
     spec: RepoRelPath
+    sha256: SHA256
+    bytes: int = Field(ge=0)
 
 
 class RunSpec(ProtocolModel):
@@ -504,7 +504,7 @@ class RunSpec(ProtocolModel):
     seed: int
     source: GitSource
 
-    stages: tuple[StageSpec, ...] = Field(min_length=1)
+    stages: tuple[RunStageRef, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_common_invariants(self) -> RunSpec:
@@ -537,24 +537,46 @@ class ResolvedRun(ProtocolModel):
         unique_attempt_ids = set()
         successful_attempts = []
         expected_stage_ids = tuple(stage.stage_id for stage in self.run.stages)
+        previous_attempt: RunAttempt | None = None
 
         for index, attempt in enumerate(self.attempts):
             if attempt.attempt_id in unique_attempt_ids:
-                raise ValueError("No duplicative attempts")
+                raise ValueError("attempt IDs must be unique")
             unique_attempt_ids.add(attempt.attempt_id)
 
-            completed_stage_ids = tuple(
-                stage.stage_id for stage in attempt.completed_stages
-            )
-            if completed_stage_ids != expected_stage_ids[: len(completed_stage_ids)]:
+            if (
+                previous_attempt is not None
+                and attempt.attempt_id <= previous_attempt.attempt_id
+            ):
+                raise ValueError("attempt IDs must increase in execution order")
+
+            if (
+                previous_attempt is not None
+                and attempt.started_at < previous_attempt.completed_at
+            ):
                 raise ValueError(
-                    "Completed stages must follow the run's declared stage order"
+                    "an attempt cannot begin before the previous attempt finishes"
+                )
+
+            resolved_stage_ids = tuple(
+                stage.stage_id for stage in attempt.resolved_stages
+            )
+            if resolved_stage_ids != expected_stage_ids[: len(resolved_stage_ids)]:
+                raise ValueError(
+                    "resolved stages must follow the run's declared stage order"
                 )
 
             if attempt.status == "succeeded":
                 successful_attempts.append(attempt)
                 if index != len(self.attempts) - 1:
-                    raise ValueError("No attempt may occur after a successful attempt")
+                    raise ValueError("no attempt may occur after a successful attempt")
+
+            previous_attempt = attempt
+
+        if any(self.completed_at < attempt.completed_at for attempt in self.attempts):
+            raise ValueError(
+                "resolved run cannot complete before one of its attempts completes"
+            )
 
         if self.status == "succeeded":
             if len(successful_attempts) != 1:
@@ -566,10 +588,10 @@ class ResolvedRun(ProtocolModel):
                     "successful_attempt_id must identify the successful attempt"
                 )
 
-            completed_stage_ids = tuple(
-                stage.stage_id for stage in successful_attempt.completed_stages
+            resolved_stage_ids = tuple(
+                stage.stage_id for stage in successful_attempt.resolved_stages
             )
-            if completed_stage_ids != expected_stage_ids:
+            if resolved_stage_ids != expected_stage_ids:
                 raise ValueError(
                     "The successful attempt must complete every run stage in order"
                 )
@@ -885,7 +907,7 @@ class ResolvedBaseSpec(ProtocolModel):
         if not self.command[0]:
             raise ValueError("command executable must be nonempty")
 
-        if self.source.path != self.spec.script:
+        if self.source.stored_at.path != self.spec.script:
             raise ValueError(
                 "resolved source entrypoint must match the authored script path"
             )
@@ -910,9 +932,9 @@ class ResolvedBaseSpec(ProtocolModel):
         requested_lockfile = self.spec.environment.lockfile
 
         if (
-            resolved_lockfile.repository != requested_lockfile.repository
-            or resolved_lockfile.commit != requested_lockfile.commit
-            or resolved_lockfile.path != requested_lockfile.path
+            resolved_lockfile.stored_at.repository != requested_lockfile.repository
+            or resolved_lockfile.stored_at.commit != requested_lockfile.commit
+            or resolved_lockfile.stored_at.path != requested_lockfile.path
         ):
             raise ValueError("resolved lockfile must match the requested Git file")
 

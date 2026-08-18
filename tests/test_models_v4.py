@@ -12,7 +12,6 @@ from mantra_provenance.models_v4 import (
     ArtifactPointer,
     ArtifactPointerRef,
     BuildSpec,
-    CompletedStageRef,
     ExperimentSpec,
     FactorSpec,
     FutureInputRef,
@@ -30,6 +29,7 @@ from mantra_provenance.models_v4 import (
     ResolvedFileRef,
     ResolvedGitFileRef,
     ResolvedRun,
+    ResolvedStageRef,
     RunAttempt,
     RunSpec,
     StorageRef,
@@ -287,9 +287,9 @@ class FileReferenceTests(unittest.TestCase):
                 stored_at=hf_location(),
             ),
             ResolvedGitFileRef(
-                **git_location("src/mantra/train.py"),
                 sha256=SHA_A,
                 bytes=4096,
+                stored_at=git_location("src/mantra/train.py"),
             ),
             manifest_reference(),
             ResolvedArtifactPointerRef(
@@ -469,19 +469,29 @@ class RunAndAttemptTests(unittest.TestCase):
                 commit=GIT_A,
             ),
             "stages": (
-                {"stage_id": "embed", "spec": "stages/embed.spec.yaml"},
-                {"stage_id": "train", "spec": "stages/train.spec.yaml"},
+                {
+                    "stage_id": "embed",
+                    "spec": "stages/embed.spec.yaml",
+                    "sha256": SHA_A,
+                    "bytes": 1024,
+                },
+                {
+                    "stage_id": "train",
+                    "spec": "stages/train.spec.yaml",
+                    "sha256": SHA_B,
+                    "bytes": 2048,
+                },
             ),
         }
         return RunSpec.model_validate(payload | updates)
 
     @staticmethod
-    def completed_stage(
+    def resolved_stage(
         stage_id: str,
         path: str | None = None,
-    ) -> CompletedStageRef:
+    ) -> ResolvedStageRef:
         resolved_path = path or f"stages/{stage_id}.spec.resolved.yaml"
-        return CompletedStageRef(
+        return ResolvedStageRef(
             stage_id=stage_id,
             resolved_spec=ResolvedFileRef(
                 sha256=SHA_A,
@@ -498,9 +508,9 @@ class RunAndAttemptTests(unittest.TestCase):
             "status": "succeeded",
             "started_at": started_at,
             "completed_at": started_at + timedelta(seconds=1),
-            "completed_stages": (
-                RunAndAttemptTests.completed_stage("embed"),
-                RunAndAttemptTests.completed_stage("train"),
+            "resolved_stages": (
+                RunAndAttemptTests.resolved_stage("embed"),
+                RunAndAttemptTests.resolved_stage("train"),
             ),
             "artifact_manifests": (),
             "measurement_files": (),
@@ -521,8 +531,18 @@ class RunAndAttemptTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.run_spec(
                 stages=(
-                    {"stage_id": "train", "spec": "stages/train_a.spec.yaml"},
-                    {"stage_id": "train", "spec": "stages/train_b.spec.yaml"},
+                    {
+                        "stage_id": "train",
+                        "spec": "stages/train_a.spec.yaml",
+                        "sha256": SHA_A,
+                        "bytes": 1024,
+                    },
+                    {
+                        "stage_id": "train",
+                        "spec": "stages/train_b.spec.yaml",
+                        "sha256": SHA_B,
+                        "bytes": 2048,
+                    },
                 )
             )
 
@@ -530,8 +550,18 @@ class RunAndAttemptTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.run_spec(
                 stages=(
-                    {"stage_id": "embed", "spec": "stages/shared.spec.yaml"},
-                    {"stage_id": "train", "spec": "stages/shared.spec.yaml"},
+                    {
+                        "stage_id": "embed",
+                        "spec": "stages/shared.spec.yaml",
+                        "sha256": SHA_A,
+                        "bytes": 1024,
+                    },
+                    {
+                        "stage_id": "train",
+                        "spec": "stages/shared.spec.yaml",
+                        "sha256": SHA_B,
+                        "bytes": 2048,
+                    },
                 )
             )
 
@@ -548,7 +578,7 @@ class RunAndAttemptTests(unittest.TestCase):
 
     def test_unsuccessful_attempt_requires_nonempty_failure_reason(self) -> None:
         for status in ("failed", "preempted", "cancelled"):
-            for reason in (None, ""):
+            for reason in (None, "", "   "):
                 with (
                     self.subTest(status=status, reason=reason),
                     self.assertRaises(ValidationError),
@@ -563,12 +593,12 @@ class RunAndAttemptTests(unittest.TestCase):
                 completed_at=started_at - timedelta(seconds=1),
             )
 
-    def test_attempt_rejects_duplicate_completed_stage_ids(self) -> None:
+    def test_attempt_rejects_duplicate_resolved_stage_ids(self) -> None:
         with self.assertRaises(ValidationError):
             self.attempt(
-                completed_stages=(
-                    self.completed_stage("train", "stages/train_a.resolved.yaml"),
-                    self.completed_stage("train", "stages/train_b.resolved.yaml"),
+                resolved_stages=(
+                    self.resolved_stage("train", "stages/train_a.resolved.yaml"),
+                    self.resolved_stage("train", "stages/train_b.resolved.yaml"),
                 )
             )
 
@@ -602,9 +632,9 @@ class RunAndAttemptTests(unittest.TestCase):
 
     def test_successful_attempt_must_complete_run_stages_in_order(self) -> None:
         attempt = self.attempt(
-            completed_stages=(
-                self.completed_stage("train"),
-                self.completed_stage("embed"),
+            resolved_stages=(
+                self.resolved_stage("train"),
+                self.resolved_stage("embed"),
             )
         )
 
@@ -622,10 +652,10 @@ class RunAndAttemptTests(unittest.TestCase):
                 completed_at=attempt.completed_at,
             )
 
-    def test_unsuccessful_attempt_may_retain_completed_stage_references(self) -> None:
+    def test_unsuccessful_attempt_may_retain_resolved_stage_references(self) -> None:
         attempt = self.attempt(
             status="failed",
-            completed_stages=(self.completed_stage("embed"),),
+            resolved_stages=(self.resolved_stage("embed"),),
             failure_reason="training failed",
         )
         resolved = ResolvedRun(
@@ -641,12 +671,12 @@ class RunAndAttemptTests(unittest.TestCase):
             completed_at=attempt.completed_at,
         )
 
-        self.assertEqual(resolved.attempts[0].completed_stages[0].stage_id, "embed")
+        self.assertEqual(resolved.attempts[0].resolved_stages[0].stage_id, "embed")
 
     def test_unsuccessful_attempt_stages_must_be_a_run_prefix(self) -> None:
         attempt = self.attempt(
             status="failed",
-            completed_stages=(self.completed_stage("train"),),
+            resolved_stages=(self.resolved_stage("train"),),
             failure_reason="embedding failed",
         )
 
@@ -669,6 +699,8 @@ class RunAndAttemptTests(unittest.TestCase):
         failed = self.attempt(
             attempt_id=2,
             status="failed",
+            started_at=succeeded.completed_at,
+            completed_at=succeeded.completed_at + timedelta(seconds=1),
             failure_reason="unexpected retry",
         )
 
@@ -684,6 +716,76 @@ class RunAndAttemptTests(unittest.TestCase):
                 attempts=(succeeded, failed),
                 successful_attempt_id=succeeded.attempt_id,
                 completed_at=failed.completed_at,
+            )
+
+    def test_attempt_ids_must_increase_in_execution_order(self) -> None:
+        first = self.attempt(
+            attempt_id=2,
+            status="failed",
+            resolved_stages=(),
+            failure_reason="preparation failed",
+        )
+        second = self.attempt(
+            attempt_id=1,
+            started_at=first.completed_at,
+            completed_at=first.completed_at + timedelta(seconds=1),
+        )
+
+        with self.assertRaisesRegex(ValidationError, "must increase"):
+            ResolvedRun(
+                run=self.run_spec(),
+                run_file=ResolvedFileRef(
+                    sha256=SHA_A,
+                    bytes=1024,
+                    stored_at=hf_location("runs/run.yaml"),
+                ),
+                status="succeeded",
+                attempts=(first, second),
+                successful_attempt_id=second.attempt_id,
+                completed_at=second.completed_at,
+            )
+
+    def test_attempts_must_not_overlap(self) -> None:
+        first = self.attempt(
+            status="failed",
+            resolved_stages=(),
+            failure_reason="preparation failed",
+        )
+        second = self.attempt(
+            attempt_id=2,
+            started_at=first.completed_at - timedelta(milliseconds=1),
+            completed_at=first.completed_at + timedelta(seconds=1),
+        )
+
+        with self.assertRaisesRegex(ValidationError, "previous attempt finishes"):
+            ResolvedRun(
+                run=self.run_spec(),
+                run_file=ResolvedFileRef(
+                    sha256=SHA_A,
+                    bytes=1024,
+                    stored_at=hf_location("runs/run.yaml"),
+                ),
+                status="succeeded",
+                attempts=(first, second),
+                successful_attempt_id=second.attempt_id,
+                completed_at=second.completed_at,
+            )
+
+    def test_resolved_run_cannot_complete_before_an_attempt(self) -> None:
+        attempt = self.attempt()
+
+        with self.assertRaisesRegex(ValidationError, "cannot complete before"):
+            ResolvedRun(
+                run=self.run_spec(),
+                run_file=ResolvedFileRef(
+                    sha256=SHA_A,
+                    bytes=1024,
+                    stored_at=hf_location("runs/run.yaml"),
+                ),
+                status="succeeded",
+                attempts=(attempt,),
+                successful_attempt_id=attempt.attempt_id,
+                completed_at=attempt.completed_at - timedelta(milliseconds=1),
             )
 
 
