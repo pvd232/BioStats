@@ -8,10 +8,16 @@ from unittest.mock import patch
 import yaml
 
 from mantra_provenance.models_v4 import (
+    ArtifactManifest,
+    ArtifactPointer,
+    ArtifactPointerRef,
     DownloadSpec,
     GitFileRef,
     GitSource,
     HuggingFaceFileRef,
+    ResolvedArtifactManifestRef,
+    ResolvedArtifactPointerRef,
+    ResolvedBuildSpec,
     ResolvedFileRef,
     ResolvedGitFileRef,
     ResolvedRun,
@@ -27,6 +33,7 @@ from mantra_provenance.verifier import (
     verify_experiment_and_variant,
     verify_resolved_run_file,
     verify_resolved_stages,
+    verify_stored_inputs,
 )
 
 GIT_COMMIT = "a" * 40
@@ -823,5 +830,358 @@ class ResolvedStageVerificationTests(unittest.TestCase):
             verify_resolved_stages(
                 record,
                 authored_stages,
+                fetcher=self.fetcher(documents),
+            )
+
+
+class StoredInputVerificationTests(unittest.TestCase):
+    @staticmethod
+    def fetcher(documents: dict[str, bytes]):
+        # Replace remote storage with an in-memory path-to-bytes mapping.
+        def retrieve(location):
+            return documents[location.path]
+
+        return retrieve
+
+    @staticmethod
+    def build_records(
+        *,
+        pointer_raw_override: bytes | None = None,
+        manifest_raw_override: bytes | None = None,
+    ) -> tuple[ResolvedBuildSpec, dict[str, bytes]]:
+        # Git location of the promotion pointer selected by the authored stage.
+        pointer_location = ArtifactPointerRef(
+            repository=REPOSITORY,
+            commit=GIT_COMMIT,
+            path="inputs/priors/current.pointer.yaml",
+        )
+
+        # Current build request: retrieve the promoted prior, then expose its
+        # verified bytes to build.py at the independent local input path.
+        authored = {
+            "schema_version": 1,
+            "kind": "build",
+            # InternalSpec.inputs -> dict[InputName, InternalInputRef]
+            "inputs": {
+                "prior": {
+                    "kind": "stored",
+                    "pointer": pointer_location.model_dump(mode="json"),
+                    "path": "workspace/priors/current.pt",
+                }
+            },
+            "script": "src/mantra/build.py",
+            "environment": AuthoredStagePlanVerificationTests.environment(),
+            "reproducibility": (
+                AuthoredStagePlanVerificationTests.reproducibility()
+            ),
+            "output": "artifacts/built.pt",
+            "params": {},
+        }
+        # Preexisting promoted artifact consumed by the current build stage.
+        artifact_raw = b"verified promoted prior"
+        artifact = ResolvedFileRef(
+            sha256=hashlib.sha256(artifact_raw).hexdigest(),
+            bytes=len(artifact_raw),
+            stored_at=HuggingFaceFileRef(
+                repository="machina/mantra-artifacts",
+                commit=PLAN_COMMIT,
+                path="artifacts/promoted-prior.pt",
+                repo_type="dataset",
+            ),
+        )
+        # Earlier source file that produced the prior—not the current build.py.
+        source_raw = b"print('producer')\n"
+        source = ResolvedGitFileRef(
+            sha256=hashlib.sha256(source_raw).hexdigest(),
+            bytes=len(source_raw),
+            stored_at=GitFileRef(
+                repository=REPOSITORY,
+                commit=GIT_COMMIT,
+                path="src/mantra/produce_prior.py",
+            ),
+        )
+
+        # Bind the prior to its producing plan, execution, and source.
+        producer_spec_raw = b"producer authored spec"
+        producer_resolved_raw = b"producer resolved spec"
+        manifest = ArtifactManifest(
+            artifact=artifact,
+            spec=ResolvedFileRef(
+                sha256=hashlib.sha256(producer_spec_raw).hexdigest(),
+                bytes=len(producer_spec_raw),
+                stored_at=HuggingFaceFileRef(
+                    repository="machina/mantra-artifacts",
+                    commit=PLAN_COMMIT,
+                    path="producer/produce.spec.yaml",
+                    repo_type="dataset",
+                ),
+            ),
+            resolved_spec=ResolvedFileRef(
+                sha256=hashlib.sha256(producer_resolved_raw).hexdigest(),
+                bytes=len(producer_resolved_raw),
+                stored_at=HuggingFaceFileRef(
+                    repository="machina/mantra-artifacts",
+                    commit=PLAN_COMMIT,
+                    path="producer/produce.spec.resolved.yaml",
+                    repo_type="dataset",
+                ),
+            ),
+            source=source,
+            created_at=datetime(2026, 8, 16, tzinfo=UTC),
+        )
+        manifest_raw = (
+            manifest_raw_override
+            if manifest_raw_override is not None
+            else yaml.safe_dump(
+                manifest.model_dump(mode="json"),
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+        # Exact identity and storage location of the serialized manifest file.
+        manifest_reference = ResolvedArtifactManifestRef(
+            sha256=hashlib.sha256(manifest_raw).hexdigest(),
+            bytes=len(manifest_raw),
+            stored_at=HuggingFaceFileRef(
+                repository="machina/mantra-artifacts",
+                commit=PLAN_COMMIT,
+                path="artifacts/promoted-prior.pt.manifest.yaml",
+                repo_type="dataset",
+            ),
+        )
+        # Contents of the Git-tracked promotion pointer: one exact manifest.
+        pointer = ArtifactPointer(manifest=manifest_reference)
+        pointer_raw = (
+            pointer_raw_override
+            if pointer_raw_override is not None
+            else yaml.safe_dump(
+                pointer.model_dump(mode="json"),
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+        resolved_pointer = ResolvedArtifactPointerRef(
+            sha256=hashlib.sha256(pointer_raw).hexdigest(),
+            bytes=len(pointer_raw),
+            stored_at=pointer_location,
+        )
+
+        lockfile_raw = b"version = 1\n"
+        output_raw = b"current stage output"
+        # Current-stage receipt recording the exact pointer that was resolved.
+        resolved = ResolvedBuildSpec.model_validate(
+            {
+                "schema_version": 1,
+                "kind": "build",
+                "spec": authored,
+                "source": {
+                    "sha256": hashlib.sha256(b"print('build')\n").hexdigest(),
+                    "bytes": len(b"print('build')\n"),
+                    "stored_at": {
+                        "kind": "git",
+                        "repository": REPOSITORY,
+                        "commit": GIT_COMMIT,
+                        "path": "src/mantra/build.py",
+                    },
+                },
+                "environment": {
+                    "kind": "gce",
+                    "machine_image": {
+                        "project": "example-project",
+                        "name": "mantra-image",
+                        "id": "123456789",
+                    },
+                    "lockfile": {
+                        "sha256": hashlib.sha256(lockfile_raw).hexdigest(),
+                        "bytes": len(lockfile_raw),
+                        "stored_at": {
+                            "kind": "git",
+                            "repository": REPOSITORY,
+                            "commit": GIT_COMMIT,
+                            "path": "uv.lock",
+                        },
+                    },
+                },
+                "execution_context": {
+                    "host": {
+                        "provider": "gce",
+                        "machine_type": "g2-standard-4",
+                        "zone": "us-central1-a",
+                        "guest_os_name": "Ubuntu",
+                        "guest_os_version": "24.04",
+                        "kernel_release": "6.8.0",
+                    },
+                    "cpu": {
+                        "architecture": "x86_64",
+                        "model": "Intel Xeon",
+                        "instruction_features": ["avx2"],
+                    },
+                    "backend": {"kind": "cpu", "device": "cpu"},
+                    "numerical_runtime": {
+                        "python_version": "3.12.4",
+                        "pytorch_version": "2.8.0",
+                        "numpy_version": "2.1.0",
+                        "blas": {
+                            "implementation": "OpenBLAS",
+                            "version": "0.3.27",
+                        },
+                        "lapack": {
+                            "implementation": "OpenBLAS",
+                            "version": "0.3.27",
+                        },
+                        "native_thread_pools": [],
+                    },
+                    "parallelism": {
+                        "process_count": 1,
+                        "torch_intraop_threads": 1,
+                        "torch_interop_threads": 1,
+                        "dataloader_workers": 0,
+                    },
+                },
+                "command": ["python", "src/mantra/build.py"],
+                "inputs": {
+                    "prior": {
+                        "kind": "stored",
+                        "pointer": resolved_pointer.model_dump(mode="json"),
+                    }
+                },
+                "output": {
+                    "sha256": hashlib.sha256(output_raw).hexdigest(),
+                    "bytes": len(output_raw),
+                    "stored_at": {
+                        "kind": "huggingface",
+                        "repository": "machina/mantra-artifacts",
+                        "commit": PLAN_COMMIT,
+                        "path": "artifacts/built.pt",
+                        "repo_type": "dataset",
+                    },
+                },
+                "completed_at": "2026-08-17T08:31:00Z",
+            }
+        )
+        # Fake remote files traversed as pointer -> manifest -> artifact.
+        documents = {
+            pointer_location.path: pointer_raw,
+            manifest_reference.stored_at.path: manifest_raw,
+            artifact.stored_at.path: artifact_raw,
+        }
+        return resolved, documents
+
+    def test_pointer_manifest_and_artifact_are_verified(self) -> None:
+        resolved, documents = self.build_records()
+
+        verified = verify_stored_inputs(
+            {"build": resolved},
+            fetcher=self.fetcher(documents),
+        )
+
+        # Verification results are indexed by stage ID, then input name.
+        stored = verified["build"]["prior"]
+        self.assertEqual(stored.path, "workspace/priors/current.pt")
+        self.assertEqual(stored.content, documents["artifacts/promoted-prior.pt"])
+        self.assertEqual(
+            stored.artifact.sha256,
+            hashlib.sha256(stored.content).hexdigest(),
+        )
+
+    def test_resolved_pointer_location_must_match_authored_pointer(self) -> None:
+        resolved, documents = self.build_records()
+        resolved_input = resolved.inputs["prior"]
+        # Bypass model validation to test the verifier against an inconsistent
+        # resolved pointer location.
+        different_pointer = resolved_input.pointer.model_copy(
+            update={
+                "stored_at": ArtifactPointerRef(
+                    repository=REPOSITORY,
+                    commit=GIT_COMMIT,
+                    path="inputs/priors/different.pointer.yaml",
+                )
+            }
+        )
+        inconsistent = resolved.model_copy(
+            update={
+                "inputs": {
+                    "prior": resolved_input.model_copy(
+                        update={"pointer": different_pointer}
+                    )
+                }
+            }
+        )
+
+        with self.assertRaisesRegex(VerificationError, "different pointer location"):
+            verify_stored_inputs(
+                {"build": inconsistent},
+                fetcher=self.fetcher(documents),
+            )
+
+    def test_missing_resolved_stored_input_is_rejected(self) -> None:
+        resolved, documents = self.build_records()
+        # Keep the authored input but remove its resolved counterpart.
+        inconsistent = resolved.model_copy(update={"inputs": {}})
+
+        with self.assertRaisesRegex(
+            VerificationError,
+            "has no resolved stored-input reference",
+        ):
+            verify_stored_inputs(
+                {"build": inconsistent},
+                fetcher=self.fetcher(documents),
+            )
+
+    def test_pointer_bytes_must_match_resolved_reference(self) -> None:
+        resolved, documents = self.build_records()
+        # Mutate retrieved bytes without updating the resolved pointer metadata.
+        documents["inputs/priors/current.pointer.yaml"] += b"\n"
+
+        with self.assertRaisesRegex(VerificationError, "byte-count mismatch"):
+            verify_stored_inputs(
+                {"build": resolved},
+                fetcher=self.fetcher(documents),
+            )
+
+    def test_pointer_document_must_validate_as_artifact_pointer(self) -> None:
+        # These invalid bytes are hashed correctly to isolate schema validation.
+        invalid_pointer = b"schema_version: 1\nunexpected: true\n"
+        resolved, documents = self.build_records(
+            pointer_raw_override=invalid_pointer
+        )
+
+        with self.assertRaisesRegex(VerificationError, "valid ArtifactPointer"):
+            verify_stored_inputs(
+                {"build": resolved},
+                fetcher=self.fetcher(documents),
+            )
+
+    def test_manifest_bytes_must_match_pointer_reference(self) -> None:
+        resolved, documents = self.build_records()
+        # Mutate retrieved bytes without changing the reference in the pointer.
+        documents["artifacts/promoted-prior.pt.manifest.yaml"] += b"\n"
+
+        with self.assertRaisesRegex(VerificationError, "byte-count mismatch"):
+            verify_stored_inputs(
+                {"build": resolved},
+                fetcher=self.fetcher(documents),
+            )
+
+    def test_manifest_document_must_validate_as_artifact_manifest(self) -> None:
+        # Correctly hash invalid bytes so failure occurs during model validation.
+        invalid_manifest = b"schema_version: 1\nunexpected: true\n"
+        resolved, documents = self.build_records(
+            manifest_raw_override=invalid_manifest
+        )
+
+        with self.assertRaisesRegex(VerificationError, "valid ArtifactManifest"):
+            verify_stored_inputs(
+                {"build": resolved},
+                fetcher=self.fetcher(documents),
+            )
+
+    def test_artifact_bytes_must_match_manifest_reference(self) -> None:
+        resolved, documents = self.build_records()
+        artifact = documents["artifacts/promoted-prior.pt"]
+        # Preserve byte count so the SHA-256 check must detect the mutation.
+        documents["artifacts/promoted-prior.pt"] = b"x" * len(artifact)
+
+        with self.assertRaisesRegex(VerificationError, "SHA-256 mismatch"):
+            verify_stored_inputs(
+                {"build": resolved},
                 fetcher=self.fetcher(documents),
             )

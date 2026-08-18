@@ -810,10 +810,10 @@ ResolvedSpec
 └── completion timestamp
 ```
 
-There is no `spec_id`. The resolved-spec file is identified by its
-`ResolvedFileRef`. The associated `stage_id` belongs to the `ResolvedStageRef`
-that binds the file into a `RunAttempt`; the containing `ResolvedRun` and
-`RunAttempt` supply the run and attempt identities.
+The resolved-spec file is identified by its `ResolvedFileRef`. The associated
+`stage_id` belongs to the `ResolvedStageRef` that binds the file into a
+`RunAttempt`; the containing `ResolvedRun` and `RunAttempt` supply the run and
+attempt identities.
 
 Current concrete stage types are:
 
@@ -1409,7 +1409,7 @@ attempt handling, resolved-run construction, and cross-file verification.
     - Retrieve and verify the source entry point, environment lockfile, and
       output using their recorded SHA-256 values and byte counts.
 
-  - [ ] **15.6. Verify stored inputs.**
+  - [x] **15.6. Verify stored inputs.**
     - Retrieve the `ArtifactPointer` selected by each stored input.
     - Require the resolved pointer location to equal the authored pointer
       location.
@@ -1417,8 +1417,10 @@ attempt handling, resolved-run construction, and cross-file verification.
       that manifest.
     - Retrieve the manifest's artifact and require its SHA-256 and byte count to
       match `manifest.artifact`.
-    - Require the verified artifact to be materialized at the stored input's
-      local `path` before execution.
+    - Return the verified artifact bytes, exact artifact reference, and authored
+      local `path` to the executor.
+    - Require the executor to materialize those verified bytes at that local
+      `path` before execution.
 
   - [ ] **15.7. Verify same-run future inputs.**
     - Locate the resolved spec and artifact manifest belonging to the referenced

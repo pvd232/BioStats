@@ -7,23 +7,29 @@ import os
 import subprocess
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 from huggingface_hub import hf_hub_download
 from pydantic import TypeAdapter, ValidationError
 
-from .ids import StageId
+from .ids import InputName, StageId
 from .models_v4 import (
+    ArtifactManifest,
+    ArtifactPointer,
     BaseSpec,
     ExperimentSpec,
     FutureInputRef,
     GitFileRef,
     HuggingFaceFileRef,
     InternalSpec,
+    RepoRelPath,
     ResolvedBaseSpec,
     ResolvedFileRef,
+    ResolvedInternalSpec,
     ResolvedRun,
+    ResolvedStoredInputRef,
     ResolvedSpec,
     RunSpec,
     Spec,
@@ -40,6 +46,15 @@ RESOLVED_SPEC_ADAPTER = TypeAdapter(ResolvedSpec)
 
 class VerificationError(ValueError):
     """A referenced file could not be retrieved or failed verification."""
+
+
+@dataclass(frozen=True)
+class VerifiedStoredInput:
+    """Verified artifact bytes and the local path where a stage consumes them."""
+
+    path: RepoRelPath
+    artifact: ResolvedFileRef
+    content: bytes
 
 
 def fetch_git_file_bytes(
@@ -433,3 +448,70 @@ def verify_resolved_stages(
         verified_stages[stage_reference.stage_id] = resolved_spec
 
     return verified_stages
+
+
+def verify_stored_inputs(
+    resolved_stages: dict[StageId, ResolvedBaseSpec],
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> dict[StageId, dict[InputName, VerifiedStoredInput]]:
+    """Verify every promoted artifact consumed by the resolved stages."""
+    verified_inputs: dict[StageId, dict[InputName, VerifiedStoredInput]] = {}
+
+    for stage_id, resolved_stage in resolved_stages.items():
+        if not isinstance(resolved_stage, ResolvedInternalSpec):
+            continue
+
+        stage_inputs: dict[InputName, VerifiedStoredInput] = {}
+
+        for input_name, authored_input in resolved_stage.spec.inputs.items():
+            if not isinstance(authored_input, StoredInputRef):
+                continue
+
+            resolved_input = resolved_stage.inputs.get(input_name)
+            if not isinstance(resolved_input, ResolvedStoredInputRef):
+                raise VerificationError(
+                    f"stored input {input_name!r} of stage {stage_id!r} has no "
+                    "resolved stored-input reference"
+                )
+
+            if resolved_input.pointer.stored_at != authored_input.pointer:
+                raise VerificationError(
+                    f"stored input {input_name!r} of stage {stage_id!r} resolved "
+                    "a different pointer location than the authored spec"
+                )
+
+            pointer_raw = read_resolved_file(
+                resolved_input.pointer,
+                fetcher=fetcher,
+            )
+            try:
+                pointer = ArtifactPointer.model_validate(yaml.safe_load(pointer_raw))
+            except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+                raise VerificationError(
+                    f"stored input {input_name!r} of stage {stage_id!r} pointer "
+                    "is not a valid ArtifactPointer document"
+                ) from exc
+
+            manifest_raw = read_resolved_file(pointer.manifest, fetcher=fetcher)
+            try:
+                manifest = ArtifactManifest.model_validate(
+                    yaml.safe_load(manifest_raw)
+                )
+            except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+                raise VerificationError(
+                    f"stored input {input_name!r} of stage {stage_id!r} manifest "
+                    "is not a valid ArtifactManifest document"
+                ) from exc
+
+            artifact_raw = read_resolved_file(manifest.artifact, fetcher=fetcher)
+            stage_inputs[input_name] = VerifiedStoredInput(
+                path=authored_input.path,
+                artifact=manifest.artifact,
+                content=artifact_raw,
+            )
+
+        if stage_inputs:
+            verified_inputs[stage_id] = stage_inputs
+
+    return verified_inputs

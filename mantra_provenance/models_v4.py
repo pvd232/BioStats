@@ -720,8 +720,24 @@ class ExecutionContext(ProtocolModel):
 # ---------------------------------------------------------------------------
 
 """
-
-Git pointer file
+BuildSpec
+{... 
+    inputs: {
+       # <InputName> : <StoredInputRef | FutureInputRef> 
+       "prior" : {
+            "kind" : "stored"
+            "pointer" : ...
+       }
+    }
+... 
+}
+StoredInputRef
+  { ... 
+    kind = "stored"
+    pointer: ArtifactPointerRef(...)
+    path: inputs/models/current_weights.pt ... }
+        ↓
+ArtifactPointerRef (Git pointer file to artifact manifest)
 inputs/models/current_weights.pt.pointer.yaml
         ↓
 remote artifact manifest
