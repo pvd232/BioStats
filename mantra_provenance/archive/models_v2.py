@@ -171,7 +171,7 @@ class ResolvedCodeRef(ProtocolModel):
 
 
 class ResolvedSpecSource(ProtocolModel):
-    """The exact human-authored spec source from which execution was resolved."""
+    """The exact stage spec source from which execution was resolved."""
 
     path: RepoRelPath
     sha256: SHA256
@@ -190,7 +190,7 @@ class ExecutionContext(ProtocolModel):
 
 
 class BaseSpec(ProtocolModel):
-    """Human-authored intent for one artifact-producing invocation."""
+    """Execution request for one artifact-producing invocation."""
 
     schema_version: Literal[2] = 2
     kind: str

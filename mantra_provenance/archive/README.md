@@ -148,7 +148,7 @@ immutable Git object ID; mutable names such as `main` are rejected.
 ### `FileRef` and `StorageRef`
 
 `FileRef` is the discriminated union of repository, remote and Hugging Face
-references. It is used in human-authored specs.
+references. It is used in stage specs.
 
 `StorageRef` is narrower: it permits repository and pinned Hugging Face
 references, but not arbitrary remote endpoints.
@@ -249,7 +249,7 @@ verifies the named script.
 
 ### `ResolvedSpecSource`
 
-Identifies the exact human-authored YAML spec by repository path, raw-byte
+Identifies the exact YAML stage spec by repository path, raw-byte
 SHA-256 and Git commit. This is distinct from the resolved record ID:
 
 - `raw_sha256` verifies the literal original YAML bytes.
@@ -261,7 +261,7 @@ Captures observed runtime facts such as operating system, architecture,
 accelerator, device and important runtime versions. These facts help diagnose
 replay differences but do not replace the environment definition.
 
-## Human-authored specs
+## Stage specs
 
 ### `BaseSpec`
 
@@ -302,7 +302,7 @@ The `Spec` alias is a discriminated union of these operation-specific models.
 
 ### Parameter resolution
 
-Authored parameters record the user's request. Resolved parameters are needed
+Requested parameters record the user's request. Resolved parameters are needed
 only when the executor turns that request into more specific values. Common
 causes of parameter resolution include:
 
@@ -313,7 +313,7 @@ causes of parameter resolution include:
 - hardware- or backend-dependent choices.
 
 A resolved parameter value must be concrete. In particular, `auto` and other
-deferred choices are not valid in resolved parameters. For example, an authored
+deferred choices are not valid in resolved parameters. For example, a requested
 PCA request may permit `solver: auto`, while its resolved form must name the
 solver actually executed, such as `full`, `covariance_eigh`, `arpack` or
 `randomized`. If the randomized solver ran, its resolved parameters must also
@@ -331,7 +331,7 @@ The governing rule is:
 > occurs.
 
 If an operation already requires every output-affecting parameter explicitly
-and executes those values unchanged, its authored parameter class is sufficient.
+and executes those values unchanged, its parameter class in the spec is sufficient.
 This keeps requested intent distinct from executed fact without creating
 duplicate classes that add no information.
 
@@ -358,11 +358,11 @@ class BaseResolvedSpec:
 Its validators enforce that:
 
 - The resolved operation kind matches the embedded spec.
-- Resolved input names exactly match authored input names.
-- The resolved entrypoint matches the authored script.
+- Resolved input names exactly match spec input names.
+- The resolved entrypoint matches the spec script.
 - Requested and resolved environment kinds match.
-- Repository input bindings match their authored paths.
-- The output binding matches the authored output path.
+- Repository input bindings match their spec paths.
+- The output binding matches the spec output path.
 - The output has been published to durable storage.
 - A resolved lockfile binding matches the requested lockfile path.
 
@@ -433,7 +433,7 @@ At execution time, the future resolver will:
 
 The intended runtime lifecycle is:
 
-1. Load and validate the human-authored spec.
+1. Load and validate the stage spec.
 2. Capture the clean Git code snapshot and original spec identity.
 3. Resolve and verify all input artifacts and producer records.
 4. Resolve the environment.

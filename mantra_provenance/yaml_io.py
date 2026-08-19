@@ -1,4 +1,4 @@
-"""YAML loading for human-authored specs and resolved-spec fixtures."""
+"""YAML loading for stage specs and resolved-spec fixtures."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def _load_yaml(path: Path) -> Any:
 
 
 def load_spec(path: str | Path):
-    """Load and validate a human-authored MANTRA spec."""
+    """Load and validate a MANTRA stage spec."""
     return _SPEC_ADAPTER.validate_python(_load_yaml(Path(path)))
 
 

@@ -1,7 +1,7 @@
 # MANTRA artifact provenance protocol
 
 This directory contains the first executable slice of the MANTRA provenance
-protocol. Human-authored `*spec.yaml` files declare an artifact-producing
+protocol. `*spec.yaml` files declare an artifact-producing
 operation. MANTRA writes a `*.resolved.spec.yaml` only after the operation has
 produced, hashed, and published its one output artifact.
 

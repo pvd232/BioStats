@@ -42,7 +42,7 @@ verifier Steps 15.1 through 15.5.
 - Replaced `CompletedStageRef` with `ResolvedStageRef` and renamed the attempt
   field from `completed_stages` to `resolved_stages`.
 - Replaced the misleading `StageSpec` run-plan entry with `RunStageRef`.
-  `RunStageRef` records the stage ID, authored-spec path, SHA-256, and byte
+  `RunStageRef` records the stage ID, stage-spec path, SHA-256, and byte
   count.
 - Added run-plan validators for nonempty stages, unique stage IDs, and unique
   stage-spec paths.
@@ -77,7 +77,7 @@ verifier Steps 15.1 through 15.5.
 - Added verification of the run's experiment, variant, factor-level
   assignment, replicate, and seed against the exact source snapshot.
 
-### Step 15.4 — authored stage plan
+### Step 15.4 — stage plan
 
 - Separated the two immutable snapshots used by a run:
 
@@ -86,10 +86,10 @@ verifier Steps 15.1 through 15.5.
   └── source code, experiment, variants, lockfile, and input pointers
 
   run-plan snapshot
-  └── run.yaml and generated authored stage specs
+  └── run.yaml and generated stage specs
   ```
 
-- Changed authored-stage verification to retrieve stage specs from the
+- Changed stage verification to retrieve stage specs from the
   snapshot identified by `ResolvedRun.run_file.stored_at`, rather than from the
   earlier source commit.
 - Added stage-file SHA-256 and byte-count verification before parsing.
@@ -102,7 +102,7 @@ verifier Steps 15.1 through 15.5.
   - identifies the successful attempt;
   - checks resolved-stage order against the run plan;
   - retrieves and validates each resolved-stage document;
-  - compares its embedded authored spec with the loaded run-plan spec;
+  - compares its embedded spec with the loaded run-plan spec;
   - checks its source repository and commit against `RunSpec.source`;
   - checks that stage completion occurred inside the successful attempt; and
   - retrieves and verifies the source entry point, lockfile, and output bytes.
@@ -120,7 +120,7 @@ verifier Steps 15.1 through 15.5.
   the containing `RunAttempt` and `ResolvedRun` supply attempt and run identity.
 - `RunSpec.source` identifies the source snapshot.
 - `ResolvedRun.run_file.stored_at` identifies the run-plan snapshot.
-- `RunStageRef` verifies each authored stage file without making `run.yaml`
+- `RunStageRef` verifies each stage-spec file without making `run.yaml`
   refer to the commit that contains itself.
 - Pydantic validators inspect facts present in one loaded object. Retrieval,
   hashing, parsing, and comparisons across files remain in the external
@@ -143,10 +143,10 @@ git diff --check: passed
 
 Implement stored-input traversal in the external verifier:
 
-1. For every authored `StoredInputRef`, retrieve its Git-tracked pointer file.
+1. For every `StoredInputRef`, retrieve its Git-tracked pointer file.
 2. Verify the resolved pointer file's SHA-256 and byte count.
 3. Parse the file as `ArtifactPointer`.
-4. Require the resolved pointer location to equal the authored
+4. Require the resolved pointer location to equal the spec
    `ArtifactPointerRef` location.
 5. Retrieve and verify the `ResolvedArtifactManifestRef` selected by the
    pointer.
@@ -154,17 +154,17 @@ Implement stored-input traversal in the external verifier:
 7. Retrieve the artifact selected by `manifest.artifact`.
 8. Verify the artifact's SHA-256 and byte count.
 9. Return the verified artifact reference and bytes needed to materialize the
-   input at the authored local `path`.
+   input at the specified local `path`.
 
 Add rejection tests for:
 
-- Pointer location differing from the authored pointer.
+- Pointer location differing from the spec pointer.
 - Pointer-file SHA-256 or byte-count mismatch.
 - Invalid pointer schema.
 - Manifest SHA-256 or byte-count mismatch.
 - Invalid manifest schema.
 - Artifact SHA-256 or byte-count mismatch.
-- Stored-input name or kind disagreement between authored and resolved specs.
+- Stored-input name or kind disagreement between specs and resolved specs.
 
 ### Then
 

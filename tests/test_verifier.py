@@ -599,7 +599,7 @@ class ResolvedStageVerificationTests(unittest.TestCase):
             "reproducibility": (StagePlanVerificationTests.reproducibility()),
             "output": "artifacts/raw.pt",
         }
-        authored = DownloadSpec.model_validate(spec_payload)
+        spec = DownloadSpec.model_validate(spec_payload)
         spec_raw = yaml_bytes(spec_payload)
 
         source_raw = b"print('download')\n"
@@ -757,7 +757,7 @@ class ResolvedStageVerificationTests(unittest.TestCase):
             "uv.lock": lockfile_raw,
             "artifacts/raw.pt": output_raw,
         }
-        return record, {"download": authored}, documents
+        return record, {"download": spec}, documents
 
     @staticmethod
     def fetcher(documents: dict[str, bytes]):
@@ -787,7 +787,7 @@ class ResolvedStageVerificationTests(unittest.TestCase):
             update={"output": "artifacts/other.pt"}
         )
 
-        with self.assertRaisesRegex(VerificationError, "embed its authored spec"):
+        with self.assertRaisesRegex(VerificationError, "embed its stage spec"):
             verify_resolved_stages(
                 record,
                 {"download": different},
@@ -841,8 +841,8 @@ def build_artifact_manifest_records(
 ]:
     record, stage_specs, documents = ResolvedStageVerificationTests.build_records()
 
-    authored = stage_specs["download"]
-    spec_raw = yaml_bytes(authored.model_dump(mode="json"))
+    spec = stage_specs["download"]
+    spec_raw = yaml_bytes(spec.model_dump(mode="json"))
 
     resolved_raw = documents["stages/download.spec.resolved.yaml"]
     resolved = ResolvedDownloadSpec.model_validate(yaml.safe_load(resolved_raw))
@@ -926,7 +926,7 @@ class StoredInputVerificationTests(unittest.TestCase):
         ArtifactManifest,
         dict[str, bytes],
     ]:
-        # Git location of the promotion pointer selected by the authored stage.
+        # Git location of the promotion pointer selected by the stage spec.
         pointer_location = ArtifactPointerRef(
             repository=REPOSITORY,
             commit=GIT_COMMIT,
@@ -934,7 +934,7 @@ class StoredInputVerificationTests(unittest.TestCase):
         )
 
         # Current build request: retrieve the promoted prior, then expose its verified bytes to build.py at the independent local input path.
-        authored = {
+        spec = {
             "schema_version": 1,
             "kind": "build",
             # InternalSpec.inputs -> dict[InputName, InternalInputRef]
@@ -977,7 +977,7 @@ class StoredInputVerificationTests(unittest.TestCase):
             {
                 "schema_version": 1,
                 "kind": "build",
-                "spec": authored,
+                "spec": spec,
                 "source": {
                     "sha256": hashlib.sha256(b"print('build')\n").hexdigest(),
                     "bytes": len(b"print('build')\n"),

@@ -9,7 +9,7 @@ Stage 1 implements:
 - Frozen run plans.
 - Operational retry attempts.
 - Ordered execution stages.
-- Authored and resolved stage specifications.
+- Stage specifications and resolved stage specifications.
 - Exact source, environment, and execution context.
 - Stored and same-run inputs.
 - One primary artifact per stage.
@@ -36,15 +36,15 @@ Until benchmark gating exists, promotion remains a manual decision.
 ## 2. Core invariants
 
 1. Every successfully completed stage produces exactly one primary artifact;
-   every authored stage declares exactly one intended output.
+   every stage spec declares exactly one intended output.
 2. Every completed artifact has a lowercase SHA-256, byte count, and immutable storage location.
 3. SHA-256 identifies exact file contents.
 4. Byte count is a secondary integrity check.
 5. Every SHA-256 is calculated from the exact published file bytes.
-6. Every artifact manifest binds the artifact to its authored spec, resolved spec, and source.
+6. Every artifact manifest binds the artifact to its stage spec, resolved spec, and source.
 7. Every artifact pointer selects exactly one artifact manifest.
 8. Every internal input is resolved to verified artifact bytes before execution.
-9. Every resolved stage record embeds the authored spec it resolves.
+9. Every resolved stage record embeds the stage spec it resolves.
 10. Every run binds one experiment variant and replicate seed to one source repository and Git commit.
 11. Every attempt executes the same frozen run plan.
 12. Retries are attempts, not experimental replicates.
@@ -79,13 +79,13 @@ Run
 ├── variant
 ├── replicate and seed
 ├── source repository and commit
-└── ordered authored stage specs
+└── ordered stage specs
 
 Attempt
 └── one effort to execute the frozen run plan
 
 Stage
-├── authored spec
+├── stage spec
 ├── exactly one intended primary output
 └── successful completion
     ├── resolved spec
@@ -166,7 +166,7 @@ sha256 = SHA-256 of the exact stored file bytes
 This applies to:
 
 - Artifacts.
-- Authored specs.
+- Stage specs.
 - Resolved specs.
 - Manifests.
 - Pointers.
@@ -235,7 +235,7 @@ The manifest answers:
 
 ```text
 What exact artifact was produced?
-What authored spec requested it?
+What stage spec requested it?
 What resolved spec records its execution?
 What exact source produced it?
 ```
@@ -267,7 +267,7 @@ manifest.
 pointer
 └── manifest
     ├── artifact
-    ├── authored spec
+    ├── stage spec
     ├── resolved spec
     └── source
 ```
@@ -355,11 +355,9 @@ inputs:
     producer_stage_id: embed
 ```
 
-The upstream artifact does not exist when the run plan is frozen, so the
-authored reference identifies the producer stage rather than a pointer file or
-a second local path. MANTRA resolves `producer_stage_id` through the run's
-stage list, loads that stage's authored spec, and uses its declared `output`
-path as the consumer's input path.
+The run plan represents the upstream artifact with `producer_stage_id`.
+MANTRA resolves that ID through the run's stage list, loads the producer stage
+spec, and uses its declared `output` path as the consumer's input path.
 
 Execution proceeds as follows:
 
@@ -371,7 +369,7 @@ Execution proceeds as follows:
    bytes, restoring those bytes there if necessary.
 6. Execute the consuming stage.
 
-### Authored input union
+### Stage input union
 
 ```python
 InternalInputRef = Annotated[
@@ -382,7 +380,7 @@ InternalInputRef = Annotated[
 
 ### Resolved internal input
 
-The two authored forms resolve to role-specific representations containing
+The two input forms resolve to role-specific representations containing
 only the exact file identity learned during resolution:
 
 ```python
@@ -402,14 +400,14 @@ ResolvedInternalInputRef = Annotated[
 ]
 ```
 
-The embedded authored spec remains authoritative for a stored input's local
+The embedded stage spec remains authoritative for a stored input's local
 materialization path and a future input's producer stage. A future input's
 local path is the producer spec's declared output path. The resolved input does
 not duplicate those fields.
 
 Input invariants:
 
-- Authored and resolved input names match.
+- Spec and resolved input names match.
 - Stored-input materialization paths are unique within a stage.
 - No stored-input path collides with the stage script or stage output path.
 - Because these names denote files, equality and ancestor-descendant overlap
@@ -659,7 +657,7 @@ source snapshot
 └── source code, experiment, variants, lockfile, and input pointers
 
 run-plan snapshot
-└── run.yaml and the generated authored stage specs
+└── run.yaml and the generated stage specs
 ```
 
 `RunSpec.source` identifies the source snapshot. `ResolvedRun.run_file.stored_at`
@@ -715,7 +713,7 @@ file-reference fields.
 
 ## 11. Attempts
 
-An attempt is one operational effort to execute an unchanged run plan.
+An attempt is a successful or unsuccesful execution of the run spec.
 
 Examples include retries after:
 
@@ -780,12 +778,12 @@ Different attempts may publish the same relative path at different immutable Hug
 
 ---
 
-## 12. Authored and resolved stage specifications
+## 12. Stage specifications and resolved stage specifications
 
-An authored stage spec records the requested execution:
+A stage spec records the requested execution:
 
 ```text
-AuthoredSpec
+Spec
 ├── inputs
 ├── script
 ├── requested environment
@@ -798,7 +796,7 @@ A resolved stage spec records the completed execution:
 
 ```text
 ResolvedSpec
-├── embedded AuthoredSpec
+├── embedded Spec
 ├── exact resolved inputs
 ├── exact source entry point
 ├── resolved environment
@@ -977,7 +975,7 @@ and confirms that:
 - `run_file` parses as a `RunSpec` equal to the `RunSpec` embedded in
   `ResolvedRun`;
 - each `ResolvedStageRef` binds the declared stage ID to an exact resolved-spec
-  file whose embedded authored spec matches the corresponding run-plan stage;
+  file whose embedded stage spec matches the corresponding run-plan stage;
 - each resolved stage uses the run's source snapshot and completed within the
   successful attempt's time interval;
 - each artifact manifest identifies the corresponding resolved stage's recorded
@@ -993,10 +991,10 @@ The verifier also recalculates every referenced file's SHA-256 and byte count.
 ### Before execution
 
 1. Freeze the run plan.
-2. Freeze all authored stage specs.
-3. Validate the run plan and all authored stage specs as one complete set.
+2. Freeze all stage specs.
+3. Validate the run plan and all stage specs as one complete set.
 4. Calculate each file's exact SHA-256 and byte count.
-5. Publish the run plan and all authored stage specs together in one immutable
+5. Publish the run plan and all stage specs together in one immutable
    remote commit.
 6. Verify that the published bytes match the calculated SHA-256 values and byte
    counts.
@@ -1045,7 +1043,7 @@ count.
 4. Commit the experiment, variants, source, metrics, lockfile, and canonical input pointers to Git.
 5. Use that source repository and commit for all comparable runs.
 6. Allocate one run ID for each variant and replicate seed.
-7. Generate the run’s authored stage specs.
+7. Generate the run’s stage specs.
 8. Write `<run_id>.run.yaml`.
 9. Validate, hash, publish, and verify the run plan and stage specs together in
    one immutable remote commit, following Section 16.
@@ -1248,9 +1246,9 @@ ResolvedRun
 │   ├── source: GitSource
 │   └── stages: RunStageRef[]
 │       ├── stage_id
-│       ├── authored spec path
-│       ├── authored spec SHA-256
-│       └── authored spec byte count
+│       ├── stage spec path
+│       ├── stage spec SHA-256
+│       └── stage spec byte count
 │
 ├── run_file: ResolvedFileRef
 │   └── exact serialized RunSpec
@@ -1272,7 +1270,7 @@ attempt.
 ```text
 RunStageRef
 ├── stage_id
-└── exact authored-spec identity
+└── exact stage-spec identity
     ├── path
     ├── SHA-256
     └── byte count
@@ -1296,7 +1294,7 @@ Every resolved stage contains:
 
 ```text
 resolved stage
-├── spec                 embedded authored stage spec
+├── spec                 embedded stage spec
 ├── inputs               exact inputs used
 ├── source               exact source entry point
 ├── environment          exact machine image and lockfile
@@ -1311,16 +1309,16 @@ resolved stage
 ```text
 ResolvedStageRef
 └── resolved_spec ───────────────────────────────┐
-                                                │ same ResolvedFileRef
-ArtifactManifest                                │
-├── resolved_spec ──────────────────────────────┘
-├── spec              exact authored-spec file
+                                                 │ same ResolvedFileRef
+ArtifactManifest                                 │
+├── resolved_spec ───────────────────────────────┘
+├── spec              exact stage-spec file
 ├── source            exact source entry point
 └── artifact          exact produced artifact
 ```
 
 The shared `resolved_spec` reference binds an artifact manifest to its producer
-stage. The manifest then identifies the exact artifact, authored spec, and
+stage. The manifest then identifies the exact artifact, stage spec, and
 source associated with that execution.
 
 `ResolvedArtifactManifestRef` identifies the manifest file itself:
@@ -1336,7 +1334,7 @@ manifest storage location
 A stored input selects an artifact that was promoted before the run began.
 
 ```text
-Authored StoredInputRef
+StoredInputRef
 ├── pointer: ArtifactPointerRef
 └── path: local execution path
           │
@@ -1356,10 +1354,10 @@ ResolvedStoredInputRef
                                    artifact bytes
                                       │
                                       ▼
-                            materialize at authored path
+                            materialize at specified path
 ```
 
-The authored reference selects the pointer location and local execution path.
+The spec reference selects the pointer location and local execution path.
 The resolved reference records the exact pointer-file bytes used. The pointer
 selects the manifest; the manifest identifies the artifact.
 
@@ -1368,18 +1366,18 @@ selects the manifest; the manifest identifies the artifact.
 A future input consumes the output of an earlier stage in the same run.
 
 ```text
-Authored FutureInputRef
+FutureInputRef
 └── producer_stage_id
           │
           ▼
 producer ResolvedStageRef
-└── resolved_spec ───────────────────────────────┐
-                                                │
-successful attempt                              │ match
-└── artifact_manifests: ResolvedArtifactManifestRef[]
-    └── selected manifest reference              │
-        ├── retrieve ArtifactManifest            │
-        │   └── resolved_spec ───────────────────┘
+└── resolved_spec ──────────────────────────────────┐
+                                                    │
+successful attempt                                  │ match
+└ artifact_manifests: ResolvedArtifactManifestRef[] │
+    └── selected manifest reference                 │
+        ├── retrieve ArtifactManifest               │
+        │   └── resolved_spec ──────────────────────┘
         │
         │ must equal
         ▼
@@ -1390,12 +1388,12 @@ ResolvedFutureInputRef
       verified artifact bytes
              │
              ▼
-producer authored spec.output path
+producer stage spec.output path
 ```
 
-The authored input names the producer stage. The resolved input records the
+The spec input names the producer stage. The resolved input records the
 exact manifest consumed from that stage. The consumer reads the verified
-artifact at the producer's authored output path.
+artifact at the producer's stage spec output path.
 
 #### Verifier-only return values
 
@@ -1404,7 +1402,7 @@ serialized provenance records.
 
 | Object | Contains | Consumer |
 |---|---|---|
-| `VerifiedArtifactManifest` | Parsed manifest, authored spec, resolved spec, exact artifact reference, and verified artifact bytes | Stored- and future-input verification |
+| `VerifiedArtifactManifest` | Parsed manifest, stage spec, resolved spec, exact artifact reference, and verified artifact bytes | Stored- and future-input verification |
 | `VerifiedInput` | Local input path, exact artifact reference, and verified bytes | Stage executor |
 
 #### Step-to-model contract
@@ -1414,7 +1412,7 @@ serialized provenance records.
 | 15.1 | `ResolvedFileRef` and retrieved bytes | Retrieved byte count and SHA-256 equal the recorded values |
 | 15.2 | `ResolvedRun.run_file` and `ResolvedRun.run` | The published run file equals the embedded run plan |
 | 15.3 | `RunSpec`, `ExperimentSpec`, and `VariantSpec` | The run selects a declared variant, factor assignment, and replicate |
-| 15.4 | `RunSpec.stages` and `RunStageRef` | Authored stages are exact, ordered, and path-compatible |
+| 15.4 | `RunSpec.stages` and `RunStageRef` | Stage specs are exact, ordered, and path-compatible |
 | 15.5 | Successful `RunAttempt.resolved_stages` | Every declared stage has the correct resolved execution record and exact files |
 | 15.6 | `ArtifactManifest` and its references | The manifest identifies one verified stage output and its producing records |
 | 15.7 | `StoredInputRef` and `ResolvedStoredInputRef` | A promoted input resolves through its pointer and manifest to verified bytes |
@@ -1425,61 +1423,167 @@ serialized provenance records.
 
 ### External verifier
 
-The verifier performs filesystem, Git, and network operations:
-
-- Retrieve referenced files.
-- Recalculate SHA-256 and byte count.
-- Load and verify artifact pointers used by stored inputs.
-- Load and verify artifact manifests.
-- Verify authored and resolved spec files.
-- Verify that `run_file` parses as a `RunSpec` equal to the `RunSpec` embedded
-  in `ResolvedRun`.
-- Resolve experiment and variant IDs at their deterministic paths in the
-  recorded source repository and commit.
-- Verify that the variant assigns exactly one permitted level to every factor
-  defined by the experiment.
-- Verify that the run's experiment and variant IDs match the loaded experiment
-  and variant files.
-- Resolve every stage path within the immutable snapshot identified by
-  `ResolvedRun.run_file.stored_at`, then verify the stage file against the
-  corresponding `RunStageRef.sha256` and `RunStageRef.bytes`.
-- Verify that every `FutureInputRef` names an earlier stage in the run.
-- Verify that stage output paths are unique within the run.
-- Verify that each future input's producer output path does not collide with
-  the consumer's stored-input paths, script, or output path.
-- Verify that each stored-input pointer selects a valid artifact manifest.
-- Verify same-run producer-output edges.
-- Verify that each future-input manifest was published by the referenced
-  producer stage.
-- Verify that every accepted artifact manifest corresponds to an output of a
-  referenced resolved stage.
-- Verify that measurement rows contain the expected run, attempt, stage, and
-  metric IDs.
-- Verify that every published file matches its recorded SHA-256 and byte count.
-- Verify exact clean source checkout.
-- Verify every stage, manifest, measurement, and log reference retained by the
-  successful attempt.
-
-The verifier proves:
+Every referenced file follows one verification rule:
 
 ```text
-pointer.manifest == retrieved manifest
-
-retrieved artifact == manifest.artifact
-manifest.artifact == producing resolved-spec output
-manifest.spec == producing authored-spec file
-manifest.resolved_spec == producing resolved-spec file
-manifest.source == producing resolved-spec source
-
-future-input manifest == producer manifest
-producer manifest.resolved_spec == producer resolved-stage reference
-
-resolved run.run_file == resolved run.run
-accepted artifact manifest.artifact == resolved-stage output
-measurement run, attempt, stage, and metric IDs == containing records
+recorded storage location
+        ↓ retrieve
+exact bytes
+        ↓ verify
+recorded byte count and SHA-256
+        ↓ parse
+typed provenance record
 ```
 
-Pydantic validators must not fetch remote files or inspect the filesystem.
+The verifier traverses the successful run in this order:
+
+1. **Run root**
+   - Retrieve `ResolvedRun.run_file`.
+   - Parse it as `RunSpec`.
+   - Require it to equal `ResolvedRun.run`.
+
+2. **Experiment and variant**
+   - Load the experiment and variant from their deterministic paths at the
+     `RunSpec.source` commit.
+   - Match `ExperimentSpec.experiment_id`, `VariantSpec.experiment_id`, and
+     `VariantSpec.variant_id` to the corresponding `RunSpec` fields.
+   - Match `RunSpec.replicate_id` and `RunSpec.seed` to one
+     `ExperimentSpec.replicates` entry.
+   - Validate every `VariantSpec.levels` assignment against the corresponding
+     `FactorSpec.levels`.
+
+3. **Stage plan**
+   - Load each stage spec from `ResolvedRun.run_file.stored_at` using
+     `RunStageRef.spec`.
+   - Verify it using `RunStageRef.bytes` and `RunStageRef.sha256`.
+   - Preserve the order of `RunSpec.stages` and require each
+     `FutureInputRef.producer_stage_id` to identify an earlier `RunStageRef`.
+   - Require unique `BaseSpec.output` paths across the run.
+   - Reject overlaps among `StoredInputRef.path`, the producer
+     `BaseSpec.output` used by each future input, `InternalSpec.script`, and
+     `InternalSpec.output`.
+
+4. **Resolved stages**
+   - Select the `RunAttempt` identified by
+     `ResolvedRun.successful_attempt_id`.
+   - Match `RunAttempt.resolved_stages` to `RunSpec.stages` by `stage_id` and
+     order.
+   - Retrieve each `ResolvedStageRef.resolved_spec`.
+   - Match `ResolvedBaseSpec.spec`, `ResolvedBaseSpec.source`,
+     `ResolvedBaseSpec.environment`, and `ResolvedBaseSpec.output` to the stage
+     plan.
+   - Require `ResolvedBaseSpec.completed_at` to fall between
+     `RunAttempt.started_at` and `RunAttempt.completed_at`.
+
+5. **Artifact manifests**
+   - Retrieve every `ResolvedArtifactManifestRef` in
+     `RunAttempt.artifact_manifests`.
+   - Verify `ArtifactManifest.artifact`, `ArtifactManifest.spec`,
+     `ArtifactManifest.resolved_spec`, and `ArtifactManifest.source`.
+   - Match `ArtifactManifest.resolved_spec` to the producing
+     `ResolvedStageRef.resolved_spec`.
+
+6. **Stored inputs**
+   - For each `StoredInputRef`, retrieve the corresponding
+     `ResolvedStoredInputRef.pointer`.
+   - Parse those bytes as `ArtifactPointer` and follow
+     `ArtifactPointer.manifest`.
+   - Return the verified artifact bytes with `StoredInputRef.path`.
+
+7. **Same-run future inputs**
+   - Resolve `FutureInputRef.producer_stage_id` to an earlier `RunStageRef`.
+   - Match `ResolvedFutureInputRef.manifest` to that producer's
+     `ResolvedArtifactManifestRef`.
+   - Return the verified `ResolvedBaseSpec.output` bytes at
+     `ResolvedBaseSpec.spec.output`.
+
+8. **Measurements and logs**
+   - Retrieve every file in `RunAttempt.measurement_files` and
+     `RunAttempt.log_files`.
+   - Match `Measurement.run_id`, `Measurement.attempt_id`,
+     `Measurement.stage_id`, and `Measurement.metric_id` to `RunSpec`,
+     `RunAttempt`, the referenced stage, and `ExperimentSpec.metric_ids`.
+
+9. **Source checkout**
+   - Check out `RunSpec.source.repository` at `RunSpec.source.commit`.
+   - Match every stage entry point to `ResolvedBaseSpec.source`.
+   - Reject modified tracked source and uncontrolled source files.
+
+The verified relationships are:
+
+**Run**
+
+- `RunSpec.model_validate(run_file_contents) == ResolvedRun.run`
+- Successful `RunAttempt.resolved_stages[*].stage_id == RunSpec.stages[*].stage_id`
+
+**Manifest**
+
+- Parsed `ArtifactManifest.spec` contents equal `ResolvedBaseSpec.spec`.
+- `ArtifactManifest.resolved_spec == ResolvedStageRef.resolved_spec`.
+- `ArtifactManifest.source == ResolvedBaseSpec.source`.
+- `ArtifactManifest.artifact == ResolvedBaseSpec.output`.
+
+**Stored input**
+
+- `ResolvedStoredInputRef.pointer.stored_at == StoredInputRef.pointer`.
+- Parsed `ArtifactPointer.manifest` supplies the
+  `ResolvedArtifactManifestRef` passed to artifact-manifest verification.
+
+**Future input**
+
+- Select the `ResolvedArtifactManifestRef` from
+  `RunAttempt.artifact_manifests` whose parsed
+  `ArtifactManifest.resolved_spec` equals the producer
+  `ResolvedStageRef.resolved_spec`.
+- `ResolvedFutureInputRef.manifest ==` that selected
+  `ResolvedArtifactManifestRef`.
+
+**Measurement**
+
+- `Measurement.run_id == RunSpec.run_id`.
+- `Measurement.attempt_id == RunAttempt.attempt_id`.
+- `Measurement.stage_id == ResolvedStageRef.stage_id`.
+- `Measurement.metric_id in ExperimentSpec.metric_ids`.
+
+#### How referenced files are verified
+
+The functions in `mantra_provenance/verifier.py` follow each
+`ResolvedFileRef.stored_at` reference:
+
+```text
+ResolvedFileRef
+├── stored_at: GitFileRef
+│   └── fetch_git_file_bytes()
+│
+└── stored_at: HuggingFaceFileRef
+    └── fetch_huggingface_file_bytes()
+                │
+                ▼
+       verify_resolved_file_bytes()
+       ├── len(bytes) == ResolvedFileRef.bytes
+       └── sha256(bytes) == ResolvedFileRef.sha256
+                │
+                ▼
+       parse the verified bytes
+                │
+                ▼
+       compare the resulting Pydantic records
+```
+
+`read_resolved_file()` performs the retrieval and byte verification for one
+reference. Higher-level functions such as `verify_resolved_run_file()`,
+`verify_stage_plan()`, `verify_artifact_manifest()`,
+`verify_stored_inputs()`, and `verify_future_inputs()` compose that operation
+into the provenance traversal described above.
+
+Production calls use the Git and Hugging Face retrieval functions. Tests pass a
+`StorageFetcher` that returns controlled bytes from an in-memory mapping; the
+same byte-count, SHA-256, parsing, and relationship checks then execute against
+those bytes.
+
+Source-checkout verification in Step 15.10 inspects the checked-out repository
+for the recorded commit, stage entry points, modified tracked files, and
+uncontrolled source files.
 
 ---
 
@@ -1497,10 +1601,10 @@ The checked items are implemented in [the authoritative models](models_v4.py),
 - [x] **4.** Add primitive and file-reference tests.
 - [x] **5.** Implement `StoredInputRef`.
 - [x] **6.** Implement `FutureInputRef`.
-- [x] **7.** Implement the discriminated authored input union.
+- [x] **7.** Implement the discriminated spec input union.
 - [x] **8.** Implement `ResolvedStoredInputRef`, `ResolvedFutureInputRef`, and
   their discriminated union.
-- [x] **9.** Add authored-to-resolved input correspondence validators.
+- [x] **9.** Add spec-to-resolved input correspondence validators.
 - [x] **10.** Add local input-path and collision validators.
 
 ### Deterministic dummy-data completion pass
@@ -1526,7 +1630,7 @@ attempt handling, resolved-run construction, and cross-file verification.
     - Handle Git-only resolved references through the same
       `stored_at`/SHA-256/byte-count interface.
 
-  - [x] **15.2. Verify the resolved run's authored run file.**
+  - [x] **15.2. Verify the resolved run's run file.**
     - Retrieve and verify `ResolvedRun.run_file`.
     - Parse it as `RunSpec`.
     - Require the parsed `RunSpec` to equal `ResolvedRun.run`.
@@ -1540,12 +1644,12 @@ attempt handling, resolved-run construction, and cross-file verification.
     - Require the run's replicate ID and seed to match one replicate declared by
       the experiment.
 
-  - [x] **15.4. Verify the authored stage plan.**
-    - Resolve every authored stage path in the immutable run-plan snapshot
+  - [x] **15.4. Verify the stage plan.**
+    - Resolve every stage spec path in the immutable run-plan snapshot
       identified by `ResolvedRun.run_file.stored_at`.
     - Verify each stage file against the SHA-256 and byte count in its
       `RunStageRef` before parsing it.
-    - Bind each loaded authored spec to the `stage_id` carried by its enclosing
+    - Bind each loaded stage spec to the `stage_id` carried by its enclosing
       `RunStageRef` and preserve the declared run order.
     - Require every `FutureInputRef` to name an earlier stage in the run.
     - Require stage output paths to be unique within the run.
@@ -1557,11 +1661,11 @@ attempt handling, resolved-run construction, and cross-file verification.
       retained by the successful attempt.
     - Require resolved-stage IDs to equal the run's declared stage IDs in
       order.
-    - Require its embedded authored spec to equal the corresponding loaded
-      authored stage spec.
+    - Require its embedded stage spec to equal the corresponding loaded
+      stage spec.
     - Require its source, environment, inputs, script, and output to correspond
-      to the authored request.
-    - Require its output path to equal the authored output path.
+      to the stage spec.
+    - Require its output path to equal the stage spec output path.
     - Require its source repository and commit to equal the run's source
       snapshot.
     - Require its completion timestamp to fall inside the successful attempt.
@@ -1573,10 +1677,9 @@ attempt handling, resolved-run construction, and cross-file verification.
       `ArtifactManifest`.
     - Retrieve and verify `manifest.artifact`, `manifest.spec`,
       `manifest.resolved_spec`, and `manifest.source`.
-    - Parse `manifest.spec` as an authored stage spec and
+    - Parse `manifest.spec` as a stage spec and
       `manifest.resolved_spec` as a resolved stage spec.
-    - Require the resolved stage spec to embed the retrieved authored stage
-      spec.
+    - Require the resolved stage spec to embed the retrieved stage spec.
     - Require `manifest.artifact` to equal the resolved stage's output.
     - Require `manifest.source` to equal the resolved stage's source.
     - Return the parsed records, exact artifact reference, and verified artifact
@@ -1586,7 +1689,7 @@ attempt handling, resolved-run construction, and cross-file verification.
     - Retrieve the `ArtifactPointer` selected by each stored input.
     - Require the pointer's manifest reference to pass artifact-manifest
       verification.
-    - Return the verified artifact bytes, exact artifact reference, and authored
+    - Return the verified artifact bytes, exact artifact reference, and specified
       local `path` to the executor.
     - Require the executor to materialize those verified bytes at that local
       `path` before execution.
@@ -1659,7 +1762,7 @@ attempt handling, resolved-run construction, and cross-file verification.
 The dummy end-to-end run must exercise this complete chain:
 
 ```text
-run plan and authored stage specs
+run plan and stage specs
 → stored input pointer
 → stored artifact manifest and bytes
 → successful stage output and manifest
@@ -1803,7 +1906,7 @@ experiments/<experiment_id>/runs/<variant_id>/<run_id>/
 
 A resolved benchmark will contain exact references to:
 
-- The authored benchmark definition.
+- The benchmark definition.
 - The candidate source commit and artifact manifests.
 - Both resolved confirmation runs.
 - The measurement files produced by each confirmation run.

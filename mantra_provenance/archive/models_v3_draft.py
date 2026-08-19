@@ -395,12 +395,12 @@ def _contains_auto(value: JsonValue) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Human-authored specs
+# Stage specs
 # ---------------------------------------------------------------------------
 
 
 class BaseSpec(ProtocolModel):
-    """Human-authored request for one artifact-producing invocation."""
+    """Execution request for one artifact-producing invocation."""
 
     schema_version: Literal[3] = 3
     kind: str

@@ -192,7 +192,7 @@ class ExecutionContext(ProtocolModel):
 
 
 class BaseSpec(ProtocolModel):
-    """Human-authored intent for one artifact-producing invocation."""
+    """Execution request for one artifact-producing invocation."""
 
     schema_version: Literal[2] = 2
     kind: str

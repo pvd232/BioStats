@@ -19,7 +19,6 @@ from .models_v4 import (
     ArtifactManifest,
     ArtifactPointer,
     BaseSpec,
-    EmbedSpec,
     ExperimentSpec,
     FutureInputRef,
     GitFileRef,
@@ -38,7 +37,6 @@ from .models_v4 import (
     Spec,
     StorageModel,
     StoredInputRef,
-    TrainSpec,
     VariantSpec,
     repo_file_paths_overlap,
 )
@@ -291,7 +289,7 @@ def verify_stage_plan(
     *,
     fetcher: StorageFetcher | None = None,
 ) -> dict[StageId, BaseSpec]:
-    """Load and verify authored stage specs from the run-plan snapshot."""
+    """Load and verify stage specs from the run-plan snapshot."""
     retrieve = fetch_storage_bytes if fetcher is None else fetcher
     loaded_stages: dict[StageId, BaseSpec] = {}
 
@@ -322,7 +320,7 @@ def verify_stage_plan(
             spec = SPEC_ADAPTER.validate_python(yaml.safe_load(raw))
         except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
             raise VerificationError(
-                f"stage {stage.stage_id!r} file is not a valid authored stage spec"
+                f"stage {stage.stage_id!r} file is not a valid stage spec"
             ) from exc
 
         for previous_stage_id, previous_spec in loaded_stages.items():
@@ -407,9 +405,7 @@ def verify_resolved_stages(
         )
 
     if set(stage_specs) != set(expected_stage_ids):
-        raise VerificationError(
-            "loaded authored stages do not match the run stage plan"
-        )
+        raise VerificationError("loaded stage specs do not match the run stage plan")
 
     verified_stages: dict[StageId, ResolvedBaseSpec] = {}
 
@@ -426,7 +422,7 @@ def verify_resolved_stages(
         stage_spec = stage_specs[stage_reference.stage_id]
         if resolved_spec.spec != stage_spec:
             raise VerificationError(
-                f"stage {stage_reference.stage_id!r} does not embed its authored spec"
+                f"stage {stage_reference.stage_id!r} does not embed its stage spec"
             )
 
         source_location = resolved_spec.source.stored_at
@@ -486,7 +482,7 @@ def verify_stored_inputs(
             if resolved_input.pointer.stored_at != spec_input.pointer:
                 raise VerificationError(
                     f"stored input {input_name!r} of stage {stage_id!r} resolved "
-                    "a different pointer location than the authored spec"
+                    "a different pointer location than the stage spec"
                 )
 
             pointer_raw = read_resolved_file(
@@ -698,9 +694,7 @@ def verify_artifact_manifest(
     try:
         spec = SPEC_ADAPTER.validate_python(yaml.safe_load(spec_raw))
     except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
-        raise VerificationError(
-            "manifest spec is not a valid authored stage spec"
-        ) from exc
+        raise VerificationError("manifest spec is not a valid stage spec") from exc
 
     try:
         resolved_spec = RESOLVED_SPEC_ADAPTER.validate_python(
@@ -713,13 +707,11 @@ def verify_artifact_manifest(
 
     if resolved_spec.spec != spec:
         raise VerificationError(
-            "resolved spec does not embed the manifest's authored spec"
+            "resolved spec does not embed the manifest's stage spec"
         )
 
     if resolved_spec.output != manifest.artifact:
-        raise VerificationError(
-            "resolved spec output does not match manifest's authored spec output"
-        )
+        raise VerificationError("resolved spec output does not match manifest artifact")
 
     if resolved_spec.source != manifest.source:
         raise VerificationError(

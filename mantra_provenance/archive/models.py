@@ -150,7 +150,7 @@ class ResolvedCodeRef(ProtocolModel):
 
 
 class ResolvedSpecSource(ProtocolModel):
-    """The repository source of the human-authored spec."""
+    """The repository source of the stage spec."""
 
     path: RepoRelPath
     raw_sha256: SHA256
@@ -169,7 +169,7 @@ class ExecutionContext(ProtocolModel):
 
 
 class BaseSpec(ProtocolModel):
-    """Human-authored intent for one artifact-producing invocation."""
+    """Execution request for one artifact-producing invocation."""
 
     schema_version: Literal[1] = 1
     kind: str

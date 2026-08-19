@@ -1,6 +1,6 @@
 """Fourth draft of the Pydantic models for the MANTRA provenance protocol.
 
-This version separates authored execution requests, verified data artifacts,
+This version separates execution requests, verified data artifacts,
 the exact Git source tree, the GCE machine-image environment, observed
 execution conditions, and the manifest connecting an artifact to its producer.
 """
@@ -190,7 +190,7 @@ class ArtifactPointer(ProtocolModel):
 
 
 # ---------------------------------------------------------------------------
-# Authored and resolved GCE environment
+# Requested and resolved GCE environment
 # ---------------------------------------------------------------------------
 
 
@@ -487,7 +487,7 @@ class RunAttempt(ProtocolModel):
 
 
 class RunStageRef(ProtocolModel):
-    """Identifies and verifies one authored stage spec in a run-plan snapshot."""
+    """Identifies and verifies one stage spec in a run-plan snapshot."""
 
     stage_id: StageId
     spec: RepoRelPath
@@ -717,7 +717,7 @@ class ExecutionContext(ProtocolModel):
 
 
 # ---------------------------------------------------------------------------
-# Authored input references
+# Stage input references
 # ---------------------------------------------------------------------------
 
 """
@@ -773,13 +773,13 @@ InternalInputRef = Annotated[
 
 
 # ---------------------------------------------------------------------------
-# Authored specifications
+# Stage specifications
 # ---------------------------------------------------------------------------
 
 
 class BaseSpec(ProtocolModel):
     """
-    Human-authored execution request.
+    Execution request recorded before a stage runs.
 
     Inputs describe where required files should come from. The output is the
     repository-relative path where the command must write its one artifact.
@@ -920,7 +920,7 @@ class ResolvedBaseSpec(ProtocolModel):
 
         if self.source.stored_at.path != self.spec.script:
             raise ValueError(
-                "resolved source entrypoint must match the authored script path"
+                "resolved source entrypoint must match the stage spec script path"
             )
 
         if self.output.stored_at.path != self.spec.output:
@@ -979,7 +979,7 @@ class ResolvedDownloadSpec(ResolvedBaseSpec):
     def validate_download_inputs(self) -> ResolvedDownloadSpec:
         if self.inputs != self.spec.inputs:
             raise ValueError(
-                "resolved download inputs must match the authored remote inputs"
+                "resolved download inputs must match the stage spec remote inputs"
             )
 
         return self
@@ -997,7 +997,7 @@ class ResolvedInternalSpec(ResolvedBaseSpec):
     def validate_internal_inputs(self) -> ResolvedInternalSpec:
         if set(self.inputs) != set(self.spec.inputs):
             raise ValueError(
-                "resolved input names must match the authored input names"
+                "resolved input names must match the stage spec input names"
             )
 
         for name, resolved_input in self.inputs.items():
@@ -1005,7 +1005,7 @@ class ResolvedInternalSpec(ResolvedBaseSpec):
 
             if resolved_input.kind != spec_input.kind:
                 raise ValueError(
-                    f"resolved input {name!r} kind must match the authored input"
+                    f"resolved input {name!r} kind must match the stage spec input"
                 )
 
             if (
@@ -1015,7 +1015,7 @@ class ResolvedInternalSpec(ResolvedBaseSpec):
             ):
                 raise ValueError(
                     f"resolved input {name!r} pointer location must match "
-                    "the authored pointer location"
+                    "the stage spec pointer location"
                 )
 
         return self
