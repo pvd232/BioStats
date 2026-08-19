@@ -2,87 +2,167 @@
 
 ## 1. Scope
 
-Stage 1 implements:
+Stage 1 implements one complete provenance path:
 
-- Experiment definitions.
-- Variant definitions.
-- Frozen run plans.
-- Operational retry attempts.
-- Ordered execution stages.
-- Stage specifications and resolved stage specifications.
-- Exact source, environment, and execution context.
-- Stored and same-run inputs.
-- One primary artifact per stage.
-- Metric declarations and measurements.
-- Artifact manifests and promoted-input pointers.
-- Terminal resolved-run records.
-- Local Pydantic validation.
-- External provenance verification.
+```text
+ExperimentSpec + VariantSpec
+            ↓
+     frozen RunSpec
+            ↓
+        RunAttempt
+            ↓
+ordered stage specs and resolved stage specs
+            ↓
+artifacts + manifests + measurements
+            ↓
+       ResolvedRun
+            ↓
+    provenance verifier
+```
 
-Stage 1 defers:
+1. **Define the experiment**
+   - `ExperimentSpec` records factors, permitted levels, variants, replicates,
+     seeds, and metric IDs.
+   - `VariantSpec` assigns one permitted level to every experiment factor.
 
-- Final held-out evaluation.
-- Diagnostics.
-- Benchmark definitions.
-- Two-run benchmark confirmation.
-- Benchmark result records.
-- Automatic promotion gates.
-- Complete MANTRA model parameter classes.
+2. **Freeze the run**
+   - `RunSpec` binds one experiment, variant, replicate, source commit, and
+     ordered stage plan.
+   - Each `RunStageRef` identifies one exact stage-spec file.
 
-Until benchmark gating exists, promotion remains a manual decision.
+3. **Execute the run**
+   - `StoredInputRef` selects a promoted input.
+   - `FutureInputRef` selects an earlier stage's output.
+   - `RunAttempt` records each execution attempt against the frozen `RunSpec`.
+
+4. **Record the result**
+   - Each successful stage writes one resolved stage spec and one primary
+     artifact.
+   - The resolved stage spec records the exact inputs, source, environment,
+     execution context, command, output, and completion time.
+   - `ResolvedFileRef` records each file's SHA-256, byte count, and immutable
+     storage location.
+   - `ArtifactManifest` connects each artifact to its stage spec, resolved
+     stage spec, and source.
+   - `Measurement` records metric values produced during execution.
+   - `ResolvedRun` records the attempts and identifies the successful attempt.
+   - `ArtifactPointer` selects an artifact manifest when an artifact is promoted
+     for reuse.
+
+5. **Verify the provenance chain**
+   - Pydantic models enforce each document's field and relationship rules.
+   - The provenance verifier retrieves every referenced file, verifies its
+     bytes, and checks the relationships among the run, stages, inputs,
+     artifacts, manifests, measurements, source, and environment.
+
+Future stages add:
+
+1. **Evaluation and diagnostics**
+   - Final held-out evaluation.
+   - Diagnostic records.
+
+2. **Benchmarking and promotion**
+   - Benchmark definitions and result records.
+   - Two-run confirmation and artifact parity.
+   - Automatic promotion gates.
+
+3. **Complete model integration**
+   - Concrete parameter classes for the MANTRA model stages.
+
+Promotion is manual during Stage 1.
 
 ---
 
 ## 2. Core invariants
 
-1. Every successfully completed stage produces exactly one primary artifact;
-   every stage spec declares exactly one intended output.
-2. Every completed artifact has a lowercase SHA-256, byte count, and immutable storage location.
-3. SHA-256 identifies exact file contents.
-4. Byte count is a secondary integrity check.
-5. Every SHA-256 is calculated from the exact published file bytes.
-6. Every artifact manifest binds the artifact to its stage spec, resolved spec, and source.
-7. Every artifact pointer selects exactly one artifact manifest.
-8. Every internal input is resolved to verified artifact bytes before execution.
-9. Every resolved stage record embeds the stage spec it resolves.
-10. Every run binds one experiment variant and replicate seed to one source repository and Git commit.
-11. Every attempt executes the same frozen run plan.
-12. Retries are attempts, not experimental replicates.
-13. Only a successful attempt contributes the run’s accepted stage records, artifact manifests, and measurements.
-14. Pydantic validates local structure.
-15. A separate verifier retrieves referenced files and proves cross-file relationships.
-16. Strict mode expects replay under the recorded conditions to reproduce artifact bytes.
-17. Relaxed mode records what happened without promising byte-identical replay.
+1. Every stage spec declares exactly one output path. Successful stage
+   completion produces exactly one primary artifact at that path.
+
+2. Every completed artifact is represented by a `ResolvedFileRef` containing
+   its lowercase SHA-256, byte count, and immutable `stored_at` location.
+
+3. Retrieving `ResolvedFileRef.stored_at` yields bytes whose SHA-256 equals
+   `ResolvedFileRef.sha256` and whose length equals `ResolvedFileRef.bytes`.
+   SHA-256 identifies the contents; byte count provides a secondary integrity
+   check.
+
+4. `ResolvedBaseSpec.output.stored_at.path` equals
+   `ResolvedBaseSpec.spec.output`.
+
+5. Every completed stage artifact has exactly one `ArtifactManifest`. The
+   manifest identifies the artifact, stage-spec file, resolved-spec file, and
+   source entry point.
+
+6. `ArtifactPointer` is created when an artifact is selected for promotion or
+   reuse. Each pointer selects exactly one `ResolvedArtifactManifestRef`.
+
+7. Every stage input resolves to verified artifact bytes before execution:
+
+   - `StoredInputRef` resolves through `ResolvedStoredInputRef.pointer` →
+     `ArtifactPointer.manifest` → `ArtifactManifest.artifact`.
+   - `FutureInputRef` resolves through `ResolvedFutureInputRef.manifest` → the
+     referenced producer stage's `ArtifactManifest.artifact`.
+
+8. Every resolved stage spec embeds its stage spec and records the exact inputs,
+   source, environment, execution context, command, output, and completion time.
+
+9. Every `RunSpec` binds:
+
+   - One experiment.
+   - One variant declared by that experiment.
+   - One replicate and seed declared by that experiment.
+   - One source repository and Git commit.
+   - One ordered sequence of `RunStageRef` records.
+
+10. Every `RunAttempt` executes the same frozen `RunSpec`. A retry creates a new
+    attempt ID. An experimental replicate creates a separate run.
+
+11. A succeeded `ResolvedRun` identifies exactly one successful attempt through
+    `successful_attempt_id`. That attempt contains every declared stage in
+    order. Failed and cancelled runs identify no successful attempt. Partial
+    records remain attached to the attempt that produced them.
+
+12. Every `Measurement` identifies its `RunSpec.run_id`,
+    `RunAttempt.attempt_id`, stage ID, and a metric ID declared by
+    `ExperimentSpec.metric_ids`.
+
+13. A strict replay succeeds when every reproduced stage artifact matches the
+    recorded SHA-256 and byte count under the recorded execution conditions.
+
+14. A relaxed execution records the same provenance chain while permitting
+    replayed artifact bytes to differ.
 
 ---
 
 ## 3. Protocol hierarchy
 
-```text
-Git revision
-└── exact experiment definitions, variants, source code,
-    metric implementations, lockfile, and input pointers
+### Protocol records
 
-Experiment
-├── constants
+```text
+ExperimentSpec
 ├── factors
 │   └── levels
-├── metric declarations
-├── variants
-└── replicate seeds
+├── variant IDs
+├── replicates
+│   └── seeds
+└── metric IDs
 
-Variant
+VariantSpec
 └── one valid assignment of levels to factors
 
-Run
-├── experiment
-├── variant
-├── replicate and seed
-├── source repository and commit
-└── ordered stage specs
+RunSpec
+├── experiment ID
+├── variant ID
+├── replicate ID and seed
+├── source repository and commit: RunSpec.source
+└── ordered stages: RunStageRef[]
 
-Attempt
-└── one effort to execute the frozen run plan
+RunAttempt
+└── one effort to execute the frozen RunSpec
+    ├── resolved stage-spec files
+    ├── artifact-manifest files
+    ├── measurement files
+    └── log files
 
 Stage
 ├── stage spec
@@ -96,28 +176,84 @@ Artifact
 ├── SHA-256
 ├── byte count
 ├── immutable storage location
-└── manifest
+└── ArtifactManifest
+    ├── artifact
+    ├── stage spec
+    ├── resolved spec
+    └── source entry point
 
 Promoted input
-└── pointer
+└── ArtifactPointer
     └── selected artifact manifest
 
 Measurement
 ├── metric ID
 ├── observed value
-├── producing stage
-├── run and attempt identity
+├── stage ID
+├── run ID
+├── attempt ID
 └── optional epoch or step
 
 ResolvedRun
+├── run: embedded RunSpec
+├── run_file: verified file containing the same RunSpec
 ├── terminal status
-├── attempts
-├── successful attempt, if any
-├── resolved stage-spec files
-├── artifact-manifest files
-├── measurement files
+├── successful_attempt_id
+├── attempts: RunAttempt[]
 └── completion timestamp
 ```
+
+### Files frozen together
+
+A file group is frozen by publishing every file in the group at one repository
+commit. Changing any file creates a new commit.
+
+```text
+Source files
+└── one Git commit identified by RunSpec.source
+    ├── experiment file
+    ├── variant files
+    ├── source code
+    ├── metric implementations
+    ├── lockfile
+    └── promoted-input pointers
+
+Run-plan files
+└── one commit identified by ResolvedRun.run_file.stored_at
+    ├── <run_id>.run.yaml
+    └── every stage spec referenced by RunSpec.stages
+```
+
+The two commits are created in this order:
+
+```text
+Source commit A
+└── source code, experiment, variants, metrics, lockfile,
+    and promoted-input pointers
+        │
+        ▼
+select the experiment, variant, and replicate
+        │
+        ▼
+create the concrete stage specs and RunSpec
+        │
+        ▼
+Run-plan commit B
+└── <run_id>.run.yaml and its stage specs
+        │
+        ▼
+execute commit B's plan using commit A's source
+```
+
+`RunSpec.source.commit` records source commit A. The stage specs are created
+after A has been selected. The stage specs and `RunSpec` are then validated,
+serialized, hashed, and published together as run-plan commit B.
+
+`ResolvedRun.run` embeds the parsed `RunSpec`. `ResolvedRun.run_file` records
+the exact published file containing that `RunSpec`, including its storage
+location, SHA-256, and byte count. The external verifier retrieves `run_file`,
+verifies its bytes, parses it as a `RunSpec`, and requires it to equal
+`ResolvedRun.run`.
 
 ---
 
@@ -155,6 +291,24 @@ class ResolvedFileRef(ProtocolModel):
     stored_at: StorageRef
 ```
 
+Example artifact reference:
+
+```yaml
+sha256: <weights-sha256>
+bytes: 123456
+
+stored_at:
+  kind: huggingface
+  repository: machina/mantra-artifacts
+  commit: <stage-output-commit>
+  path: experiments/e001_low_rank/runs/low_rank_32/01JABC/artifacts/weights.pt
+  repo_type: dataset
+```
+
+`stored_at.path` identifies the file inside the remote repository.
+`stored_at.commit` selects the exact repository revision containing those
+bytes.
+
 ### SHA-256 rule
 
 For every resolved file:
@@ -173,7 +327,6 @@ This applies to:
 - Measurement files.
 - Published logs.
 - Run plans.
-- Resolved-run records.
 
 The protocol does not substitute a separately normalized model representation for the actual stored file bytes.
 
@@ -189,9 +342,23 @@ Remote:
 experiments/e001_low_rank/runs/low_rank_32/01JABC/artifacts/weights.pt
 ```
 
-The remote reference additionally contains the immutable storage commit.
+The remote reference records the repository and exact commit in addition to
+the mirrored path.
 
 Local bytes may be removed after publication. MANTRA can restore them from remote storage and verify their SHA-256 and byte count.
+
+Stored inputs use two independent paths:
+
+```text
+StoredInputRef.pointer.path
+└── remote Git path of the ArtifactPointer file
+
+StoredInputRef.path
+└── local path where MANTRA places the selected artifact bytes
+```
+
+The pointer file and the artifact received by the stage are different files,
+so these paths may have different repository-relative values.
 
 ---
 
@@ -657,7 +824,7 @@ source snapshot
 └── source code, experiment, variants, lockfile, and input pointers
 
 run-plan snapshot
-└── run.yaml and the generated stage specs
+└── run.yaml and the stage specs
 ```
 
 `RunSpec.source` identifies the source snapshot. `ResolvedRun.run_file.stored_at`
@@ -1037,13 +1204,13 @@ count.
 
 ## 17. Execution sequence
 
-1. Define the experiment’s constants, factors, levels, metric IDs, variants, and replicate seeds.
+1. Define the experiment’s factors, levels, metric IDs, variants, and replicate seeds.
 2. Implement every source path required by every variant.
 3. Implement every declared metric under `src/mantra/metrics/`.
 4. Commit the experiment, variants, source, metrics, lockfile, and canonical input pointers to Git.
 5. Use that source repository and commit for all comparable runs.
 6. Allocate one run ID for each variant and replicate seed.
-7. Generate the run’s stage specs.
+7. Create the run’s concrete stage specs.
 8. Write `<run_id>.run.yaml`.
 9. Validate, hash, publish, and verify the run plan and stage specs together in
    one immutable remote commit, following Section 16.
@@ -1758,6 +1925,22 @@ attempt handling, resolved-run construction, and cross-file verification.
   - Verify that one deliberately tampered referenced file causes
     `verify_resolved_run()` to fail.
   - Run the complete test suite in the `mantra` Conda environment.
+
+### MANTRA model integration
+
+- [ ] **23. Bind experiment variants to the concrete MANTRA stage parameters.**
+  - Define the complete typed parameter classes for the MANTRA build, embed,
+    and train stages.
+  - Define the exact stage parameter field and value represented by every
+    `(factor_id, level_id)` pair used by a MANTRA experiment.
+  - Implement a model-specific validation function that compares the selected
+    `VariantSpec.levels` with the corresponding fields in the run's stage
+    specs.
+  - Run that validation before publishing the run plan.
+  - Reject a run plan when its stage parameters do not implement the selected
+    variant.
+  - Test one matching variant and run plan and one deliberate
+    variant-to-stage-parameter mismatch.
 
 The dummy end-to-end run must exercise this complete chain:
 
