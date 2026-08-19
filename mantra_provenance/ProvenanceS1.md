@@ -257,9 +257,18 @@ Commit E: artifact manifest
 └── the manifest linking the artifact, stage spec, resolved spec,
     and source from C, B, D, and A
         │
-        ▼ optional promotion for later reuse
+        └── optional promotion for later reuse
+                │
+                ▼
 Commit F: consumer source
 └── a Git-tracked ArtifactPointer selecting the manifest from E
+        │
+        └── serves as commit A for the consuming run
+                │
+                ▼
+          create the consuming run's commit B
+                │
+                └── continue the same A → B → C → D → E cycle
 ```
 
 Measurement and log files are published separately and recorded by
@@ -268,6 +277,20 @@ Measurement and log files are published separately and recorded by
 `RunSpec.source.commit` records source commit A. The stage specs are created
 after A has been selected. The stage specs and `RunSpec` are then validated,
 serialized, hashed, and published together as run-plan commit B.
+
+Stage 1 uses this storage policy:
+
+| Commit | Repository | When it is created |
+|---|---|---|
+| A | Git source repository | When source, experiment definitions, or selected input pointers change |
+| B | MANTRA Hugging Face dataset repository | Once per run |
+| C | Same Hugging Face repository | Once per successful stage |
+| D | Same Hugging Face repository | Once per successful stage, after C |
+| E | Same Hugging Face repository | Once per successful stage, after D |
+| F | Git source repository | Only when an artifact is promoted for later reuse |
+
+One successful stage creates commits C, D, and E. Commit A already exists,
+commit B belongs to the complete run, and commit F occurs only after promotion.
 
 The references record the commits as follows:
 
@@ -280,9 +303,9 @@ The references record the commits as follows:
 | E | Artifact manifest | `ResolvedArtifactManifestRef.stored_at.commit`; `ArtifactPointer.manifest.stored_at.commit` |
 | F | Promoted pointer used by a later run | `StoredInputRef.pointer.commit`; `ResolvedStoredInputRef.pointer.stored_at.commit` |
 
-The letters identify dependency order and file roles. The commits may belong to
-different repositories: A and F belong to the source repository, B belongs to
-the run-plan repository, and C through E belong to artifact storage.
+The letters identify dependency order and file roles. A and F belong to the
+Git source repository. B through E belong to one MANTRA Hugging Face dataset
+repository.
 
 Commit F becomes the source commit for a later run that consumes the promoted
 pointer. For that later run, F occupies the same role that A occupied for the
@@ -367,7 +390,7 @@ This applies to:
 - Published logs.
 - Run plans.
 
-The protocol does not substitute a separately normalized model representation for the actual stored file bytes.
+SHA-256 is calculated directly from the bytes read from storage.
 
 ### Mirrored paths
 
@@ -476,7 +499,7 @@ spec:
   bytes: <train-spec-bytes>
   stored_at:
     kind: huggingface
-    repository: machina/mantra-runs
+    repository: machina/mantra-artifacts
     commit: <commit-b-run-plan>
     path: experiments/e001_low_rank/runs/low_rank_32/01JABC/stages/train.spec.yaml
     repo_type: dataset
