@@ -224,10 +224,10 @@ Run-plan files
     └── every stage spec referenced by RunSpec.stages
 ```
 
-The two commits are created in this order:
+The artifact publication chain for one successful stage is:
 
 ```text
-Source commit A
+Commit A: producer source
 └── source code, experiment, variants, metrics, lockfile,
     and promoted-input pointers
         │
@@ -238,16 +238,55 @@ select the experiment, variant, and replicate
 create the concrete stage specs and RunSpec
         │
         ▼
-Run-plan commit B
+Commit B: run plan
 └── <run_id>.run.yaml and its stage specs
         │
         ▼
 execute commit B's plan using commit A's source
+        │
+        ▼
+Commit C: artifact
+└── the exact output bytes produced by the stage
+        │
+        ▼
+Commit D: resolved spec
+└── the execution record containing the artifact reference from C
+        │
+        ▼
+Commit E: artifact manifest
+└── the manifest linking the artifact, stage spec, resolved spec,
+    and source from C, B, D, and A
+        │
+        ▼ optional promotion for later reuse
+Commit F: consumer source
+└── a Git-tracked ArtifactPointer selecting the manifest from E
 ```
+
+Measurement and log files are published separately and recorded by
+`RunAttempt`. The resolved-run file is published after the run terminates.
 
 `RunSpec.source.commit` records source commit A. The stage specs are created
 after A has been selected. The stage specs and `RunSpec` are then validated,
 serialized, hashed, and published together as run-plan commit B.
+
+The references record the commits as follows:
+
+| Commit | Files fixed by the commit | Reference fields |
+|---|---|---|
+| A | Producer source files | `RunSpec.source.commit`; `ArtifactManifest.source.stored_at.commit` |
+| B | Run file and stage specs | `ResolvedRun.run_file.stored_at.commit`; `ArtifactManifest.spec.stored_at.commit` |
+| C | Stage artifact | `ResolvedBaseSpec.output.stored_at.commit`; `ArtifactManifest.artifact.stored_at.commit` |
+| D | Resolved stage spec | `ResolvedStageRef.resolved_spec.stored_at.commit`; `ArtifactManifest.resolved_spec.stored_at.commit` |
+| E | Artifact manifest | `ResolvedArtifactManifestRef.stored_at.commit`; `ArtifactPointer.manifest.stored_at.commit` |
+| F | Promoted pointer used by a later run | `StoredInputRef.pointer.commit`; `ResolvedStoredInputRef.pointer.stored_at.commit` |
+
+The letters identify dependency order and file roles. The commits may belong to
+different repositories: A and F belong to the source repository, B belongs to
+the run-plan repository, and C through E belong to artifact storage.
+
+Commit F becomes the source commit for a later run that consumes the promoted
+pointer. For that later run, F occupies the same role that A occupied for the
+producing run.
 
 `ResolvedRun.run` embeds the parsed `RunSpec`. `ResolvedRun.run_file` records
 the exact published file containing that `RunSpec`, including its storage
@@ -300,7 +339,7 @@ bytes: 123456
 stored_at:
   kind: huggingface
   repository: machina/mantra-artifacts
-  commit: <stage-output-commit>
+  commit: <commit-c-artifact>
   path: experiments/e001_low_rank/runs/low_rank_32/01JABC/artifacts/weights.pt
   repo_type: dataset
 ```
@@ -417,6 +456,53 @@ The source reference records:
 
 The Git commit covers project source imports from the repository tree.
 
+Example `weights.pt.manifest.yaml`:
+
+```yaml
+schema_version: 1
+
+artifact:
+  sha256: <weights-sha256>
+  bytes: 123456
+  stored_at:
+    kind: huggingface
+    repository: machina/mantra-artifacts
+    commit: <commit-c-artifact>
+    path: experiments/e001_low_rank/runs/low_rank_32/01JABC/artifacts/weights.pt
+    repo_type: dataset
+
+spec:
+  sha256: <train-spec-sha256>
+  bytes: <train-spec-bytes>
+  stored_at:
+    kind: huggingface
+    repository: machina/mantra-runs
+    commit: <commit-b-run-plan>
+    path: experiments/e001_low_rank/runs/low_rank_32/01JABC/stages/train.spec.yaml
+    repo_type: dataset
+
+resolved_spec:
+  sha256: <resolved-train-spec-sha256>
+  bytes: <resolved-train-spec-bytes>
+  stored_at:
+    kind: huggingface
+    repository: machina/mantra-artifacts
+    commit: <commit-d-resolved-spec>
+    path: experiments/e001_low_rank/runs/low_rank_32/01JABC/stages/train.spec.resolved.yaml
+    repo_type: dataset
+
+source:
+  sha256: <train-source-sha256>
+  bytes: <train-source-bytes>
+  stored_at:
+    kind: git
+    repository: https://github.com/example/mantra
+    commit: <commit-a-producer-source>
+    path: src/mantra/train.py
+
+created_at: 2026-08-18T20:30:00Z
+```
+
 ### Pointer
 
 ```python
@@ -443,6 +529,41 @@ A promoted artifact is represented by a Git-tracked pointer under `inputs/`.
 The artifact bytes and production manifest remain in immutable remote storage.
 Ordinary stage outputs receive manifests but not pointers. Creating or updating
 a pointer is an explicit promotion or reusable-input selection step.
+
+Example `inputs/models/current_weights.pt.pointer.yaml`:
+
+```yaml
+schema_version: 1
+
+manifest:
+  kind: artifact_manifest
+  sha256: <weights-manifest-sha256>
+  bytes: <weights-manifest-bytes>
+  stored_at:
+    kind: huggingface
+    repository: machina/mantra-artifacts
+    commit: <commit-e-manifest>
+    path: experiments/e001_low_rank/runs/low_rank_32/01JABC/artifacts/weights.pt.manifest.yaml
+    repo_type: dataset
+```
+
+When a later run resolves that pointer file, it records the exact pointer bytes:
+
+```yaml
+kind: artifact_pointer
+sha256: <pointer-file-sha256>
+bytes: <pointer-file-bytes>
+
+stored_at:
+  kind: git
+  repository: https://github.com/example/mantra
+  commit: <commit-f-consumer-source>
+  path: inputs/models/current_weights.pt.pointer.yaml
+```
+
+The first YAML document is an `ArtifactPointer`. The second is a
+`ResolvedArtifactPointerRef` identifying the exact pointer file consumed by a
+run.
 
 ---
 
@@ -475,16 +596,16 @@ Example:
 
 ```yaml
 inputs:
-  initial_weights:
+  current_weights:
     kind: stored
 
     pointer:
       kind: git
       repository: https://github.com/example/mantra
-      commit: <full-git-commit>
-      path: inputs/models/baseline_weights.pt.pointer.yaml
+      commit: <commit-f-consumer-source>
+      path: inputs/models/current_weights.pt.pointer.yaml
 
-    path: inputs/models/baseline_weights.pt
+    path: inputs/models/current_weights.pt
 ```
 
 The executor:
@@ -530,8 +651,8 @@ Execution proceeds as follows:
 
 1. Validate that `embed` precedes the consuming stage.
 2. Execute `embed`.
-3. Hash and publish the embedding.
-4. Publish its resolved spec and manifest.
+3. Hash and publish the embedding as artifact commit C.
+4. Publish its resolved spec as commit D and its manifest as commit E.
 5. Verify that the producer's declared output path still contains the recorded
    bytes, restoring those bytes there if necessary.
 6. Execute the consuming stage.
@@ -565,6 +686,51 @@ ResolvedInternalInputRef = Annotated[
     ResolvedStoredInputRef | ResolvedFutureInputRef,
     Field(discriminator="kind"),
 ]
+```
+
+Resolved form of the stored `current_weights` input:
+
+```yaml
+kind: stored
+
+pointer:
+  kind: artifact_pointer
+  sha256: <pointer-file-sha256>
+  bytes: <pointer-file-bytes>
+  stored_at:
+    kind: git
+    repository: https://github.com/example/mantra
+    commit: <commit-f-consumer-source>
+    path: inputs/models/current_weights.pt.pointer.yaml
+```
+
+Resolved form of the same-run `embedding` input:
+
+```yaml
+kind: future
+
+manifest:
+  kind: artifact_manifest
+  sha256: <embedding-manifest-sha256>
+  bytes: <embedding-manifest-bytes>
+  stored_at:
+    kind: huggingface
+    repository: machina/mantra-artifacts
+    commit: <commit-e-embedding-manifest>
+    path: experiments/e001_low_rank/runs/low_rank_32/01JABC/artifacts/embedding.pt.manifest.yaml
+    repo_type: dataset
+```
+
+The future-input manifest connects to the producer stage through:
+
+```text
+ResolvedFutureInputRef.manifest
+        ==
+the producer's ResolvedArtifactManifestRef
+
+ArtifactManifest.resolved_spec
+        ==
+the producer's ResolvedStageRef.resolved_spec
 ```
 
 The embedded stage spec remains authoritative for a stored input's local
@@ -608,6 +774,15 @@ exact downloaded bytes
 ResolvedFileRef
 ```
 
+Example download input:
+
+```yaml
+inputs:
+  raw_data:
+    kind: remote
+    url: https://example.org/datasets/perturbations.h5ad
+```
+
 The resolved download record retains the URL as its input.
 
 Its output is the first verified artifact created from that URL.
@@ -622,8 +797,9 @@ A run records its exact source repository and commit:
 
 ```yaml
 source:
+  kind: git
   repository: https://github.com/example/mantra
-  commit: <full-git-commit>
+  commit: <commit-a-producer-source>
 ```
 
 A resolved stage additionally records the exact source entry point:
@@ -634,6 +810,19 @@ commit
 entry-point path
 entry-point SHA-256
 entry-point byte count
+```
+
+Example resolved source entry point:
+
+```yaml
+source:
+  sha256: <train-source-sha256>
+  bytes: <train-source-bytes>
+  stored_at:
+    kind: git
+    repository: https://github.com/example/mantra
+    commit: <commit-a-producer-source>
+    path: src/mantra/train.py
 ```
 
 The executor must:
@@ -788,7 +977,7 @@ seed: 42
 
 source:
   repository: https://github.com/example/mantra
-  commit: <full-git-commit>
+  commit: <commit-a-producer-source>
 
 stages:
   - stage_id: build
@@ -817,21 +1006,20 @@ class RunStageRef(ProtocolModel):
     bytes: int = Field(ge=0)
 ```
 
-Two immutable snapshots have separate roles:
+Before execution, the run uses two fixed commits:
 
 ```text
-source snapshot
+Commit A: producer source
 └── source code, experiment, variants, lockfile, and input pointers
 
-run-plan snapshot
+Commit B: run plan
 └── run.yaml and the stage specs
 ```
 
-`RunSpec.source` identifies the source snapshot. `ResolvedRun.run_file.stored_at`
-identifies the run-plan snapshot. Every `RunStageRef.spec` is resolved within
-the run-plan snapshot, while its `sha256` and `bytes` verify the exact stage
-file. The run plan does not contain its own run-plan commit because that commit
-depends on the bytes of the run plan itself.
+`RunSpec.source` identifies commit A. `ResolvedRun.run_file.stored_at`
+identifies commit B. Every `RunStageRef.spec` is resolved within B, while its
+`sha256` and `bytes` verify the exact stage file. The run plan does not contain
+commit B because that commit depends on the bytes of the run plan itself.
 
 A new run is required if any planned scientific input changes:
 
@@ -918,6 +1106,22 @@ class RunAttempt(ProtocolModel):
     log_files: tuple[ResolvedFileRef, ...]
 
     failure_reason: str | None
+```
+
+Example completed `embed` stage reference:
+
+```yaml
+stage_id: embed
+
+resolved_spec:
+  sha256: <resolved-embed-spec-sha256>
+  bytes: <resolved-embed-spec-bytes>
+  stored_at:
+    kind: huggingface
+    repository: machina/mantra-artifacts
+    commit: <commit-d-embedding-resolved-spec>
+    path: experiments/e001_low_rank/runs/low_rank_32/01JABC/stages/embed.spec.resolved.yaml
+    repo_type: dataset
 ```
 
 Attempt invariants:
@@ -1143,7 +1347,7 @@ and confirms that:
   `ResolvedRun`;
 - each `ResolvedStageRef` binds the declared stage ID to an exact resolved-spec
   file whose embedded stage spec matches the corresponding run-plan stage;
-- each resolved stage uses the run's source snapshot and completed within the
+- each resolved stage uses the run's source commit A and was completed within the
   successful attempt's time interval;
 - each artifact manifest identifies the corresponding resolved stage's recorded
   output; and
@@ -1178,11 +1382,16 @@ count.
 1. Close the primary output file.
 2. Calculate its SHA-256.
 3. Calculate its byte count.
-4. Upload it to immutable remote storage.
-5. Write and publish `<stage_id>.spec.resolved.yaml`.
-6. Write and publish `<artifact>.manifest.yaml`.
-7. Close and publish measurement files.
-8. Record all resulting exact references in the attempt.
+4. Publish the artifact bytes and record artifact commit C.
+5. Construct `<stage_id>.spec.resolved.yaml` using the artifact reference from
+   C.
+6. Publish the resolved spec and record resolved-spec commit D.
+7. Construct `<artifact>.manifest.yaml` using the source reference from A, the
+   stage-spec reference from B, the artifact reference from C, and the
+   resolved-spec reference from D.
+8. Publish the manifest and record manifest commit E.
+9. Close and publish measurement files.
+10. Record all resulting exact references in the attempt.
 
 ### After an attempt terminates
 
@@ -1221,8 +1430,8 @@ count.
 14. Resolve same-run inputs from earlier stage outputs.
 15. Execute stages in declared order.
 16. Record observed metric values as measurements.
-17. Publish each successful stage’s artifact, resolved spec, manifest, and
-    measurements.
+17. Publish each successful stage’s artifact, resolved spec, and manifest in
+    commit order C, D, and E, then publish its measurements.
 18. If execution fails:
 
     - Finish the attempt record.
@@ -1812,8 +2021,8 @@ attempt handling, resolved-run construction, and cross-file verification.
       the experiment.
 
   - [x] **15.4. Verify the stage plan.**
-    - Resolve every stage spec path in the immutable run-plan snapshot
-      identified by `ResolvedRun.run_file.stored_at`.
+    - Resolve every stage spec path in run-plan commit B, identified by
+      `ResolvedRun.run_file.stored_at`.
     - Verify each stage file against the SHA-256 and byte count in its
       `RunStageRef` before parsing it.
     - Bind each loaded stage spec to the `stage_id` carried by its enclosing
