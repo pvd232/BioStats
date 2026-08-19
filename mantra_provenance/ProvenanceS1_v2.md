@@ -28,8 +28,8 @@ A stage is one execution of the command recorded by a stage spec.
 
 ### Artifact
 
-An artifact is one named, durable computational value with one selection,
-consumption, promotion, replacement, and parity lifecycle.
+An artifact is one named, independently addressable, durable computational
+value.
 
 Examples:
 
@@ -41,7 +41,8 @@ Examples:
 
 ### Artifact file
 
-An artifact file is one artifact represented by exactly one physical file.
+An artifact file is one artifact whose complete physical representation contains
+exactly one file.
 
 ```text
 artifact: perturbation_embeddings
@@ -50,9 +51,8 @@ artifact: perturbation_embeddings
 
 ### Artifact bundle
 
-An artifact bundle is one artifact represented by at least two physical files
-that must be selected, materialized, consumed, promoted, and parity-checked
-together.
+An artifact bundle is one artifact whose complete physical representation
+contains at least two files.
 
 ```text
 artifact: model
@@ -65,50 +65,74 @@ bundle manifest identifies the complete member set.
 
 ### Artifact boundary
 
-Two durable values are separate artifacts when either value has an independent
-lifecycle:
+For artifact `a`, `F(a)` is the exact set of physical files assigned to `a`.
+`F(a)` satisfies three conditions:
 
-- A downstream stage may consume either value independently.
-- Promotion may select either value independently.
-- Replacement may update either value independently.
-- A reproducibility policy may parity-check either value independently.
+1. **Complete:** Materializing every file in `F(a)` gives the consumer the
+   complete stored representation of `a`.
+2. **Minimal:** Removing any file from `F(a)` leaves an incomplete stored
+   representation of `a` under its declared consumption contract.
+3. **Atomic:** The artifact manifest records all of `F(a)`, an artifact pointer
+   selects all of `F(a)`, the executor materializes all of `F(a)`, and artifact
+   parity compares all of `F(a)`.
 
-Multiple files form one bundle when all of the following hold:
+Cardinality determines the resolved representation:
 
-- The files collectively implement one named value.
-- A consumer requires the complete file set.
-- One manifest selects the complete file set.
-- Partial materialization is invalid.
-- Promotion and parity apply to the complete file set.
+```text
+|F(a)| = 1  → ResolvedArtifactFile
+|F(a)| ≥ 2  → ResolvedArtifactBundle
+```
 
-The stage command defines one execution. Artifact names define the durable
-values produced by that execution. Bundle membership defines the physical files
-required to represent one durable value.
+A nonempty proper subset of `F(a)` that requires its own downstream input
+binding, `ArtifactPointer`, or parity result becomes a separately named artifact
+with its own minimal complete file set.
+
+Examples:
+
+```text
+training command
+→ produces model.pt and config.pkl
+→ both files are required by the model's consumption contract
+→ artifact name: model
+→ F(model) = {model.pt, config.pkl}
+→ ResolvedArtifactBundle
+```
+
+```text
+training command
+→ produces model.pt and embeddings.pt
+→ downstream stages can consume either value independently
+→ F(model) = {model.pt}
+→ F(embeddings) = {embeddings.pt}
+→ two ResolvedArtifactFile records
+```
+
+The stage command defines one execution. Artifact names identify the durable
+values produced by that execution. `F(a)` identifies the physical files that
+constitute each value.
 
 ---
 
 ## 3. Core invariant
 
-Every successfully completed Stage 1 stage declares a nonempty set of uniquely
-named artifacts before execution. Each artifact is independently selectable and
-is represented by either:
+Every Stage 1 stage spec declares a nonempty set of uniquely named artifacts.
+After successful execution:
 
-1. Exactly one file; or
-2. One bundle containing at least two files that share one consumption,
-   promotion, and parity lifecycle.
-
-The stage spec, resolved stage spec, and completed-stage reference contain
-exactly the same artifact names. Each artifact name maps to exactly one
-manifest. Each manifest maps to the same resolved stage execution and the exact
-artifact produced by that execution.
+1. The stage spec, resolved stage spec, and `ResolvedStageRef` contain exactly
+   the same artifact names.
+2. Each resolved artifact satisfies the complete, minimal, and atomic `F(a)`
+   contract defined in Section 2.
+3. Each artifact name maps to exactly one `ArtifactManifest`.
+4. Each `ArtifactManifest` maps to the same resolved stage execution and the
+   exact resolved artifact recorded under that name.
 
 A stage is accepted after:
 
 1. Every declared artifact has been published.
 2. Every declared artifact has been verified.
 3. Every artifact manifest has been published and verified.
-4. Every retained stage-created file has been classified as an artifact member,
-   measurement file, log file, or protocol record.
+4. Every retained file associated with stage completion has been classified as
+   an artifact member, measurement file, log file, or protocol record.
 
 ---
 
