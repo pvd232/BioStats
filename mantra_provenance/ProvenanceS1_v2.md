@@ -92,10 +92,20 @@ Examples:
 ```text
 training command
 → produces model.pt and config.pkl
-→ both files are required by the model's consumption contract
-→ artifact name: model
-→ F(model) = {model.pt, config.pkl}
-→ ResolvedArtifactBundle
+        │
+        ▼
+artifact name: model
+F(model) = {model.pt, config.pkl}
+        │
+        ▼ consumer loads model
+config.pkl → construct the recorded model architecture
+model.pt   → load the learned parameters into that architecture
+        │
+        ▼
+both files are required to reconstruct the stored model
+        │
+        ▼
+ResolvedArtifactBundle
 ```
 
 ```text
@@ -128,10 +138,9 @@ After successful execution:
 
 A stage is accepted after:
 
-1. Every declared artifact has been published.
-2. Every declared artifact has been verified.
-3. Every artifact manifest has been published and verified.
-4. Every retained file associated with stage completion has been classified as
+1. For every declared artifact name, its complete `F(a)` and corresponding
+   `ArtifactManifest` have been published and verified.
+2. Every retained file associated with stage completion has been classified as
    an artifact member, measurement file, log file, or protocol record.
 
 ---
@@ -569,23 +578,21 @@ one protocol role:
 The executor removes stage-local temporary files from the accepted workspace
 state.
 
-A tensor or other computational value receives an artifact name when any of the
-following apply:
+A tensor or other computational value receives its own `ArtifactName` when both
+conditions hold:
 
-1. The value crosses a stage or run boundary.
-2. A downstream operation consumes the value independently.
-3. Promotion or selection targets the value independently.
-4. A reproducibility policy names the value as parity evidence.
-5. Exact continuation requires the value.
-6. The value affects a promised output and cannot be reconstructed exactly from
-   the recorded inputs and execution contract.
+1. **Durable:** Its physical representation is retained after successful stage
+   completion.
+2. **Independently addressable:** A later protocol operation must be able to
+   retrieve that value without retrieving another artifact.
 
-A tensor remains stage-local when all of the following hold:
+Independent addressability is expressed through a named downstream artifact
+input, an `ArtifactPointer`, an artifact-specific parity result, or a
+continuation contract.
 
-1. Its lifetime ends within the stage execution.
-2. The recorded stage execution reconstructs it exactly when required.
-3. No downstream operation consumes it directly.
-4. No promotion, parity, or continuation contract names it.
+A computational value remains stage-local when its lifetime ends within the
+stage execution and no later protocol record addresses it. Its effect may be
+reflected in the stage's retained artifacts or measurements.
 
 ---
 
