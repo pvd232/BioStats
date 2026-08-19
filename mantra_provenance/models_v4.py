@@ -798,7 +798,7 @@ class BaseSpec(ProtocolModel):
 
 class DownloadSpec(BaseSpec):
     kind: Literal["download"] = "download"  # pyright: ignore[reportIncompatibleVariableOverride]
-    inputs: dict[InputName, RemoteFileRef] = Field(min_length=1)
+    inputs: dict[InputName, RemoteFileRef] = Field(min_length=1, max_length=1)
 
 
 class InternalSpec(BaseSpec):

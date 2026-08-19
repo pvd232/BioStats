@@ -443,8 +443,32 @@ class ResolvedArtifactPointerRef(ResolvedFileRef):
     stored_at: ArtifactPointerRef
 ```
 
-The external verifier still retrieves each referenced file, verifies its
+The reference types and document types have separate roles:
+
+| Type | Meaning |
+|---|---|
+| `ArtifactPointerRef` | Git location where a pointer file can be retrieved |
+| `ResolvedArtifactPointerRef` | Exact pointer file: location, SHA-256, and byte count |
+| `ArtifactPointer` | Parsed contents of that pointer file |
+| `ResolvedArtifactManifestRef` | Exact manifest file: location, SHA-256, and byte count |
+| `ArtifactManifest` | Parsed contents of that manifest file |
+
+The external verifier retrieves each referenced file, verifies its
 SHA-256 and byte count, and parses it using the stated schema.
+
+The A–F publication sequence maps onto these records as follows:
+
+```text
+Commit A ── ArtifactManifest.source
+Commit B ── ArtifactManifest.spec
+Commit C ── ArtifactManifest.artifact
+Commit D ── ArtifactManifest.resolved_spec
+Commit E ── ResolvedArtifactManifestRef
+Commit F ── ArtifactPointer file
+```
+
+The `ArtifactPointer` file published at F contains the
+`ResolvedArtifactManifestRef` pointing to the manifest published at E.
 
 ### Manifest
 
@@ -453,8 +477,8 @@ class ArtifactManifest(ProtocolModel):
     schema_version: Literal[1] = 1
 
     artifact: ResolvedFileRef
-    spec: ResolvedFileRef
     resolved_spec: ResolvedFileRef
+    spec: ResolvedFileRef
     source: ResolvedGitFileRef
 
     created_at: AwareDatetime
@@ -494,16 +518,6 @@ artifact:
     path: experiments/e001_low_rank/runs/low_rank_32/01JABC/artifacts/weights.pt
     repo_type: dataset
 
-spec:
-  sha256: <train-spec-sha256>
-  bytes: <train-spec-bytes>
-  stored_at:
-    kind: huggingface
-    repository: machina/mantra-artifacts
-    commit: <commit-b-run-plan>
-    path: experiments/e001_low_rank/runs/low_rank_32/01JABC/stages/train.spec.yaml
-    repo_type: dataset
-
 resolved_spec:
   sha256: <resolved-train-spec-sha256>
   bytes: <resolved-train-spec-bytes>
@@ -512,6 +526,16 @@ resolved_spec:
     repository: machina/mantra-artifacts
     commit: <commit-d-resolved-spec>
     path: experiments/e001_low_rank/runs/low_rank_32/01JABC/stages/train.spec.resolved.yaml
+    repo_type: dataset
+
+spec:
+  sha256: <train-spec-sha256>
+  bytes: <train-spec-bytes>
+  stored_at:
+    kind: huggingface
+    repository: machina/mantra-artifacts
+    commit: <commit-b-run-plan>
+    path: experiments/e001_low_rank/runs/low_rank_32/01JABC/stages/train.spec.yaml
     repo_type: dataset
 
 source:
@@ -553,7 +577,8 @@ The artifact bytes and production manifest remain in immutable remote storage.
 Ordinary stage outputs receive manifests but not pointers. Creating or updating
 a pointer is an explicit promotion or reusable-input selection step.
 
-Example `inputs/models/current_weights.pt.pointer.yaml`:
+Example `ArtifactPointer` file at
+`inputs/models/current_weights.pt.pointer.yaml`:
 
 ```yaml
 schema_version: 1
@@ -570,7 +595,9 @@ manifest:
     repo_type: dataset
 ```
 
-When a later run resolves that pointer file, it records the exact pointer bytes:
+When a later run consumes that pointer file, it records a
+`ResolvedArtifactPointerRef` containing the file's SHA-256, byte count, and Git
+location:
 
 ```yaml
 kind: artifact_pointer
@@ -583,10 +610,6 @@ stored_at:
   commit: <commit-f-consumer-source>
   path: inputs/models/current_weights.pt.pointer.yaml
 ```
-
-The first YAML document is an `ArtifactPointer`. The second is a
-`ResolvedArtifactPointerRef` identifying the exact pointer file consumed by a
-run.
 
 ---
 
@@ -744,60 +767,193 @@ manifest:
     repo_type: dataset
 ```
 
-The future-input manifest connects to the producer stage through:
+`ResolvedInternalSpec.spec.inputs` and `ResolvedInternalSpec.inputs` are joined
+by input name:
 
 ```text
-ResolvedFutureInputRef.manifest
-        ==
-the producer's ResolvedArtifactManifestRef
-
-ArtifactManifest.resolved_spec
-        ==
-the producer's ResolvedStageRef.resolved_spec
+ResolvedInternalSpec
+├── spec.inputs[input_name]
+│   └── requested input
+└── inputs[input_name]
+    └── resolved input
 ```
 
-The embedded stage spec remains authoritative for a stored input's local
-materialization path and a future input's producer stage. A future input's
-local path is the producer spec's declared output path. The resolved input does
-not duplicate those fields.
+Both dictionaries must contain the same input names. The requested and resolved
+records for each input must also have the same `kind`.
 
-Input invariants:
+For a stored input, the requested pointer location must equal the storage
+location of the resolved pointer file:
 
-- Spec and resolved input names match.
-- Stored-input materialization paths are unique within a stage.
-- No stored-input path collides with the stage script or stage output path.
-- Because these names denote files, equality and ancestor-descendant overlap
-  both count as collisions: `data.bin` cannot coexist with `data.bin/part`.
-- A stored input's local `path` and its pointer's remote Git `path` are separate
-  namespaces. They may use the same relative spelling without colliding.
-- Stage output paths are unique within a run.
-- A future input's producer output does not collide with the consumer's stored
-  input paths, script, or output path.
-- A same-run reference identifies an earlier stage.
-- A resolved stored-input pointer selects a valid artifact manifest.
-- A resolved future-input manifest is the manifest published by its producer
-  stage.
-- The artifact identified by a future-input manifest equals the producer
-  stage’s output.
-- Materialized bytes equal the artifact identified through the pointer or
-  manifest chain.
-- Every retrieved file passes SHA-256 and byte-count verification.
+```text
+StoredInputRef
+├── pointer ───────────────────────────────┐
+└── path                                   │
+                                           ==
+ResolvedStoredInputRef                     │
+└── pointer.stored_at ─────────────────────┘
+```
+
+For a stored input, `StoredInputRef.path`, reached through
+`ResolvedInternalSpec.spec.inputs[input_name]`, records the local path where the
+artifact bytes are placed.
+
+For a future input, `FutureInputRef.producer_stage_id` and
+`ResolvedFutureInputRef.manifest` connect through the successful `RunAttempt`:
+
+```text
+FutureInputRef.producer_stage_id
+→ selects producer ResolvedStageRef from successful RunAttempt.resolved_stages
+→ producer ResolvedStageRef.resolved_spec
+     ==
+  ArtifactManifest.resolved_spec
+→ selects that manifest's ResolvedArtifactManifestRef from successful RunAttempt.artifact_manifests
+     ==
+  ResolvedFutureInputRef.manifest
+
+ArtifactManifest.artifact
+     ==
+producer ResolvedBaseSpec.output
+```
+
+`ResolvedStageRef.resolved_spec` loads the producer's `ResolvedBaseSpec`. The
+local path comes from that producer record:
+
+```text
+ResolvedBaseSpec.spec.output
+    ==
+ResolvedBaseSpec.output.stored_at.path
+```
+
+### Input validation sequence
+
+1. **Validate one `InternalSpec`.**
+
+   `InternalSpec` checks the paths visible inside one stage:
+
+   - No two `StoredInputRef.path` values overlap.
+   - No `StoredInputRef.path` overlaps `InternalSpec.script`.
+   - No `StoredInputRef.path` overlaps `InternalSpec.output`.
+   - `InternalSpec.output` does not overlap `InternalSpec.script`.
+
+   Equality and ancestor–descendant overlap both count:
+
+   ```text
+   inputs/data.bin
+   inputs/data.bin/part
+   ```
+
+2. **Validate one `ResolvedInternalSpec`.**
+
+   `ResolvedInternalSpec` checks its embedded stage spec against its resolved
+   inputs:
+
+   ```text
+   ResolvedInternalSpec.inputs.keys()
+   ==
+   ResolvedInternalSpec.spec.inputs.keys()
+   ```
+
+   For each input:
+
+   ```text
+   resolved input kind
+   ==
+   stage-spec input kind
+   ```
+
+   For a stored input:
+
+   ```text
+   ResolvedStoredInputRef.pointer.stored_at
+   ==
+   StoredInputRef.pointer
+   ```
+
+3. **Verify the complete `RunSpec`.**
+
+   `verify_stage_plan()` checks relationships requiring every stage spec:
+
+   - Stage output paths do not overlap.
+   - Every `FutureInputRef.producer_stage_id` identifies an earlier stage.
+   - The producer's output path does not overlap the consumer's script, output,
+     or stored-input paths.
+
+4. **Verify the input bytes and provide them to the executor.**
+
+   `verify_stored_inputs()` and `verify_future_inputs()` return a
+   `VerifiedInput` containing:
+
+   ```text
+   VerifiedInput
+   ├── path
+   ├── artifact
+   └── content
+   ```
+
+   The verifier establishes the artifact's identity and returns its verified
+   bytes as `VerifiedInput.content`. The executor makes those bytes available
+   to the stage command at `VerifiedInput.path`.
+
+   A stored input follows:
+
+   ```text
+   ResolvedStoredInputRef.pointer
+   → ArtifactPointer.manifest
+   → ArtifactManifest.artifact
+   → verified artifact bytes
+   → StoredInputRef.path
+   ```
+
+   A same-run future input follows:
+
+   ```text
+   FutureInputRef.producer_stage_id
+   → producer ResolvedStageRef.resolved_spec
+                    ==
+      ArtifactManifest.resolved_spec
+   → ArtifactManifest.artifact
+                    ==
+      producer ResolvedBaseSpec.output
+   → verified artifact bytes
+   → producer stage's output path
+   ```
+
+   Every retrieved pointer, manifest, artifact, stage spec, resolved spec, and
+   source file must match its recorded SHA-256 and byte count.
 
 ---
 
-## 7. Download boundary
+## 7. External data roots
 
-A download stage begins with an external URL rather than an existing artifact:
+Each `RemoteFileRef` is an external data root. A `DownloadSpec` retrieves one
+root and produces the first byte-identified artifact in the MANTRA lineage:
 
 ```text
-RemoteFileRef
-    ↓ fetch
-exact downloaded bytes
-    ↓ hash and publish
-ResolvedFileRef
+DownloadSpec
+├── inputs
+│   └── input_name → RemoteFileRef.url
+├── script
+└── output
+        │
+        ▼
+execute DownloadSpec.script
+├── retrieve the single RemoteFileRef.url
+└── write those bytes at DownloadSpec.output
+        │
+        ▼
+calculate output SHA-256 and byte count
+→ publish output at an immutable storage location
+        │
+        ▼
+ResolvedDownloadSpec
+├── spec: DownloadSpec
+├── inputs == spec.inputs
+└── output: ResolvedFileRef
 ```
 
-Example download input:
+`RemoteFileRef.url` records where the stage retrieves external data.
+
+Example `DownloadSpec.inputs`:
 
 ```yaml
 inputs:
@@ -806,11 +962,43 @@ inputs:
     url: https://example.org/datasets/perturbations.h5ad
 ```
 
-The resolved download record retains the URL as its input.
+`DownloadSpec.inputs` contains exactly one named `RemoteFileRef`.
+`DownloadSpec.script` retrieves the file identified by that reference and
+writes those bytes at `DownloadSpec.output`.
 
-Its output is the first verified artifact created from that URL.
+`ResolvedDownloadSpec` retains the exact URL used by the execution:
 
-A mutable URL is acceptable as a retrieval source because the downloaded output is independently hashed and stored immutably. Replaying the download must verify the downloaded bytes against the recorded artifact identity.
+```text
+ResolvedDownloadSpec.inputs
+    ==
+ResolvedDownloadSpec.spec.inputs
+```
+
+Its `output` identifies the exact file produced:
+
+```text
+ResolvedDownloadSpec.output
+└── ResolvedFileRef
+    ├── sha256
+    ├── bytes
+    └── stored_at
+```
+
+`RemoteFileRef.url` identifies where `DownloadSpec.script` retrieves the file.
+After retrieval, `ResolvedDownloadSpec.output` records the SHA-256, byte count,
+and immutable storage location of the bytes written at `DownloadSpec.output`.
+
+Repeating the acquisition requires:
+
+1. Executing `ResolvedDownloadSpec.spec.script`, which retrieves the
+   `RemoteFileRef` in `ResolvedDownloadSpec.spec.inputs`.
+2. Calculating the SHA-256 and byte count of the file written at
+   `ResolvedDownloadSpec.spec.output`.
+3. Comparing both values with `ResolvedDownloadSpec.output`.
+
+A downstream `StoredInputRef.pointer` selects the published artifact's
+`ArtifactManifest`. The executor retrieves `ArtifactManifest.artifact` from its
+immutable `stored_at` location.
 
 ---
 

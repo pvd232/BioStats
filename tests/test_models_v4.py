@@ -12,6 +12,7 @@ from mantra_provenance.models_v4 import (
     ArtifactPointer,
     ArtifactPointerRef,
     BuildSpec,
+    DownloadSpec,
     ExperimentSpec,
     FactorSpec,
     FutureInputRef,
@@ -786,6 +787,30 @@ class RunAndAttemptTests(unittest.TestCase):
                 attempts=(attempt,),
                 successful_attempt_id=attempt.attempt_id,
                 completed_at=attempt.completed_at - timedelta(milliseconds=1),
+            )
+
+
+class DownloadSpecValidationTests(unittest.TestCase):
+    def test_download_spec_rejects_multiple_remote_inputs(self) -> None:
+        with self.assertRaises(ValidationError):
+            DownloadSpec.model_validate(
+                {
+                    "kind": "download",
+                    "inputs": {
+                        "first": {
+                            "kind": "remote",
+                            "url": "https://example.org/first.bin",
+                        },
+                        "second": {
+                            "kind": "remote",
+                            "url": "https://example.org/second.bin",
+                        },
+                    },
+                    "script": "src/mantra/download.py",
+                    "environment": gce_environment(),
+                    "reproducibility": relaxed_reproducibility(),
+                    "output": "artifacts/raw.bin",
+                }
             )
 
 
