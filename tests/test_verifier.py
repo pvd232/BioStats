@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import unittest
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import patch
 
 import yaml
+from pydantic import HttpUrl, TypeAdapter
 
 from mantra_provenance.models_v4 import (
     ArtifactManifest,
@@ -17,20 +19,26 @@ from mantra_provenance.models_v4 import (
     HuggingFaceFileRef,
     ResolvedArtifactManifestRef,
     ResolvedArtifactPointerRef,
+    ResolvedBaseSpec,
     ResolvedBuildSpec,
+    ResolvedDownloadSpec,
     ResolvedFileRef,
     ResolvedGitFileRef,
     ResolvedRun,
     ResolvedStageRef,
+    ResolvedStoredInputRef,
     RunAttempt,
     RunSpec,
+    RunStageRef,
 )
 from mantra_provenance.verifier import (
     VerificationError,
     fetch_storage_bytes,
     read_resolved_file,
-    verify_authored_stage_plan,
+    verify_artifact_manifest,
+    verify_stage_plan,
     verify_experiment_and_variant,
+    verify_future_inputs,
     verify_resolved_run_file,
     verify_resolved_stages,
     verify_stored_inputs,
@@ -38,8 +46,19 @@ from mantra_provenance.verifier import (
 
 GIT_COMMIT = "a" * 40
 PLAN_COMMIT = "b" * 40
-REPOSITORY = "https://example.com/mantra.git"
-PLAN_REPOSITORY = "https://example.com/mantra-run-plans.git"
+REPOSITORY = HttpUrl("https://example.com/mantra.git")
+PLAN_REPOSITORY = HttpUrl("https://example.com/mantra-run-plans.git")
+YAML_VALUE_ADAPTER = TypeAdapter(Any)
+
+
+def yaml_bytes(value: object) -> bytes:
+    serializable = YAML_VALUE_ADAPTER.dump_python(value, mode="json")
+    dumped = yaml.safe_dump(serializable, sort_keys=True)
+
+    if not isinstance(dumped, str):
+        raise TypeError("expected yaml.safe_dump to return text")
+
+    return dumped.encode("utf-8")
 
 
 def run_spec(*, seed: int = 42) -> RunSpec:
@@ -51,18 +70,18 @@ def run_spec(*, seed: int = 42) -> RunSpec:
         seed=seed,
         source=GitSource(repository=REPOSITORY, commit=GIT_COMMIT),
         stages=(
-            {
-                "stage_id": "embed",
-                "spec": "stages/embed.spec.yaml",
-                "sha256": "c" * 64,
-                "bytes": 100,
-            },
-            {
-                "stage_id": "train",
-                "spec": "stages/train.spec.yaml",
-                "sha256": "d" * 64,
-                "bytes": 200,
-            },
+            RunStageRef(
+                stage_id="embed",
+                spec="stages/embed.spec.yaml",
+                sha256="c" * 64,
+                bytes=100,
+            ),
+            RunStageRef(
+                stage_id="train",
+                spec="stages/train.spec.yaml",
+                sha256="d" * 64,
+                bytes=200,
+            ),
         ),
     )
 
@@ -164,10 +183,9 @@ class ResolvedFileVerificationTests(unittest.TestCase):
 class ResolvedRunFileVerificationTests(unittest.TestCase):
     def test_run_file_must_equal_embedded_run(self) -> None:
         embedded = run_spec(seed=42)
-        raw = yaml.safe_dump(
+        raw = yaml_bytes(
             embedded.model_dump(mode="json"),
-            sort_keys=True,
-        ).encode("utf-8")
+        )
         record = resolved_run(embedded, resolved_reference(raw))
 
         self.assertEqual(
@@ -178,10 +196,7 @@ class ResolvedRunFileVerificationTests(unittest.TestCase):
     def test_run_file_rejects_different_valid_run(self) -> None:
         embedded = run_spec(seed=42)
         file_run = run_spec(seed=93)
-        raw = yaml.safe_dump(
-            file_run.model_dump(mode="json"),
-            sort_keys=True,
-        ).encode("utf-8")
+        raw = yaml_bytes(file_run.model_dump(mode="json"))
         record = resolved_run(embedded, resolved_reference(raw))
 
         with self.assertRaisesRegex(
@@ -242,14 +257,8 @@ class ExperimentAndVariantVerificationTests(unittest.TestCase):
 
         root = "experiments/e001_low_rank"
         return {
-            f"{root}/e001_low_rank.experiment.yaml": yaml.safe_dump(
-                experiment,
-                sort_keys=True,
-            ).encode("utf-8"),
-            f"{root}/variants/low_rank_32.variant.yaml": yaml.safe_dump(
-                variant,
-                sort_keys=True,
-            ).encode("utf-8"),
+            f"{root}/e001_low_rank.experiment.yaml": yaml_bytes(experiment),
+            f"{root}/variants/low_rank_32.variant.yaml": yaml_bytes(variant),
         }
 
     @staticmethod
@@ -299,9 +308,7 @@ class ExperimentAndVariantVerificationTests(unittest.TestCase):
             )
 
     def test_variant_must_assign_every_factor_once(self) -> None:
-        documents = self.documents(
-            variant_updates={"levels": {"rank": "rank_32"}}
-        )
+        documents = self.documents(variant_updates={"levels": {"rank": "rank_32"}})
 
         with self.assertRaisesRegex(VerificationError, "exactly one level"):
             verify_experiment_and_variant(
@@ -311,9 +318,7 @@ class ExperimentAndVariantVerificationTests(unittest.TestCase):
 
     def test_variant_levels_must_be_permitted(self) -> None:
         documents = self.documents(
-            variant_updates={
-                "levels": {"rank": "rank_128", "optimizer": "adamw"}
-            }
+            variant_updates={"levels": {"rank": "rank_128", "optimizer": "adamw"}}
         )
 
         with self.assertRaisesRegex(VerificationError, "is not permitted"):
@@ -332,7 +337,7 @@ class ExperimentAndVariantVerificationTests(unittest.TestCase):
             )
 
 
-class AuthoredStagePlanVerificationTests(unittest.TestCase):
+class StagePlanVerificationTests(unittest.TestCase):
     @staticmethod
     def environment() -> dict:
         return {
@@ -435,12 +440,8 @@ class AuthoredStagePlanVerificationTests(unittest.TestCase):
         }
 
         return {
-            "stages/embed.spec.yaml": yaml.safe_dump(embed, sort_keys=True).encode(
-                "utf-8"
-            ),
-            "stages/train.spec.yaml": yaml.safe_dump(train, sort_keys=True).encode(
-                "utf-8"
-            ),
+            "stages/embed.spec.yaml": yaml_bytes(embed),
+            "stages/train.spec.yaml": yaml_bytes(train),
         }
 
     @staticmethod
@@ -489,7 +490,7 @@ class AuthoredStagePlanVerificationTests(unittest.TestCase):
     def test_valid_stage_plan_is_returned_in_run_order(self) -> None:
         documents = self.stage_documents()
         run, run_file = self.run_and_plan_file(documents)
-        stages = verify_authored_stage_plan(
+        stages = verify_stage_plan(
             run,
             run_file,
             fetcher=self.fetcher(documents),
@@ -504,7 +505,7 @@ class AuthoredStagePlanVerificationTests(unittest.TestCase):
         run, run_file = self.run_and_plan_file(documents)
 
         with self.assertRaisesRegex(VerificationError, "must name an earlier stage"):
-            verify_authored_stage_plan(
+            verify_stage_plan(
                 run,
                 run_file,
                 fetcher=self.fetcher(documents),
@@ -515,7 +516,7 @@ class AuthoredStagePlanVerificationTests(unittest.TestCase):
         run, run_file = self.run_and_plan_file(documents)
 
         with self.assertRaisesRegex(VerificationError, "stage output paths.*collide"):
-            verify_authored_stage_plan(
+            verify_stage_plan(
                 run,
                 run_file,
                 fetcher=self.fetcher(documents),
@@ -526,7 +527,7 @@ class AuthoredStagePlanVerificationTests(unittest.TestCase):
         run, run_file = self.run_and_plan_file(documents)
 
         with self.assertRaisesRegex(VerificationError, "collides with the script"):
-            verify_authored_stage_plan(
+            verify_stage_plan(
                 run,
                 run_file,
                 fetcher=self.fetcher(documents),
@@ -540,7 +541,7 @@ class AuthoredStagePlanVerificationTests(unittest.TestCase):
         run, run_file = self.run_and_plan_file(documents)
 
         with self.assertRaisesRegex(VerificationError, "collides with a stored input"):
-            verify_authored_stage_plan(
+            verify_stage_plan(
                 run,
                 run_file,
                 fetcher=self.fetcher(documents),
@@ -555,11 +556,11 @@ class AuthoredStagePlanVerificationTests(unittest.TestCase):
             requested_locations.append(location)
             return documents[location.path]
 
-        verify_authored_stage_plan(run, run_file, fetcher=fetcher)
+        verify_stage_plan(run, run_file, fetcher=fetcher)
 
         self.assertTrue(requested_locations)
         for location in requested_locations:
-            self.assertEqual(str(location.repository), PLAN_REPOSITORY)
+            self.assertEqual(location.repository, PLAN_REPOSITORY)
             self.assertEqual(location.commit, PLAN_COMMIT)
 
     def test_stage_spec_content_must_match_run_stage_hash_and_size(self) -> None:
@@ -570,7 +571,7 @@ class AuthoredStagePlanVerificationTests(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(VerificationError, "byte-count mismatch"):
-            verify_authored_stage_plan(
+            verify_stage_plan(
                 run,
                 run_file,
                 fetcher=self.fetcher(tampered),
@@ -584,7 +585,7 @@ class ResolvedStageVerificationTests(unittest.TestCase):
         source_commit: str = GIT_COMMIT,
         stage_completed_at: datetime | None = None,
     ) -> tuple[ResolvedRun, dict[str, DownloadSpec], dict[str, bytes]]:
-        authored_payload = {
+        spec_payload = {
             "schema_version": 1,
             "kind": "download",
             "inputs": {
@@ -594,14 +595,12 @@ class ResolvedStageVerificationTests(unittest.TestCase):
                 }
             },
             "script": "src/mantra/download.py",
-            "environment": AuthoredStagePlanVerificationTests.environment(),
-            "reproducibility": (
-                AuthoredStagePlanVerificationTests.reproducibility()
-            ),
+            "environment": StagePlanVerificationTests.environment(),
+            "reproducibility": (StagePlanVerificationTests.reproducibility()),
             "output": "artifacts/raw.pt",
         }
-        authored = DownloadSpec.model_validate(authored_payload)
-        authored_raw = yaml.safe_dump(authored_payload, sort_keys=True).encode("utf-8")
+        authored = DownloadSpec.model_validate(spec_payload)
+        spec_raw = yaml_bytes(spec_payload)
 
         source_raw = b"print('download')\n"
         lockfile_raw = b"version = 1\n"
@@ -614,7 +613,7 @@ class ResolvedStageVerificationTests(unittest.TestCase):
         resolved_payload = {
             "schema_version": 1,
             "kind": "download",
-            "spec": authored_payload,
+            "spec": spec_payload,
             "source": {
                 "sha256": hashlib.sha256(source_raw).hexdigest(),
                 "bytes": len(source_raw),
@@ -689,9 +688,9 @@ class ResolvedStageVerificationTests(unittest.TestCase):
                 },
             },
             "completed_at": stage_time.isoformat(),
-            "inputs": authored_payload["inputs"],
+            "inputs": spec_payload["inputs"],
         }
-        resolved_raw = yaml.safe_dump(resolved_payload, sort_keys=True).encode("utf-8")
+        resolved_raw = yaml_bytes(resolved_payload)
         resolved_reference = ResolvedFileRef(
             sha256=hashlib.sha256(resolved_raw).hexdigest(),
             bytes=len(resolved_raw),
@@ -711,12 +710,12 @@ class ResolvedStageVerificationTests(unittest.TestCase):
             seed=42,
             source=GitSource(repository=REPOSITORY, commit=GIT_COMMIT),
             stages=(
-                {
-                    "stage_id": "download",
-                    "spec": "stages/download.spec.yaml",
-                    "sha256": hashlib.sha256(authored_raw).hexdigest(),
-                    "bytes": len(authored_raw),
-                },
+                RunStageRef(
+                    stage_id="download",
+                    spec="stages/download.spec.yaml",
+                    sha256=hashlib.sha256(spec_raw).hexdigest(),
+                    bytes=len(spec_raw),
+                ),
             ),
         )
         attempt = RunAttempt(
@@ -768,11 +767,11 @@ class ResolvedStageVerificationTests(unittest.TestCase):
         return retrieve
 
     def test_resolved_stage_and_its_exact_files_are_verified(self) -> None:
-        record, authored_stages, documents = self.build_records()
+        record, stage_specs, documents = self.build_records()
 
         verified = verify_resolved_stages(
             record,
-            authored_stages,
+            stage_specs,
             fetcher=self.fetcher(documents),
         )
 
@@ -782,9 +781,9 @@ class ResolvedStageVerificationTests(unittest.TestCase):
             len(documents["artifacts/raw.pt"]),
         )
 
-    def test_resolved_stage_must_embed_the_loaded_authored_spec(self) -> None:
-        record, authored_stages, documents = self.build_records()
-        different = authored_stages["download"].model_copy(
+    def test_resolved_stage_must_embed_the_loaded_stage_spec(self) -> None:
+        record, stage_specs, documents = self.build_records()
+        different = stage_specs["download"].model_copy(
             update={"output": "artifacts/other.pt"}
         )
 
@@ -796,30 +795,28 @@ class ResolvedStageVerificationTests(unittest.TestCase):
             )
 
     def test_resolved_stage_source_must_match_run_source_snapshot(self) -> None:
-        record, authored_stages, documents = self.build_records(
-            source_commit="c" * 40
-        )
+        record, stage_specs, documents = self.build_records(source_commit="c" * 40)
 
         with self.assertRaisesRegex(VerificationError, "run source snapshot"):
             verify_resolved_stages(
                 record,
-                authored_stages,
+                stage_specs,
                 fetcher=self.fetcher(documents),
             )
 
     def test_resolved_stage_output_bytes_are_verified(self) -> None:
-        record, authored_stages, documents = self.build_records()
+        record, stage_specs, documents = self.build_records()
         documents["artifacts/raw.pt"] += b"tampered"
 
         with self.assertRaisesRegex(VerificationError, "byte-count mismatch"):
             verify_resolved_stages(
                 record,
-                authored_stages,
+                stage_specs,
                 fetcher=self.fetcher(documents),
             )
 
     def test_resolved_stage_completion_must_fall_inside_attempt(self) -> None:
-        record, authored_stages, documents = self.build_records(
+        record, stage_specs, documents = self.build_records(
             stage_completed_at=datetime(2026, 8, 17, 8, 29, tzinfo=UTC)
         )
 
@@ -829,9 +826,85 @@ class ResolvedStageVerificationTests(unittest.TestCase):
         ):
             verify_resolved_stages(
                 record,
-                authored_stages,
+                stage_specs,
                 fetcher=self.fetcher(documents),
             )
+
+
+def build_artifact_manifest_records(
+    *,
+    manifest_raw_override: bytes | None = None,
+) -> tuple[
+    ResolvedArtifactManifestRef,
+    ArtifactManifest,
+    dict[str, bytes],
+]:
+    record, stage_specs, documents = ResolvedStageVerificationTests.build_records()
+
+    authored = stage_specs["download"]
+    spec_raw = yaml_bytes(authored.model_dump(mode="json"))
+
+    resolved_raw = documents["stages/download.spec.resolved.yaml"]
+    resolved = ResolvedDownloadSpec.model_validate(yaml.safe_load(resolved_raw))
+
+    spec_reference = ResolvedFileRef(
+        sha256=hashlib.sha256(spec_raw).hexdigest(),
+        bytes=len(spec_raw),
+        stored_at=HuggingFaceFileRef(
+            repository="machina/mantra-artifacts",
+            commit=PLAN_COMMIT,
+            path="stages/download.spec.yaml",
+            repo_type="dataset",
+        ),
+    )
+
+    resolved_reference = record.attempts[0].resolved_stages[0].resolved_spec
+
+    manifest = ArtifactManifest(
+        artifact=resolved.output,
+        spec=spec_reference,
+        resolved_spec=resolved_reference,
+        source=resolved.source,
+        created_at=resolved.completed_at,
+    )
+
+    manifest_raw = (
+        manifest_raw_override
+        if manifest_raw_override is not None
+        else yaml_bytes(manifest.model_dump(mode="json"))
+    )
+
+    manifest_reference = ResolvedArtifactManifestRef(
+        sha256=hashlib.sha256(manifest_raw).hexdigest(),
+        bytes=len(manifest_raw),
+        stored_at=HuggingFaceFileRef(
+            repository="machina/mantra-artifacts",
+            commit=PLAN_COMMIT,
+            path="artifacts/raw.pt.manifest.yaml",
+            repo_type="dataset",
+        ),
+    )
+
+    documents = {
+        **documents,
+        spec_reference.stored_at.path: spec_raw,
+        manifest_reference.stored_at.path: manifest_raw,
+    }
+
+    return manifest_reference, manifest, documents
+
+
+class ArtifactManifestVerificationTests(unittest.TestCase):
+    def test_manifest_and_referenced_files_are_verified(self) -> None:
+        reference, manifest, documents = build_artifact_manifest_records()
+
+        verified = verify_artifact_manifest(
+            reference, fetcher=lambda location: documents[location.path]
+        )
+
+        self.assertEqual(verified.manifest, manifest)
+        self.assertEqual(verified.artifact, manifest.artifact)
+        self.assertEqual(verified.content, documents[manifest.artifact.stored_at.path])
 
 
 class StoredInputVerificationTests(unittest.TestCase):
@@ -848,7 +921,11 @@ class StoredInputVerificationTests(unittest.TestCase):
         *,
         pointer_raw_override: bytes | None = None,
         manifest_raw_override: bytes | None = None,
-    ) -> tuple[ResolvedBuildSpec, dict[str, bytes]]:
+    ) -> tuple[
+        ResolvedBuildSpec,
+        ArtifactManifest,
+        dict[str, bytes],
+    ]:
         # Git location of the promotion pointer selected by the authored stage.
         pointer_location = ArtifactPointerRef(
             repository=REPOSITORY,
@@ -856,8 +933,7 @@ class StoredInputVerificationTests(unittest.TestCase):
             path="inputs/priors/current.pointer.yaml",
         )
 
-        # Current build request: retrieve the promoted prior, then expose its
-        # verified bytes to build.py at the independent local input path.
+        # Current build request: retrieve the promoted prior, then expose its verified bytes to build.py at the independent local input path.
         authored = {
             "schema_version": 1,
             "kind": "build",
@@ -870,93 +946,23 @@ class StoredInputVerificationTests(unittest.TestCase):
                 }
             },
             "script": "src/mantra/build.py",
-            "environment": AuthoredStagePlanVerificationTests.environment(),
-            "reproducibility": (
-                AuthoredStagePlanVerificationTests.reproducibility()
-            ),
+            "environment": StagePlanVerificationTests.environment(),
+            "reproducibility": (StagePlanVerificationTests.reproducibility()),
             "output": "artifacts/built.pt",
             "params": {},
         }
         # Preexisting promoted artifact consumed by the current build stage.
-        artifact_raw = b"verified promoted prior"
-        artifact = ResolvedFileRef(
-            sha256=hashlib.sha256(artifact_raw).hexdigest(),
-            bytes=len(artifact_raw),
-            stored_at=HuggingFaceFileRef(
-                repository="machina/mantra-artifacts",
-                commit=PLAN_COMMIT,
-                path="artifacts/promoted-prior.pt",
-                repo_type="dataset",
-            ),
-        )
-        # Earlier source file that produced the prior—not the current build.py.
-        source_raw = b"print('producer')\n"
-        source = ResolvedGitFileRef(
-            sha256=hashlib.sha256(source_raw).hexdigest(),
-            bytes=len(source_raw),
-            stored_at=GitFileRef(
-                repository=REPOSITORY,
-                commit=GIT_COMMIT,
-                path="src/mantra/produce_prior.py",
-            ),
-        )
-
-        # Bind the prior to its producing plan, execution, and source.
-        producer_spec_raw = b"producer authored spec"
-        producer_resolved_raw = b"producer resolved spec"
-        manifest = ArtifactManifest(
-            artifact=artifact,
-            spec=ResolvedFileRef(
-                sha256=hashlib.sha256(producer_spec_raw).hexdigest(),
-                bytes=len(producer_spec_raw),
-                stored_at=HuggingFaceFileRef(
-                    repository="machina/mantra-artifacts",
-                    commit=PLAN_COMMIT,
-                    path="producer/produce.spec.yaml",
-                    repo_type="dataset",
-                ),
-            ),
-            resolved_spec=ResolvedFileRef(
-                sha256=hashlib.sha256(producer_resolved_raw).hexdigest(),
-                bytes=len(producer_resolved_raw),
-                stored_at=HuggingFaceFileRef(
-                    repository="machina/mantra-artifacts",
-                    commit=PLAN_COMMIT,
-                    path="producer/produce.spec.resolved.yaml",
-                    repo_type="dataset",
-                ),
-            ),
-            source=source,
-            created_at=datetime(2026, 8, 16, tzinfo=UTC),
-        )
-        manifest_raw = (
-            manifest_raw_override
-            if manifest_raw_override is not None
-            else yaml.safe_dump(
-                manifest.model_dump(mode="json"),
-                sort_keys=True,
-            ).encode("utf-8")
-        )
-        # Exact identity and storage location of the serialized manifest file.
-        manifest_reference = ResolvedArtifactManifestRef(
-            sha256=hashlib.sha256(manifest_raw).hexdigest(),
-            bytes=len(manifest_raw),
-            stored_at=HuggingFaceFileRef(
-                repository="machina/mantra-artifacts",
-                commit=PLAN_COMMIT,
-                path="artifacts/promoted-prior.pt.manifest.yaml",
-                repo_type="dataset",
-            ),
+        manifest_reference, manifest, manifest_documents = (
+            build_artifact_manifest_records(
+                manifest_raw_override=manifest_raw_override,
+            )
         )
         # Contents of the Git-tracked promotion pointer: one exact manifest.
         pointer = ArtifactPointer(manifest=manifest_reference)
         pointer_raw = (
             pointer_raw_override
             if pointer_raw_override is not None
-            else yaml.safe_dump(
-                pointer.model_dump(mode="json"),
-                sort_keys=True,
-            ).encode("utf-8")
+            else yaml_bytes(pointer.model_dump(mode="json"))
         )
         resolved_pointer = ResolvedArtifactPointerRef(
             sha256=hashlib.sha256(pointer_raw).hexdigest(),
@@ -1059,14 +1065,13 @@ class StoredInputVerificationTests(unittest.TestCase):
         )
         # Fake remote files traversed as pointer -> manifest -> artifact.
         documents = {
+            **manifest_documents,
             pointer_location.path: pointer_raw,
-            manifest_reference.stored_at.path: manifest_raw,
-            artifact.stored_at.path: artifact_raw,
         }
-        return resolved, documents
+        return resolved, manifest, documents
 
     def test_pointer_manifest_and_artifact_are_verified(self) -> None:
-        resolved, documents = self.build_records()
+        resolved, manifest, documents = self.build_records()
 
         verified = verify_stored_inputs(
             {"build": resolved},
@@ -1076,58 +1081,14 @@ class StoredInputVerificationTests(unittest.TestCase):
         # Verification results are indexed by stage ID, then input name.
         stored = verified["build"]["prior"]
         self.assertEqual(stored.path, "workspace/priors/current.pt")
-        self.assertEqual(stored.content, documents["artifacts/promoted-prior.pt"])
+        self.assertEqual(stored.artifact, manifest.artifact)
         self.assertEqual(
-            stored.artifact.sha256,
-            hashlib.sha256(stored.content).hexdigest(),
+            stored.content,
+            documents[manifest.artifact.stored_at.path],
         )
-
-    def test_resolved_pointer_location_must_match_authored_pointer(self) -> None:
-        resolved, documents = self.build_records()
-        resolved_input = resolved.inputs["prior"]
-        # Bypass model validation to test the verifier against an inconsistent
-        # resolved pointer location.
-        different_pointer = resolved_input.pointer.model_copy(
-            update={
-                "stored_at": ArtifactPointerRef(
-                    repository=REPOSITORY,
-                    commit=GIT_COMMIT,
-                    path="inputs/priors/different.pointer.yaml",
-                )
-            }
-        )
-        inconsistent = resolved.model_copy(
-            update={
-                "inputs": {
-                    "prior": resolved_input.model_copy(
-                        update={"pointer": different_pointer}
-                    )
-                }
-            }
-        )
-
-        with self.assertRaisesRegex(VerificationError, "different pointer location"):
-            verify_stored_inputs(
-                {"build": inconsistent},
-                fetcher=self.fetcher(documents),
-            )
-
-    def test_missing_resolved_stored_input_is_rejected(self) -> None:
-        resolved, documents = self.build_records()
-        # Keep the authored input but remove its resolved counterpart.
-        inconsistent = resolved.model_copy(update={"inputs": {}})
-
-        with self.assertRaisesRegex(
-            VerificationError,
-            "has no resolved stored-input reference",
-        ):
-            verify_stored_inputs(
-                {"build": inconsistent},
-                fetcher=self.fetcher(documents),
-            )
 
     def test_pointer_bytes_must_match_resolved_reference(self) -> None:
-        resolved, documents = self.build_records()
+        resolved, _, documents = self.build_records()
         # Mutate retrieved bytes without updating the resolved pointer metadata.
         documents["inputs/priors/current.pointer.yaml"] += b"\n"
 
@@ -1140,7 +1101,7 @@ class StoredInputVerificationTests(unittest.TestCase):
     def test_pointer_document_must_validate_as_artifact_pointer(self) -> None:
         # These invalid bytes are hashed correctly to isolate schema validation.
         invalid_pointer = b"schema_version: 1\nunexpected: true\n"
-        resolved, documents = self.build_records(
+        resolved, _, documents = self.build_records(
             pointer_raw_override=invalid_pointer
         )
 
@@ -1151,9 +1112,9 @@ class StoredInputVerificationTests(unittest.TestCase):
             )
 
     def test_manifest_bytes_must_match_pointer_reference(self) -> None:
-        resolved, documents = self.build_records()
+        resolved, _, documents = self.build_records()
         # Mutate retrieved bytes without changing the reference in the pointer.
-        documents["artifacts/promoted-prior.pt.manifest.yaml"] += b"\n"
+        documents["artifacts/raw.pt.manifest.yaml"] += b"\n"
 
         with self.assertRaisesRegex(VerificationError, "byte-count mismatch"):
             verify_stored_inputs(
@@ -1164,7 +1125,7 @@ class StoredInputVerificationTests(unittest.TestCase):
     def test_manifest_document_must_validate_as_artifact_manifest(self) -> None:
         # Correctly hash invalid bytes so failure occurs during model validation.
         invalid_manifest = b"schema_version: 1\nunexpected: true\n"
-        resolved, documents = self.build_records(
+        resolved, _, documents = self.build_records(
             manifest_raw_override=invalid_manifest
         )
 
@@ -1175,13 +1136,49 @@ class StoredInputVerificationTests(unittest.TestCase):
             )
 
     def test_artifact_bytes_must_match_manifest_reference(self) -> None:
-        resolved, documents = self.build_records()
-        artifact = documents["artifacts/promoted-prior.pt"]
+        resolved, _, documents = self.build_records()
+        artifact = documents["artifacts/raw.pt"]
         # Preserve byte count so the SHA-256 check must detect the mutation.
-        documents["artifacts/promoted-prior.pt"] = b"x" * len(artifact)
+        documents["artifacts/raw.pt"] = b"x" * len(artifact)
 
         with self.assertRaisesRegex(VerificationError, "SHA-256 mismatch"):
             verify_stored_inputs(
                 {"build": resolved},
                 fetcher=self.fetcher(documents),
             )
+class FutureInputVerificationTests(unittest.TestCase):
+    @staticmethod
+    def build_records() -> tuple[
+        ResolvedRun,
+        dict[str, ResolvedBaseSpec],
+        dict[str, bytes],
+    ]:
+        producer_run, _, producer_documents = (
+            ResolvedStageVerificationTests.build_records()
+        )
+        manifest_reference, manifest, manifest_documents = (
+            build_artifact_manifest_records()
+        )
+
+        resolved_producer = ResolvedDownloadSpec.model_validate(
+            yaml.safe_load(producer_documents["stages/download.spec.resolved.yaml"])
+        )
+
+        stored_consumer, _, _ = StoredInputVerificationTests.build_records()
+
+        consumer_payload = stored_consumer.model_dump(mode="json")
+
+        consumer_payload["spec"]["inputs"] = {
+            "dataset": {
+                "kind": "future",
+                "producer_stage_id": "download",
+            }
+        }
+        consumer_payload["inputs"] = {
+            "dataset": {
+                "kind": "future",
+                "manifest": manifest_reference.model_dump(mode="json"),
+            }
+        }
+
+        resolved_consumer = ResolvedBuildSpec.model_validate(consumer_payload)

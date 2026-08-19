@@ -1,0 +1,6 @@
+{
+    "python.defaultInterpreterPath": "/Users/machina/miniconda3/envs/mantra/bin/python",
+    "python.analysis.extraPaths": [
+        "/Users/machina/miniconda3/envs/mantra/lib/python3.14/site-packages"
+    ]
+}

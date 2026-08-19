@@ -142,7 +142,7 @@ class ResolvedFileRef(ProtocolModel):
 class ResolvedGitFileRef(ResolvedFileRef):
     """An exact, verified file stored at an immutable Git revision."""
 
-    stored_at: GitFileRef
+    stored_at: GitFileRef  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 class ResolvedArtifactManifestRef(ResolvedFileRef):
@@ -151,7 +151,7 @@ class ResolvedArtifactManifestRef(ResolvedFileRef):
 
 class ResolvedArtifactPointerRef(ResolvedFileRef):
     kind: Literal["artifact_pointer"] = "artifact_pointer"
-    stored_at: ArtifactPointerRef
+    stored_at: ArtifactPointerRef  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +210,8 @@ class GCEEnvironmentSpec(ProtocolModel):
     lockfile: GitFileRef
 
 
-class ResolvedGCEEnvironment(GCEEnvironmentSpec):
+class ResolvedGCEEnvironment(ProtocolModel):
+    kind: Literal["gce"] = "gce"
     machine_image: ResolvedGCEMachineImageRef
     lockfile: ResolvedGitFileRef
 
@@ -784,10 +785,9 @@ class BaseSpec(ProtocolModel):
     repository-relative path where the command must write its one artifact.
     """
 
-    schema_version: Literal[1] = 1
     kind: str
+    schema_version: Literal[1] = 1
 
-    inputs: dict[InputName, FileRef]
     script: RepoRelPath
 
     environment: GCEEnvironmentSpec
@@ -797,7 +797,7 @@ class BaseSpec(ProtocolModel):
 
 
 class DownloadSpec(BaseSpec):
-    kind: Literal["download"] = "download"
+    kind: Literal["download"] = "download"  # pyright: ignore[reportIncompatibleVariableOverride]
     inputs: dict[InputName, RemoteFileRef] = Field(min_length=1)
 
 
@@ -849,17 +849,17 @@ class TrainParams(ProtocolModel):
 
 
 class BuildSpec(InternalSpec):
-    kind: Literal["build"] = "build"
+    kind: Literal["build"] = "build"  # pyright: ignore[reportIncompatibleVariableOverride]
     params: BuildParams
 
 
 class EmbedSpec(InternalSpec):
-    kind: Literal["embed"] = "embed"
+    kind: Literal["embed"] = "embed"  # pyright: ignore[reportIncompatibleVariableOverride]
     params: EmbedParams
 
 
 class TrainSpec(InternalSpec):
-    kind: Literal["train"] = "train"
+    kind: Literal["train"] = "train"  # pyright: ignore[reportIncompatibleVariableOverride]
     params: TrainParams
 
 
@@ -915,11 +915,6 @@ class ResolvedBaseSpec(ProtocolModel):
 
     @model_validator(mode="after")
     def validate_common_invariants(self) -> ResolvedBaseSpec:
-        if self.kind != self.spec.kind:
-            raise ValueError(
-                "resolved spec kind must match the embedded authored spec kind"
-            )
-
         if not self.command[0]:
             raise ValueError("command executable must be nonempty")
 
@@ -975,8 +970,8 @@ class ResolvedDownloadSpec(ResolvedBaseSpec):
     download. The output is the first verified artifact created from that URL.
     """
 
-    kind: Literal["download"] = "download"
-    spec: DownloadSpec
+    kind: Literal["download"] = "download"  # pyright: ignore[reportIncompatibleVariableOverride]
+    spec: DownloadSpec  # pyright: ignore[reportIncompatibleVariableOverride]
 
     inputs: dict[InputName, RemoteFileRef]
 
@@ -995,7 +990,7 @@ class ResolvedInternalSpec(ResolvedBaseSpec):
     Receipt for an operation that consumes previously produced artifacts.
     """
 
-    spec: InternalSpec
+    spec: InternalSpec  # pyright: ignore[reportIncompatibleVariableOverride]
     inputs: dict[InputName, ResolvedInternalInputRef]
 
     @model_validator(mode="after")
@@ -1006,17 +1001,17 @@ class ResolvedInternalSpec(ResolvedBaseSpec):
             )
 
         for name, resolved_input in self.inputs.items():
-            authored_input = self.spec.inputs[name]
+            spec_input = self.spec.inputs[name]
 
-            if resolved_input.kind != authored_input.kind:
+            if resolved_input.kind != spec_input.kind:
                 raise ValueError(
                     f"resolved input {name!r} kind must match the authored input"
                 )
 
             if (
                 resolved_input.kind == "stored"
-                and authored_input.kind == "stored"
-                and resolved_input.pointer.stored_at != authored_input.pointer
+                and spec_input.kind == "stored"
+                and resolved_input.pointer.stored_at != spec_input.pointer
             ):
                 raise ValueError(
                     f"resolved input {name!r} pointer location must match "
@@ -1027,18 +1022,18 @@ class ResolvedInternalSpec(ResolvedBaseSpec):
 
 
 class ResolvedBuildSpec(ResolvedInternalSpec):
-    kind: Literal["build"] = "build"
-    spec: BuildSpec
+    kind: Literal["build"] = "build"  # pyright: ignore[reportIncompatibleVariableOverride]
+    spec: BuildSpec  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 class ResolvedEmbedSpec(ResolvedInternalSpec):
-    kind: Literal["embed"] = "embed"
-    spec: EmbedSpec
+    kind: Literal["embed"] = "embed"  # pyright: ignore[reportIncompatibleVariableOverride]
+    spec: EmbedSpec  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 class ResolvedTrainSpec(ResolvedInternalSpec):
-    kind: Literal["train"] = "train"
-    spec: TrainSpec
+    kind: Literal["train"] = "train"  # pyright: ignore[reportIncompatibleVariableOverride]
+    spec: TrainSpec  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 ResolvedSpec = Annotated[

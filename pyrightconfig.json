@@ -1,0 +1,8 @@
+{
+    "venvPath": "/Users/machina/miniconda3/envs",
+    "venv": "mantra",
+    "extraPaths": [
+        "/Users/machina/miniconda3/envs/mantra/lib/python3.14/site-packages"
+    ],
+    // "reportIncompatibleVariableOverride": false
+}
