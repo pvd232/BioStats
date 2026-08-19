@@ -89,9 +89,10 @@ Promotion is manual during Stage 1.
 4. `ResolvedBaseSpec.output.stored_at.path` equals
    `ResolvedBaseSpec.spec.output`.
 
-5. Every completed stage artifact has exactly one `ArtifactManifest`. The
-   manifest identifies the artifact, stage-spec file, resolved-spec file, and
-   source entry point.
+5. Every completed stage has one `ResolvedStageRef`. Its `resolved_spec` field
+   identifies the resolved-spec file, and its `artifact_manifest` field
+   identifies the stage artifact's `ArtifactManifest`. The manifest identifies
+   the artifact, stage-spec file, resolved-spec file, and source entry point.
 
 6. `ArtifactPointer` is created when an artifact is selected for promotion or
    reuse. Each pointer selects exactly one `ResolvedArtifactManifestRef`.
@@ -159,10 +160,11 @@ RunSpec
 
 RunAttempt
 └── one effort to execute the frozen RunSpec
-    ├── resolved stage-spec files
-    ├── artifact-manifest files
-    ├── measurement files
-    └── log files
+    ├── resolved_stages: ResolvedStageRef[]
+    │   ├── resolved_spec: ResolvedFileRef
+    │   └── artifact_manifest: ResolvedArtifactManifestRef
+    ├── measurement_files: ResolvedFileRef[]
+    └── log_files: ResolvedFileRef[]
 
 Stage
 ├── stage spec
@@ -170,6 +172,7 @@ Stage
 └── successful completion
     ├── resolved spec
     ├── exactly one primary artifact
+    ├── artifact manifest
     └── zero or more measurement streams
 
 Artifact
@@ -300,7 +303,7 @@ The references record the commits as follows:
 | B | Run file and stage specs | `ResolvedRun.run_file.stored_at.commit`; `ArtifactManifest.spec.stored_at.commit` |
 | C | Stage artifact | `ResolvedBaseSpec.output.stored_at.commit`; `ArtifactManifest.artifact.stored_at.commit` |
 | D | Resolved stage spec | `ResolvedStageRef.resolved_spec.stored_at.commit`; `ArtifactManifest.resolved_spec.stored_at.commit` |
-| E | Artifact manifest | `ResolvedArtifactManifestRef.stored_at.commit`; `ArtifactPointer.manifest.stored_at.commit` |
+| E | Artifact manifest | `ResolvedStageRef.artifact_manifest.stored_at.commit`; `ArtifactPointer.manifest.stored_at.commit` |
 | F | Promoted pointer used by a later run | `StoredInputRef.pointer.commit`; `ResolvedStoredInputRef.pointer.stored_at.commit` |
 
 The letters identify dependency order and file roles. A and F belong to the
@@ -463,12 +466,21 @@ Commit A ── ArtifactManifest.source
 Commit B ── ArtifactManifest.spec
 Commit C ── ArtifactManifest.artifact
 Commit D ── ArtifactManifest.resolved_spec
-Commit E ── ResolvedArtifactManifestRef
+Commit E ── ResolvedStageRef.artifact_manifest
 Commit F ── ArtifactPointer file
 ```
 
-The `ArtifactPointer` file published at F contains the
-`ResolvedArtifactManifestRef` pointing to the manifest published at E.
+When the stage artifact is promoted, the pointer published at F records the
+same manifest reference carried by the producing stage:
+
+```text
+ArtifactPointer.manifest
+    ==
+producing ResolvedStageRef.artifact_manifest
+```
+
+Both fields contain the `ResolvedArtifactManifestRef` for the manifest file
+published at E.
 
 ### Manifest
 
@@ -803,12 +815,14 @@ For a future input, `FutureInputRef.producer_stage_id` and
 ```text
 FutureInputRef.producer_stage_id
 → selects producer ResolvedStageRef from successful RunAttempt.resolved_stages
-→ producer ResolvedStageRef.resolved_spec
-     ==
-  ArtifactManifest.resolved_spec
-→ selects that manifest's ResolvedArtifactManifestRef from successful RunAttempt.artifact_manifests
+→ producer ResolvedStageRef.artifact_manifest
      ==
   ResolvedFutureInputRef.manifest
+→ loads ArtifactManifest
+
+producer ResolvedStageRef.resolved_spec
+     ==
+ArtifactManifest.resolved_spec
 
 ArtifactManifest.artifact
      ==
@@ -908,12 +922,16 @@ ResolvedBaseSpec.output.stored_at.path
 
    ```text
    FutureInputRef.producer_stage_id
-   → producer ResolvedStageRef.resolved_spec
+   → producer ResolvedStageRef.artifact_manifest
                     ==
-      ArtifactManifest.resolved_spec
-   → ArtifactManifest.artifact
+      ResolvedFutureInputRef.manifest
+   → ArtifactManifest
+      ├── resolved_spec
+      │        ==
+      │  producer ResolvedStageRef.resolved_spec
+      └── artifact
                     ==
-      producer ResolvedBaseSpec.output
+         producer ResolvedBaseSpec.output
    → verified artifact bytes
    → producer stage's output path
    ```
@@ -1060,14 +1078,14 @@ ResolvedRun
 ├── successful_attempt_id
 └── attempts
     └── RunAttempt where attempt_id == successful_attempt_id
-        ├── resolved_stages
-        │   └── ResolvedStageRef.resolved_spec
-        │       └── loads ResolvedBaseSpec
-        │           └── source
-        └── artifact_manifests
-            └── ResolvedArtifactManifestRef
-                └── loads ArtifactManifest
-                    └── source
+        └── resolved_stages
+            └── ResolvedStageRef
+                ├── resolved_spec
+                │   └── loads ResolvedBaseSpec
+                │       └── source
+                └── artifact_manifest
+                    └── loads ArtifactManifest
+                        └── source
 ```
 
 The records must satisfy:
@@ -1384,6 +1402,7 @@ AttemptStatus = Literal[
 class ResolvedStageRef(ProtocolModel):
     stage_id: StageId
     resolved_spec: ResolvedFileRef
+    artifact_manifest: ResolvedArtifactManifestRef
 
 
 class RunAttempt(ProtocolModel):
@@ -1394,7 +1413,6 @@ class RunAttempt(ProtocolModel):
     completed_at: AwareDatetime
 
     resolved_stages: tuple[ResolvedStageRef, ...]
-    artifact_manifests: tuple[ResolvedArtifactManifestRef, ...]
     measurement_files: tuple[ResolvedFileRef, ...]
     log_files: tuple[ResolvedFileRef, ...]
 
@@ -1415,6 +1433,17 @@ resolved_spec:
     commit: <commit-d-embedding-resolved-spec>
     path: experiments/e001_low_rank/runs/low_rank_32/01JABC/stages/embed.spec.resolved.yaml
     repo_type: dataset
+
+artifact_manifest:
+  kind: artifact_manifest
+  sha256: <embedding-manifest-sha256>
+  bytes: <embedding-manifest-bytes>
+  stored_at:
+    kind: huggingface
+    repository: machina/mantra-artifacts
+    commit: <commit-e-embedding-manifest>
+    path: experiments/e001_low_rank/runs/low_rank_32/01JABC/artifacts/embedding.pt.manifest.yaml
+    repo_type: dataset
 ```
 
 Attempt invariants:
@@ -1424,15 +1453,16 @@ Attempt invariants:
 - An attempt cannot begin before the preceding attempt finishes.
 - Every attempt has a completion timestamp.
 - Resolved-stage IDs are unique and preserve the run's declared stage order.
-- Each `ResolvedStageRef` explicitly binds its stage ID to the resolved-spec
-  file produced by that stage.
+- Each `ResolvedStageRef` binds one stage ID to its resolved-spec file and
+  artifact-manifest file.
+- Artifact-manifest references are unique within an attempt.
 - Retrying may not modify the frozen run plan.
 - A successful attempt completes every stage in order and has no failure
   reason.
 - A failed, preempted, or cancelled attempt has a nonempty failure reason.
 - No attempt may occur after a successful attempt.
-- An unsuccessful attempt may retain partial stage, manifest, measurement, and
-  log references.
+- An unsuccessful attempt may retain completed-stage, measurement, and log
+  references.
 - Partial unsuccessful-attempt outputs do not become accepted run outputs.
 - Deliberate reproducibility confirmations are separate runs, not attempts.
 
@@ -1639,11 +1669,13 @@ and confirms that:
 - `run_file` parses as a `RunSpec` equal to the `RunSpec` embedded in
   `ResolvedRun`;
 - each `ResolvedStageRef` binds the declared stage ID to an exact resolved-spec
-  file whose embedded stage spec matches the corresponding run-plan stage;
+  file and artifact-manifest file;
+- each resolved-spec file embeds the stage spec corresponding to the declared
+  run-plan stage;
 - each resolved stage uses the run's source commit A and was completed within the
   successful attempt's time interval;
-- each artifact manifest identifies the corresponding resolved stage's recorded
-  output; and
+- each `ResolvedStageRef.artifact_manifest` identifies its resolved stage's
+  recorded output; and
 - each measurement row identifies the expected run, attempt, stage, and metric.
 
 The verifier also recalculates every referenced file's SHA-256 and byte count.
@@ -1684,22 +1716,26 @@ count.
    resolved-spec reference from D.
 8. Publish the manifest and record manifest commit E.
 9. Close and publish measurement files.
-10. Record all resulting exact references in the attempt.
+10. Construct one `ResolvedStageRef` containing the stage ID, resolved-spec
+    reference from D, and artifact-manifest reference from E.
+11. Record the `ResolvedStageRef` and measurement-file references in the
+    attempt.
 
 ### After an attempt terminates
 
 1. Close and publish its logs.
 2. Record its terminal status.
 3. Record `ResolvedStageRef` values for stages that completed successfully.
-4. Record exact stage, manifest, measurement, and log references.
+4. Record exact measurement and log references.
 5. Record a failure reason when applicable.
-6. Retry under a new attempt ID only if the run plan remains unchanged.
+6. Retry under a new attempt ID while preserving the run plan.
 
 ### After the run terminates
 
 1. Validate all attempt records.
 2. Identify the successful attempt, if one exists.
-3. Collect its resolved stages, artifact manifests, and measurements.
+3. Collect its resolved stages and measurements. Each `ResolvedStageRef`
+   contains its artifact-manifest reference.
 4. Write and publish `<run_id>.run.resolved.yaml`.
 
 ---
@@ -1925,7 +1961,6 @@ ResolvedRun
 └── attempts: RunAttempt[]
     ├── status and timestamps
     ├── resolved_stages: ResolvedStageRef[]
-    ├── artifact_manifests: ResolvedArtifactManifestRef[]
     ├── measurement_files: ResolvedFileRef[]
     └── log_files: ResolvedFileRef[]
 ```
@@ -1946,8 +1981,10 @@ RunStageRef
 
 ResolvedStageRef
 ├── stage_id
-└── resolved_spec: ResolvedFileRef
-    └── exact resolved-spec identity and storage location
+├── resolved_spec: ResolvedFileRef
+│   └── exact resolved-spec identity and storage location
+└── artifact_manifest: ResolvedArtifactManifestRef
+    └── exact artifact-manifest identity and storage location
 ```
 
 The resolved-spec file parses as one of:
@@ -1977,17 +2014,20 @@ resolved stage
 
 ```text
 ResolvedStageRef
-└── resolved_spec ───────────────────────────────┐
-                                                 │ same ResolvedFileRef
-ArtifactManifest                                 │
-├── resolved_spec ───────────────────────────────┘
-├── spec              exact stage-spec file
-├── source            exact source entry point
-└── artifact          exact produced artifact
+├── resolved_spec ───────────────────────────────┐
+│                                                │ same ResolvedFileRef
+└── artifact_manifest                            │
+    └── loads ArtifactManifest                   │
+        ├── resolved_spec ───────────────────────┘
+        ├── spec              exact stage-spec file
+        ├── source            exact source entry point
+        └── artifact          exact produced artifact
 ```
 
-The shared `resolved_spec` reference binds an artifact manifest to its producer
-stage. The manifest then identifies the exact artifact, stage spec, and
+`ResolvedStageRef.artifact_manifest` identifies the stage's manifest file. The
+equality between `ResolvedStageRef.resolved_spec` and
+`ArtifactManifest.resolved_spec` confirms that the manifest describes the same
+stage execution. The manifest identifies the exact artifact, stage spec, and
 source associated with that execution.
 
 `ResolvedArtifactManifestRef` identifies the manifest file itself:
@@ -2040,23 +2080,22 @@ FutureInputRef
           │
           ▼
 producer ResolvedStageRef
-└── resolved_spec ──────────────────────────────────┐
-                                                    │
-successful attempt                                  │ match
-└ artifact_manifests: ResolvedArtifactManifestRef[] │
-    └── selected manifest reference                 │
-        ├── retrieve ArtifactManifest               │
-        │   └── resolved_spec ──────────────────────┘
-        │
-        │ must equal
-        ▼
+├── resolved_spec ─────────────────────┐
+└── artifact_manifest ─────────────┐   │
+                                   │   │
 ResolvedFutureInputRef
-└── manifest
-             │
-             ▼
-      verified artifact bytes
-             │
-             ▼
+└── manifest ──────────────────────┘   │
+              same reference           │
+                     │                  │
+                     ▼                  │
+              ArtifactManifest          │
+              ├── resolved_spec ────────┘
+              └── artifact
+                     │
+                     ▼ retrieve and verify
+              verified artifact bytes
+                     │
+                     ▼
 producer stage spec.output path
 ```
 
@@ -2082,8 +2121,8 @@ serialized provenance records.
 | 15.2 | `ResolvedRun.run_file` and `ResolvedRun.run` | The published run file equals the embedded run plan |
 | 15.3 | `RunSpec`, `ExperimentSpec`, and `VariantSpec` | The run selects a declared variant, factor assignment, and replicate |
 | 15.4 | `RunSpec.stages` and `RunStageRef` | Stage specs are exact, ordered, and path-compatible |
-| 15.5 | Successful `RunAttempt.resolved_stages` | Every declared stage has the correct resolved execution record and exact files |
-| 15.6 | `ArtifactManifest` and its references | The manifest identifies one verified stage output and its producing records |
+| 15.5 | `ResolvedStageRef.resolved_spec` for the successful `RunAttempt` | Every declared stage has the correct resolved execution record and exact referenced files |
+| 15.6 | `ResolvedStageRef.artifact_manifest` and `ArtifactManifest` | Each stage manifest identifies one verified stage output and its producing records |
 | 15.7 | `StoredInputRef` and `ResolvedStoredInputRef` | A promoted input resolves through its pointer and manifest to verified bytes |
 | 15.8 | `FutureInputRef`, `ResolvedFutureInputRef`, producer stage, and producer manifest | A same-run input resolves to the referenced earlier stage's verified output |
 | 15.9 | `RunAttempt.measurement_files` and `Measurement` rows | Measurements belong to the expected run, attempt, stage, and metric |
@@ -2145,8 +2184,7 @@ The verifier traverses the successful run in this order:
      `RunAttempt.started_at` and `RunAttempt.completed_at`.
 
 5. **Artifact manifests**
-   - Retrieve every `ResolvedArtifactManifestRef` in
-     `RunAttempt.artifact_manifests`.
+   - Retrieve each `ResolvedStageRef.artifact_manifest`.
    - Verify `ArtifactManifest.artifact`, `ArtifactManifest.spec`,
      `ArtifactManifest.resolved_spec`, and `ArtifactManifest.source`.
    - Match `ArtifactManifest.resolved_spec` to the producing
@@ -2161,8 +2199,10 @@ The verifier traverses the successful run in this order:
 
 7. **Same-run future inputs**
    - Resolve `FutureInputRef.producer_stage_id` to an earlier `RunStageRef`.
-   - Match `ResolvedFutureInputRef.manifest` to that producer's
-     `ResolvedArtifactManifestRef`.
+   - Resolve the same stage ID to the producer `ResolvedStageRef` in the
+     successful `RunAttempt`.
+   - Match `ResolvedFutureInputRef.manifest` to
+     `ResolvedStageRef.artifact_manifest`.
    - Return the verified `ResolvedBaseSpec.output` bytes at
      `ResolvedBaseSpec.spec.output`.
 
@@ -2188,6 +2228,7 @@ The verified relationships are:
 
 **Manifest**
 
+- `ResolvedStageRef.artifact_manifest` identifies the retrieved manifest file.
 - Parsed `ArtifactManifest.spec` contents equal `ResolvedBaseSpec.spec`.
 - `ArtifactManifest.resolved_spec == ResolvedStageRef.resolved_spec`.
 - `ArtifactManifest.source == ResolvedBaseSpec.source`.
@@ -2201,12 +2242,10 @@ The verified relationships are:
 
 **Future input**
 
-- Select the `ResolvedArtifactManifestRef` from
-  `RunAttempt.artifact_manifests` whose parsed
-  `ArtifactManifest.resolved_spec` equals the producer
-  `ResolvedStageRef.resolved_spec`.
-- `ResolvedFutureInputRef.manifest ==` that selected
-  `ResolvedArtifactManifestRef`.
+- `ResolvedFutureInputRef.manifest ==`
+  `producer ResolvedStageRef.artifact_manifest`.
+- Parsed `ArtifactManifest.resolved_spec ==`
+  `producer ResolvedStageRef.resolved_spec`.
 
 **Measurement**
 
@@ -2327,8 +2366,8 @@ attempt handling, resolved-run construction, and cross-file verification.
       paths, script, or output path.
 
   - [x] **15.5. Verify every resolved stage.**
-    - Retrieve and parse the resolved-stage spec in every `ResolvedStageRef`
-      retained by the successful attempt.
+    - Retrieve and parse `ResolvedStageRef.resolved_spec` for every completed
+      stage retained by the successful attempt.
     - Require resolved-stage IDs to equal the run's declared stage IDs in
       order.
     - Require its embedded stage spec to equal the corresponding loaded
@@ -2343,8 +2382,8 @@ attempt handling, resolved-run construction, and cross-file verification.
       output using their recorded SHA-256 values and byte counts.
 
   - [x] **15.6. Verify artifact manifests.**
-    - Retrieve and verify the referenced manifest file before parsing it as an
-      `ArtifactManifest`.
+    - Retrieve and verify each `ResolvedStageRef.artifact_manifest` before
+      parsing it as an `ArtifactManifest`.
     - Retrieve and verify `manifest.artifact`, `manifest.spec`,
       `manifest.resolved_spec`, and `manifest.source`.
     - Parse `manifest.spec` as a stage spec and
@@ -2365,15 +2404,14 @@ attempt handling, resolved-run construction, and cross-file verification.
       `path` before execution.
 
   - [ ] **15.8. Verify same-run future inputs.**
-    - Locate the resolved spec and artifact manifest belonging to the referenced
-      producer stage.
-    - Require the future input's manifest to equal the producer's manifest.
-    - Require the future input's manifest to pass artifact-manifest
-      verification.
-    - Require the manifest's resolved-spec reference to equal the producer
-      stage's resolved-spec reference.
+    - Resolve `FutureInputRef.producer_stage_id` to the producer
+      `ResolvedStageRef` in the successful attempt.
+    - Require `ResolvedFutureInputRef.manifest` to equal the producer
+      `ResolvedStageRef.artifact_manifest`.
+    - Verify the manifest through `ResolvedStageRef.artifact_manifest`.
+    - Require `ArtifactManifest.resolved_spec` to equal the producer
+      `ResolvedStageRef.resolved_spec`.
     - Retrieve and verify the artifact before the consumer stage executes.
-    - Do not require an `ArtifactPointer` for a same-run dependency.
 
   - [ ] **15.9. Verify measurement files.**
     - Retrieve and verify every measurement file referenced by the successful
