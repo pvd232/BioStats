@@ -1006,30 +1006,41 @@ StoredInputRef.pointer
 
 ---
 
-## 8. Source identity
+## 8. Source repository and entry point
 
-A run records its exact source repository and commit:
+`RunSpec.source` identifies the complete tracked repository snapshot used by the
+run. `ResolvedBaseSpec.source` identifies the exact entry-point file used by one
+stage.
+
+```text
+RunSpec.source
+├── repository
+└── commit
+    └── complete tracked repository snapshot
+
+ResolvedBaseSpec.source
+├── sha256
+├── bytes
+└── stored_at: GitFileRef
+    ├── repository
+    ├── commit
+    └── path
+        └── stage entry-point file
+```
+
+Example `RunSpec.source` and `ResolvedBaseSpec.source` values for one train
+stage:
 
 ```yaml
+# RunSpec.source
 source:
   kind: git
   repository: https://github.com/example/mantra
   commit: <commit-a-producer-source>
-```
 
-A resolved stage additionally records the exact source entry point:
+---
 
-```text
-repository
-commit
-entry-point path
-entry-point SHA-256
-entry-point byte count
-```
-
-Example resolved source entry point:
-
-```yaml
+# ResolvedBaseSpec.source
 source:
   sha256: <train-source-sha256>
   bytes: <train-source-bytes>
@@ -1040,21 +1051,88 @@ source:
     path: src/mantra/train.py
 ```
 
-The executor must:
+The verifier reaches the run source and each resolved stage through the `ResolvedRun`:
 
-- Check out the exact commit.
-- Reject modified tracked files.
-- Reject relevant untracked source files.
-- Prevent imports from uncontrolled source directories.
-- Execute the recorded entry point from the clean checkout.
+```text
+ResolvedRun
+├── run: RunSpec
+│   └── source
+├── successful_attempt_id
+└── attempts
+    └── RunAttempt where attempt_id == successful_attempt_id
+        ├── resolved_stages
+        │   └── ResolvedStageRef.resolved_spec
+        │       └── loads ResolvedBaseSpec
+        │           └── source
+        └── artifact_manifests
+            └── ResolvedArtifactManifestRef
+                └── loads ArtifactManifest
+                    └── source
+```
 
-Installed libraries are covered by the recorded environment.
+The records must satisfy:
 
-Dynamically loaded output-affecting files must be covered by:
+```text
+ResolvedBaseSpec.source.stored_at.repository
+    ==
+ResolvedRun.run.source.repository
 
-- The source commit.
-- The environment.
-- Or a declared execution input.
+ResolvedBaseSpec.source.stored_at.commit
+    ==
+ResolvedRun.run.source.commit
+
+ResolvedBaseSpec.source.stored_at.path
+    ==
+ResolvedBaseSpec.spec.script
+
+ArtifactManifest.source
+    ==
+ResolvedBaseSpec.source
+```
+
+The verifier checks the entry-point file through:
+
+```text
+ResolvedBaseSpec.source.stored_at
+→ retrieve entry-point bytes
+→ compare byte count with ResolvedBaseSpec.source.bytes
+→ compare SHA-256 with ResolvedBaseSpec.source.sha256
+```
+
+The executor handles the stage source in this order:
+
+```text
+RunSpec.source
+→ check out repository at commit
+→ confirm checkout HEAD equals RunSpec.source.commit
+→ before input materialization, confirm the checkout is clean
+  ├── no modified tracked files
+  └── no untracked files
+→ locate BaseSpec.script inside the checkout
+→ calculate the entry point's SHA-256 and byte count
+→ materialize the stage's declared inputs
+→ launch BaseSpec.script as the stage entry point from that checkout
+→ record ResolvedBaseSpec.source
+```
+
+Files that can affect the stage output connect to the provenance record through:
+
+```text
+tracked project code and imports
+→ RunSpec.source
+
+stage entry-point file
+→ ResolvedBaseSpec.source
+
+installed Python and native libraries
+→ ResolvedBaseSpec.environment
+
+external file retrieved by a download stage
+→ DownloadSpec.inputs
+
+runtime files outside the tracked source and installed environment
+→ InternalSpec.inputs
+```
 
 ---
 
@@ -2098,7 +2176,8 @@ The verifier traverses the successful run in this order:
 9. **Source checkout**
    - Check out `RunSpec.source.repository` at `RunSpec.source.commit`.
    - Match every stage entry point to `ResolvedBaseSpec.source`.
-   - Reject modified tracked source and uncontrolled source files.
+   - Reject modified tracked files and untracked files before input
+     materialization.
 
 The verified relationships are:
 
@@ -2173,8 +2252,8 @@ same byte-count, SHA-256, parsing, and relationship checks then execute against
 those bytes.
 
 Source-checkout verification in Step 15.10 inspects the checked-out repository
-for the recorded commit, stage entry points, modified tracked files, and
-uncontrolled source files.
+for the recorded commit and stage entry points, then requires no modified
+tracked files or untracked files before input materialization.
 
 ---
 
@@ -2308,8 +2387,8 @@ attempt handling, resolved-run construction, and cross-file verification.
   - [ ] **15.10. Verify the source checkout.**
     - Fetch the exact recorded Git commit.
     - Require every stage entry point to exist at that commit.
-    - Reject modified tracked source and uncontrolled source files in the
-      execution checkout.
+    - Reject modified tracked files and untracked files in the execution
+      checkout before input materialization.
 
   - [ ] **15.11. Orchestrate complete resolved-run verification.**
     - Implement one `verify_resolved_run()` entry point that performs checks

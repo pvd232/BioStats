@@ -82,7 +82,7 @@ class RemoteFileRef(ProtocolModel):
     url: HttpUrl
 
 class GitSource(ProtocolModel):
-    """A file stored at an exact Git revision."""
+    """A repository snapshot identified by an exact Git commit."""
 
     kind: Literal["git"] = "git"
     repository: HttpUrl

@@ -715,7 +715,7 @@ def verify_artifact_manifest(
 
     if resolved_spec.source != manifest.source:
         raise VerificationError(
-            "resolved spec output does not equal the manifest artifact"
+            "resolved spec source does not match manifest source"
         )
 
     return VerifiedArtifactManifest(
