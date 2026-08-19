@@ -925,8 +925,9 @@ ResolvedBaseSpec.output.stored_at.path
 
 ## 7. External data roots
 
-Each `RemoteFileRef` is an external data root. A `DownloadSpec` retrieves one
-root and produces the first byte-identified artifact in the MANTRA lineage:
+Each `RemoteFileRef` is an external data root. A `DownloadSpec` retrieves
+exactly one remote file. `ResolvedDownloadSpec.output` is the first
+`ResolvedFileRef` in the lineage rooted at that URL.
 
 ```text
 DownloadSpec
@@ -936,7 +937,7 @@ DownloadSpec
 └── output
         │
         ▼
-execute DownloadSpec.script
+executor runs DownloadSpec.script as the entry point
 ├── retrieve the single RemoteFileRef.url
 └── write those bytes at DownloadSpec.output
         │
@@ -947,11 +948,10 @@ calculate output SHA-256 and byte count
         ▼
 ResolvedDownloadSpec
 ├── spec: DownloadSpec
-├── inputs == spec.inputs
+├── inputs: dict[InputName, RemoteFileRef]
+├── command
 └── output: ResolvedFileRef
 ```
-
-`RemoteFileRef.url` records where the stage retrieves external data.
 
 Example `DownloadSpec.inputs`:
 
@@ -962,43 +962,47 @@ inputs:
     url: https://example.org/datasets/perturbations.h5ad
 ```
 
-`DownloadSpec.inputs` contains exactly one named `RemoteFileRef`.
-`DownloadSpec.script` retrieves the file identified by that reference and
-writes those bytes at `DownloadSpec.output`.
-
-`ResolvedDownloadSpec` retains the exact URL used by the execution:
+`ResolvedDownloadSpec` and its `ArtifactManifest` must satisfy:
 
 ```text
 ResolvedDownloadSpec.inputs
     ==
 ResolvedDownloadSpec.spec.inputs
-```
 
-Its `output` identifies the exact file produced:
+ResolvedDownloadSpec.output.stored_at.path
+    ==
+ResolvedDownloadSpec.spec.output
 
-```text
+ArtifactManifest.artifact
+    ==
 ResolvedDownloadSpec.output
-└── ResolvedFileRef
-    ├── sha256
-    ├── bytes
-    └── stored_at
 ```
 
-`RemoteFileRef.url` identifies where `DownloadSpec.script` retrieves the file.
-After retrieval, `ResolvedDownloadSpec.output` records the SHA-256, byte count,
-and immutable storage location of the bytes written at `DownloadSpec.output`.
+`ResolvedDownloadSpec.output.sha256` and `ResolvedDownloadSpec.output.bytes`
+identify the output contents. `ResolvedDownloadSpec.output.stored_at` identifies
+where that exact file is stored at an immutable repository commit.
 
 Repeating the acquisition requires:
 
-1. Executing `ResolvedDownloadSpec.spec.script`, which retrieves the
-   `RemoteFileRef` in `ResolvedDownloadSpec.spec.inputs`.
-2. Calculating the SHA-256 and byte count of the file written at
+1. Executing `ResolvedDownloadSpec.command` using its recorded `source` and
+   `environment`.
+2. `ResolvedDownloadSpec.spec.script` retrieving the `RemoteFileRef` in
+   `ResolvedDownloadSpec.inputs` and writing the returned bytes at
    `ResolvedDownloadSpec.spec.output`.
-3. Comparing both values with `ResolvedDownloadSpec.output`.
+3. Calculating the SHA-256 and byte count of the file written at
+   `ResolvedDownloadSpec.spec.output`.
+4. Comparing both values with `ResolvedDownloadSpec.output`.
 
-A downstream `StoredInputRef.pointer` selects the published artifact's
-`ArtifactManifest`. The executor retrieves `ArtifactManifest.artifact` from its
-immutable `stored_at` location.
+After the artifact is promoted as a reusable input, a later stage reaches it
+through:
+
+```text
+StoredInputRef.pointer
+→ ArtifactPointer.manifest
+→ ArtifactManifest.artifact
+     ==
+  ResolvedDownloadSpec.output
+```
 
 ---
 
