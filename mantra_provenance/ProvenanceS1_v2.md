@@ -1,195 +1,1158 @@
-# MANTRA Provenance Protocol — Stage 1, Version 2
+# MANTRA Provenance Protocol — Stage 1 Version 2
 
-Status: draft for iterative review
+Status: design draft for iterative review
+
+This document defines the target Stage 1 provenance contract. The current
+implementation remains in `models_v4.py` and `verifier.py` until the contracts
+in this document are frozen and migrated.
+
+---
 
 ## 1. Scope
 
-This document defines the Stage 1 contract for artifacts produced by one stage
-execution. It fixes:
+Stage 1 records and verifies one model-building run from its fixed inputs to its
+fitted estimator. It defines:
 
-1. The boundary between one artifact and multiple artifacts.
-2. The physical representation of one artifact as one file or a file bundle.
-3. The artifact records carried by a stage spec, resolved stage spec, manifest,
-   completed-stage reference, and downstream input.
-4. The equalities verified across those records.
-5. The publication and parity rules for the resulting files.
+1. A run plan.
+2. The runtime states permitted by that plan
+2. The condition under which the plan provides strict parameter
+   reproducibility.
+3. The ordered stage partition declared by the plan.
+4. The artifact partition produced by each successful stage.
+5. The physical-file partition representing each artifact.
+6. The exact files connecting a run, stage, artifact, and measured result.
+7. The validators and cross-file verifier checks enforcing those relationships.
 
-The current Stage 1 specification remains in `ProvenanceS1.md`. This draft is
-the review surface for the version 2 contract. After this contract is frozen,
-its changes will be mapped onto the current specification section by section.
+Benchmark definitions, benchmark reproducibility, diagnostics, evaluation
+records, promotion gates, and SOTA selection belong to the next protocol stage.
 
 ---
 
-## 2. Terms
+## 2. Fitted estimator under runtime variation
 
-### Stage
+Let ${\alpha}$ identify a parameterized prediction-function family. It fixes a
+parameter space ${\Theta_{\alpha}}$.
 
-A stage is one execution of the command recorded by a stage spec.
+Let ${\beta \in \mathcal{B}_\alpha}$ identify the chosen estimator.
 
-### Artifact
+Let ${D \in \mathcal{D}}$ be an arbitrary dataset. 
 
-An artifact is one named, independently addressable, durable computational
-value.
+Let ${e \in E}$ be a runtime state, defined as a particular assignment of execution parameters that can
+vary between two executions.
 
-Examples:
+The runtime-indexed estimator is:
 
-- A trained model.
-- A perturbation-embedding matrix.
-- A reusable prior.
-- A prediction matrix retained for downstream use.
-- A resumable training checkpoint.
+$$
+\widetilde{T}_{\alpha,\beta}
+:
+\mathcal{D}\times E
+\rightarrow
+\Theta_{\alpha}.
+$$
 
-### Artifact file
+It defines the map from the chosen runtime state and dataset to the fitted parameter.
 
-An artifact file is one artifact whose complete physical representation contains
-exactly one file.
+---
 
-```text
-artifact: perturbation_embeddings
-└── perturbation_embeddings.pt
-```
+## 3. Run plan and permitted runtime states
 
-### Artifact bundle
+Let `Q` be the set of valid run plans and let `q` be one member of `Q`.
 
-An artifact bundle is one artifact whose complete physical representation
-contains at least two files.
+The complete plan `q` contains:
 
 ```text
-artifact: model
-├── model.pt
-└── config.pkl
+RunSpec
+└── ordered RunStageRef records
+    └── exact stage-spec files
 ```
 
-Each bundle member has a repository-relative path beneath the bundle root. A
-bundle manifest identifies the complete member set.
+Formally:
+
+$$
+q
+=
+\left(
+r,
+\sigma_1,
+\ldots,
+\sigma_m
+\right),
+$$
+
+where `r` is the `RunSpec`, each `sigma_i` is the stage spec identified by the
+corresponding `RunStageRef`, and `m` is at least one.
+
+`RunSpec.source`, `VariantSpec.stage_params`, and the loaded stage specs fix
+`alpha` and `beta` for the run.
+
+The dataset `D_q` is the collection of external artifact inputs fixed before
+execution through `StoredInputRef.pointer`. Same-run artifact references connect
+intermediate stage outputs within the execution represented by the estimator.
+A download stage establishes an external data root; its output enters `D_q` for
+a later run after its artifact manifest is published and selected by a pointer.
+
+Every runtime coordinate receives one policy in `q`:
+
+1. **Exact:** the realized value must equal one recorded value.
+2. **Permitted set:** the realized value must belong to a recorded finite set.
+3. **Unrestricted:** the coordinate may take any value in its domain.
+
+Let `e satisfies q` mean that every exact and permitted-set constraint in `q`
+holds for runtime state `e`. The states permitted by `q` are:
+
+$$
+E_q
+=
+\left\{
+e\in E
+:
+e\text{ satisfies }q
+\right\}.
+$$
+
+### Strict parameter reproducibility
+
+The plan `q` provides strict parameter reproducibility when:
+
+$$
+E_q\neq\varnothing
+$$
+
+and there exists one parameter value `theta_hat_q` such that:
+
+$$
+\exists\widehat{\theta}_q\in\Theta_{\alpha}
+\quad
+\forall e\in E_q,
+\quad
+\widetilde{T}_{\alpha,\beta}(D_q,e)
+=
+\widehat{\theta}_q.
+$$
+
+Equivalently, all runtime variation permitted by `q` leaves the fitted
+parameters unchanged.
+
+### Operational parity criterion
+
+`RunSpec.estimator` identifies the named artifact that reconstructs
+`theta_hat_q`. Stage 1 represents equality of that artifact through exact
+physical-file identity:
+
+```text
+same artifact name
++ same ordered file or bundle-member paths
++ same SHA-256 for every file
++ same byte count for every file
+→ strict estimator-artifact parity
+```
+
+Protocol assumption: the loader fixed by the source snapshot and environment is
+deterministic. It therefore maps identical estimator-artifact files to the same
+parameter value. The verifier establishes the file equalities; a benchmark
+replay later tests whether the complete execution reproduces them.
+
+### Direct consequences
+
+1. **Counterexample:** if two states `e` and `e_prime` in `E_q` produce
+   different parameter values, `q` fails strict parameter reproducibility.
+2. **Refinement:** if `q_prime` preserves the dataset and estimator and satisfies
+   `E_q_prime` contained in `E_q`, then strict reproducibility of `q` implies
+   strict reproducibility of `q_prime`.
+3. **Empirical evidence:** matching outputs from finitely many executions test
+   the universal condition. A differing output disproves it.
+
+---
+
+## 4. Runtime coordinates represented by the protocol
+
+The following records connect the plan to one realized runtime state:
+
+| Runtime coordinate | Plan record | Realized record |
+|---|---|---|
+| Source snapshot | `RunSpec.source` and `BaseSpec.script` | `ResolvedBaseSpec.source` |
+| Stage-spec bytes and order | `RunSpec.stages` | `RunAttempt.resolved_stages` |
+| Input bytes | `StoredInputRef` or `FutureInputRef` | `ResolvedInternalSpec.inputs` |
+| Stage parameters | stage-specific `params` | embedded `ResolvedBaseSpec.spec.params` |
+| Provisioned environment | `GCEEnvironmentSpec` | `ResolvedGCEEnvironment` |
+| Randomness, algorithms, precision, and parallelism | `ReproducibilitySpec` | applied controls in `ExecutionContext` |
+| Executed command | derived from `BaseSpec.script` and `RunStageRef.spec` | `ResolvedBaseSpec.command` |
+
+For Stage 1 strict execution, the plan fixes:
+
+```text
+source and dependency bytes
+input bytes
+stage-spec bytes and order
+command
+stage parameters
+seed
+deterministic-algorithm settings
+precision settings
+machine image
+machine type and compute backend
+numerical-runtime versions
+parallelism
+```
+
+Location-only facts such as GCE zone remain unrestricted.
+
+A coordinate omitted from the plan remains variable in `E_q`. If variation in
+that coordinate changes the fitted parameters, the resulting pair of executions
+is a counterexample to strict parameter reproducibility.
+
+---
+
+## 5. Source snapshot and run-plan snapshot
+
+The protocol uses two immutable Git snapshots.
+
+```text
+Source commit A
+├── source code
+├── experiment file
+├── variant files
+├── metric implementations
+├── lockfile
+└── promoted-input pointers
+        │
+        ▼ create and validate the concrete run plan
+Run-plan commit B
+├── <run_id>.run.yaml
+└── stage-spec files
+        │
+        ▼ execute B's plan using A's source
+stage execution
+```
+
+`RunSpec.source` identifies commit A. `ResolvedRun.run_file.stored_at` identifies
+commit B. Every `RunStageRef` supplies the path, SHA-256, and byte count of one
+stage spec stored in commit B.
+
+The source snapshot is created first. The concrete `RunSpec` and stage specs are
+then validated, hashed, and published together in the run-plan snapshot before
+execution begins.
+
+---
+
+## 6. Stage partition
+
+The run plan declares the finite ordered stage sequence:
+
+$$
+\Pi(q)
+=
+\left\langle
+s_1,
+\ldots,
+s_m
+\right\rangle,
+\qquad
+m\geq 1.
+$$
+
+`RunSpec.stages` records this order. Each stage spec records one execution
+request. A valid stage sequence satisfies:
+
+1. Every `stage_id` is unique.
+2. Every stage-spec path is unique.
+3. Every `FutureInputRef` names an earlier stage.
+4. Every successfully completed stage records all artifact outputs declared by
+   its stage spec.
+5. The successful attempt completes every stage in the declared order.
+
+Stage 1 accepts `Pi(q)` as declared by the run plan.
+
+---
+
+## 7. Artifact and physical-file partitions
+
+Let `s` be a successfully completed stage.
+
+The stage spec inside `q` declares the artifact names and output paths for `s`.
+Execution realizes those declarations as physical files. The following
+definitions connect the declared outputs to their resolved representations.
+
+Let `O_s` be the finite, nonempty set of physical files declared as artifact
+outputs of `s`.
+
+Let `N_s` be the finite, nonempty set of artifact names declared by `s`.
+
+For every artifact name `a` in `N_s`, let:
+
+$$
+F_s(a)\subseteq O_s
+$$
+
+be the minimal complete set of physical files required to reconstruct artifact
+`a` under its declared loading contract.
+
+The artifact partition of stage `s` is:
+
+$$
+A(s)
+=
+\left\{
+F_s(a)
+:
+a\in N_s
+\right\}.
+$$
+
+### Partition invariants
+
+The partition satisfies:
+
+$$
+\lvert A(s)\rvert\geq 1,
+$$
+
+$$
+\lvert F_s(a)\rvert\geq 1
+\quad
+\text{for every }a\in N_s,
+$$
+
+$$
+\bigcup_{a\in N_s}F_s(a)=O_s,
+$$
+
+and, for distinct artifact names `a` and `b`,
+
+$$
+F_s(a)\cap F_s(b)=\varnothing.
+$$
+
+The resulting hierarchy is:
+
+```text
+successful stage s
+└── artifact partition A(s), containing one or more named artifacts
+    └── artifact a
+        └── minimal complete file set F_s(a)
+            ├── one file     → ResolvedArtifactFile
+            └── two or more → ResolvedArtifactBundle
+```
 
 ### Artifact boundary
 
-For artifact `a`, `F(a)` is the exact set of physical files assigned to `a`.
-`F(a)` satisfies three conditions:
-
-1. **Complete:** Materializing every file in `F(a)` gives the consumer the
-   complete stored representation of `a`.
-2. **Minimal:** Removing any file from `F(a)` leaves an incomplete stored
-   representation of `a` under its declared consumption contract.
-3. **Atomic:** The artifact manifest records all of `F(a)`, an artifact pointer
-   selects all of `F(a)`, the executor materializes all of `F(a)`, and artifact
-   parity compares all of `F(a)`.
-
-Cardinality determines the resolved representation:
-
-```text
-|F(a)| = 1  → ResolvedArtifactFile
-|F(a)| ≥ 2  → ResolvedArtifactBundle
-```
-
-A nonempty proper subset of `F(a)` that requires its own downstream input
-binding, `ArtifactPointer`, or parity result becomes a separately named artifact
-with its own minimal complete file set.
+`BaseSpec.artifacts` supplies `N_s`. Each name identifies one output value that
+a consumer may reference. The files jointly required to reconstruct that value
+form its `F_s(a)`. Distinct artifact names therefore induce distinct blocks in
+`A(s)`.
 
 Examples:
 
 ```text
-training command
-→ produces model.pt and config.pkl
-        │
-        ▼
-artifact name: model
-F(model) = {model.pt, config.pkl}
-        │
-        ▼ consumer loads model
-config.pkl → construct the recorded model architecture
-model.pt   → load the learned parameters into that architecture
-        │
-        ▼
-both files are required to reconstruct the stored model
-        │
-        ▼
-ResolvedArtifactBundle
+model.pt + config.pkl
+→ both files required by the model loader
+→ one artifact named model
+→ ResolvedArtifactBundle
 ```
 
 ```text
-training command
-→ produces model.pt and embeddings.pt
-→ downstream stages can consume either value independently
-→ F(model) = {model.pt}
-→ F(embeddings) = {embeddings.pt}
+model.pt + perturbation_embeddings.pt
+→ either value may be consumed independently
+→ artifacts named model and perturbation_embeddings
 → two ResolvedArtifactFile records
 ```
 
-The stage command defines one execution. Artifact names identify the durable
-values produced by that execution. `F(a)` identifies the physical files that
-constitute each value.
+The declaration asserts semantic completeness and minimality. The verifier
+enforces the structural consequences: cardinality, complete member inventory,
+disjoint membership, path containment, atomic materialization, and exact file
+identity.
+
+`O_s` contains artifact files only. Measurement files, logs, and protocol
+records retain their separate roles in `RunAttempt` and `ResolvedRun`.
 
 ---
 
-## 3. Core invariant
+## 8. File identity and storage
 
-Every Stage 1 stage spec declares a nonempty set of uniquely named artifacts.
-After successful execution:
+All protocol models reject unexpected fields and are frozen after validation:
 
-1. The stage spec, resolved stage spec, and `ResolvedStageRef` contain exactly
-   the same artifact names.
-2. Each resolved artifact satisfies the complete, minimal, and atomic `F(a)`
-   contract defined in Section 2.
-3. Each artifact name maps to exactly one `ArtifactManifest`.
-4. Each `ArtifactManifest` maps to the same resolved stage execution and the
-   exact resolved artifact recorded under that name.
+```python
+class ProtocolModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+```
 
-A stage is accepted after:
+The shared scalar types include:
 
-1. For every declared artifact name, its complete `F(a)` and corresponding
-   `ArtifactManifest` have been published and verified.
-2. Every retained file associated with stage completion has been classified as
-   an artifact member, measurement file, log file, or protocol record.
+```text
+RepoRelPath  normalized POSIX path relative to the repository root
+SHA256       64 lowercase hexadecimal characters
+GitCommit    immutable 40- or 64-character hexadecimal Git commit
+HumanId      validated identifier used by run, stage, artifact, and experiment IDs
+```
+
+Storage locations are:
+
+```python
+class RemoteFileRef(ProtocolModel):
+    kind: Literal["remote"] = "remote"
+    url: HttpUrl
+
+
+class GitSource(ProtocolModel):
+    kind: Literal["git"] = "git"
+    repository: HttpUrl
+    commit: GitCommit
+
+
+class GitFileRef(GitSource):
+    path: RepoRelPath
+
+
+class HuggingFaceFileRef(ProtocolModel):
+    kind: Literal["huggingface"] = "huggingface"
+    repository: NonEmptyStr
+    commit: GitCommit
+    path: RepoRelPath
+    repo_type: Literal["model", "dataset", "space"]
+
+
+StorageRef = Annotated[
+    GitFileRef | HuggingFaceFileRef,
+    Field(discriminator="kind"),
+]
+```
+
+An exact file reference records:
+
+```python
+class ResolvedFileRef(ProtocolModel):
+    sha256: SHA256
+    bytes: int = Field(ge=0)
+    stored_at: StorageRef
+```
+
+Role-specific references preserve the general file identity while identifying
+the type of document expected at that location:
+
+```python
+class ResolvedGitFileRef(ResolvedFileRef):
+    stored_at: GitFileRef
+
+
+class ResolvedArtifactManifestRef(ResolvedFileRef):
+    kind: Literal["artifact_manifest"] = "artifact_manifest"
+
+
+class ArtifactPointerRef(GitFileRef):
+    pass
+
+
+class ResolvedArtifactPointerRef(ResolvedFileRef):
+    kind: Literal["artifact_pointer"] = "artifact_pointer"
+    stored_at: ArtifactPointerRef
+```
+
+`stored_at` identifies an immutable Git or Hugging Face repository revision and
+repository-relative path. `sha256` and `bytes` identify the retrieved file
+contents.
+
+The verifier retrieves `stored_at`, recalculates SHA-256 and byte count, and
+requires equality with the recorded values.
+
+```text
+ResolvedFileRef
+├── stored_at.repository
+├── stored_at.commit
+├── stored_at.path
+├── sha256
+└── bytes
+```
+
+Artifact storage paths mirror the declared repository-relative output paths.
+Stored-input materialization paths remain independent of the pointer file's Git
+path and the artifact's remote storage path.
 
 ---
 
-## 4. Identifiers and artifact declarations
+## 9. Artifact declarations and resolved artifacts
 
 ```python
 ArtifactName = HumanId
 ```
 
-`ArtifactName` identifies one durable value within a stage.
-
-### Single-file declaration
+### Stage declaration
 
 ```python
 class ArtifactFileSpec(ProtocolModel):
     kind: Literal["file"] = "file"
     path: RepoRelPath
-```
 
-`path` is the canonical local and mirrored remote path of the artifact file.
 
-### Bundle declaration
-
-```python
 class ArtifactBundleSpec(ProtocolModel):
     kind: Literal["bundle"] = "bundle"
     path: RepoRelPath
-```
 
-`path` is the canonical local and mirrored remote root of the artifact bundle.
 
-### Declaration union
-
-```python
 ArtifactSpec = Annotated[
     ArtifactFileSpec | ArtifactBundleSpec,
     Field(discriminator="kind"),
 ]
-```
 
-### Stage declaration
 
-```python
 class BaseSpec(ProtocolModel):
     artifacts: dict[ArtifactName, ArtifactSpec] = Field(min_length=1)
 ```
 
-Example:
+For a file artifact, `path` is its canonical file path. For a bundle artifact,
+`path` is its canonical directory root.
+
+### Resolved representation
+
+```python
+class ResolvedArtifactFile(ProtocolModel):
+    kind: Literal["file"] = "file"
+    file: ResolvedFileRef
+
+
+class ResolvedArtifactBundleMember(ProtocolModel):
+    relative_path: RepoRelPath
+    file: ResolvedFileRef
+
+
+class ResolvedArtifactBundle(ProtocolModel):
+    kind: Literal["bundle"] = "bundle"
+    members: tuple[ResolvedArtifactBundleMember, ...] = Field(
+        min_length=2
+    )
+
+
+ResolvedArtifact = Annotated[
+    ResolvedArtifactFile | ResolvedArtifactBundle,
+    Field(discriminator="kind"),
+]
+
+
+class ResolvedBaseSpec(ProtocolModel):
+    spec: BaseSpec
+    artifacts: dict[ArtifactName, ResolvedArtifact] = Field(min_length=1)
+```
+
+The cardinality rule is exact:
+
+```text
+|F_s(a)| = 1  → ResolvedArtifactFile
+|F_s(a)| ≥ 2  → ResolvedArtifactBundle
+```
+
+### Path invariants
+
+For a declared file artifact:
+
+```text
+ResolvedArtifactFile.file.stored_at.path
+==
+ArtifactFileSpec.path
+```
+
+For every bundle member:
+
+```text
+ResolvedArtifactBundleMember.file.stored_at.path
+==
+ArtifactBundleSpec.path
+/
+ResolvedArtifactBundleMember.relative_path
+```
+
+Bundle member paths are unique, remain beneath the bundle root, and appear in
+canonical `relative_path` order. Artifact roots within one stage are pairwise
+non-overlapping.
+
+---
+
+## 10. Artifact manifests and promotion pointers
+
+Each artifact name receives one manifest:
+
+```python
+class ArtifactManifest(ProtocolModel):
+    schema_version: Literal[1] = 1
+
+    artifact_name: ArtifactName
+    artifact: ResolvedArtifact
+    spec: ResolvedFileRef
+    resolved_spec: ResolvedFileRef
+    source: ResolvedGitFileRef
+
+    created_at: AwareDatetime
+```
+
+The manifest binds one member of `A(s)` to its exact `F_s(a)`, stage spec,
+resolved stage spec, and source entry point.
+
+```python
+class ResolvedStageRef(ProtocolModel):
+    stage_id: StageId
+    resolved_spec: ResolvedFileRef
+    artifacts: dict[
+        ArtifactName,
+        ResolvedArtifactManifestRef,
+    ] = Field(min_length=1)
+```
+
+The artifact names satisfy:
+
+```text
+keys(BaseSpec.artifacts)
+==
+keys(ResolvedBaseSpec.artifacts)
+==
+keys(ResolvedStageRef.artifacts)
+==
+N_s
+```
+
+For every artifact name `a`:
+
+```text
+ResolvedStageRef.artifacts[a]
+→ retrieve and verify manifest bytes
+→ parse ArtifactManifest
+```
+
+The loaded records satisfy:
+
+```text
+ArtifactManifest.artifact_name
+==
+a
+
+ArtifactManifest.artifact
+==
+ResolvedBaseSpec.artifacts[a]
+
+ArtifactManifest.resolved_spec
+==
+ResolvedStageRef.resolved_spec
+
+ArtifactManifest.source
+==
+ResolvedBaseSpec.source
+
+loaded ArtifactManifest.spec
+==
+ResolvedBaseSpec.spec
+```
+
+### Promotion pointer
+
+```python
+class ArtifactPointer(ProtocolModel):
+    schema_version: Literal[1] = 1
+    manifest: ResolvedArtifactManifestRef
+```
+
+An `ArtifactPointer` selects the manifest for an artifact accepted as a reusable
+input. The pointer is committed under `inputs/` after promotion.
+
+```text
+ArtifactPointer
+└── manifest
+    └── ArtifactManifest
+        ├── artifact
+        │   └── file or complete bundle
+        ├── stage spec
+        ├── resolved stage spec
+        └── source entry point
+```
+
+Stage completion creates artifacts and manifests. Promotion creates the pointer.
+
+---
+
+## 11. Stage inputs
+
+### Stored input
+
+```python
+class StoredInputRef(ProtocolModel):
+    kind: Literal["stored"] = "stored"
+    pointer: ArtifactPointerRef
+    path: RepoRelPath
+
+
+class ResolvedStoredInputRef(ProtocolModel):
+    kind: Literal["stored"] = "stored"
+    pointer: ResolvedArtifactPointerRef
+```
+
+The traversal is:
+
+```text
+StoredInputRef.pointer
+→ ArtifactPointer.manifest
+→ ArtifactManifest.artifact
+→ ResolvedArtifactFile | ResolvedArtifactBundle
+```
+
+`StoredInputRef.path` is the local path presented to the stage script. For a
+bundle, it is the local bundle root and every member is placed beneath it using
+`ResolvedArtifactBundleMember.relative_path`.
+
+### Same-run input
+
+```python
+class FutureInputRef(ProtocolModel):
+    kind: Literal["future"] = "future"
+    producer_stage_id: StageId
+    producer_artifact: ArtifactName
+
+
+class ResolvedFutureInputRef(ProtocolModel):
+    kind: Literal["future"] = "future"
+    manifest: ResolvedArtifactManifestRef
+```
+
+The consumer identifies one exact member of the producer's artifact partition:
+
+```text
+FutureInputRef.producer_stage_id
+→ producer ResolvedStageRef
+
+FutureInputRef.producer_artifact
+→ producer ResolvedStageRef.artifacts[producer_artifact]
+```
+
+The verifier requires:
+
+```text
+ResolvedFutureInputRef.manifest
+==
+producer ResolvedStageRef.artifacts[
+    FutureInputRef.producer_artifact
+]
+
+ArtifactManifest.artifact_name
+==
+FutureInputRef.producer_artifact
+
+ArtifactManifest.resolved_spec
+==
+producer ResolvedStageRef.resolved_spec
+
+ArtifactManifest.artifact
+==
+producer ResolvedBaseSpec.artifacts[
+    FutureInputRef.producer_artifact
+]
+```
+
+The future input's local path is the path declared by:
+
+```text
+producer ResolvedBaseSpec.spec.artifacts[
+    FutureInputRef.producer_artifact
+].path
+```
+
+### Download root
+
+A `DownloadSpec` receives one external URL and creates the first
+byte-identified artifact inside MANTRA. Later runs consume that artifact through
+an `ArtifactPointer` after promotion.
+
+---
+
+## 12. Experiment, variant, replicate, and seed
+
+```text
+ExperimentSpec
+├── factors and permitted levels
+├── variant IDs
+├── replicate IDs and seeds
+└── metric IDs
+
+VariantSpec
+├── one selected level per factor
+└── exact typed stage parameters implementing the selection
+```
+
+### Typed variant implementation
+
+```python
+class BuildVariantStageParams(ProtocolModel):
+    kind: Literal["build"] = "build"
+    stage_id: StageId
+    params: BuildParams
+
+
+class EmbedVariantStageParams(ProtocolModel):
+    kind: Literal["embed"] = "embed"
+    stage_id: StageId
+    params: EmbedParams
+
+
+class TrainVariantStageParams(ProtocolModel):
+    kind: Literal["train"] = "train"
+    stage_id: StageId
+    params: TrainParams
+
+
+VariantStageParams = Annotated[
+    BuildVariantStageParams
+    | EmbedVariantStageParams
+    | TrainVariantStageParams,
+    Field(discriminator="kind"),
+]
+
+
+class VariantSpec(ProtocolModel):
+    schema_version: Literal[1] = 1
+    experiment_id: ExperimentId
+    variant_id: VariantId
+
+    levels: dict[FactorId, LevelId]
+    stage_params: tuple[VariantStageParams, ...] = Field(min_length=1)
+```
+
+`VariantSpec.stage_params` contains one record for every parameterized stage in
+the run. Stage IDs are unique within that tuple. The verifier requires:
+
+```text
+set(VariantSpec.stage_params.stage_id)
+==
+set(stage IDs whose loaded stage specs contain params)
+
+VariantSpec.stage_params[stage_id].params
+==
+loaded stage spec.params
+```
+
+The selected level IDs record the scientific factor assignment. The typed
+parameter objects record its exact implementation across any number of stages.
+
+### Seed authority
+
+```python
+class RNGSeedSpec(ProtocolModel):
+    seed: int
+```
+
+The complete seed equality is:
+
+```text
+selected ReplicateSpec.seed
+==
+RunSpec.seed
+==
+every stage's ReproducibilitySpec.randomness.seed
+```
+
+Before each stage executes, MANTRA applies the stage's recorded seed to Python,
+NumPy, PyTorch, and the DataLoader generator. Every retry of one run uses the
+same seed. A different replicate seed produces a different run.
+
+---
+
+## 13. Environment, numerical controls, and command
+
+The pre-execution records and realized records have separate roles:
+
+```text
+GCEEnvironmentSpec
+└── requested provisioning
+    ├── exact machine image
+    ├── machine type
+    ├── compute backend
+    └── lockfile
+
+ReproducibilitySpec
+└── requested numerical controls
+    ├── randomness
+    ├── deterministic algorithms
+    ├── precision
+    └── parallelism
+
+ExecutionContext
+└── values recorded during execution
+    ├── host and CPU
+    ├── compute backend
+    ├── numerical runtime
+    ├── applied randomness, determinism, and precision controls
+    └── parallelism
+```
+
+The schema represents an exact policy with one required value, a permitted-set
+policy with a nonempty tuple of allowed values, and an unrestricted policy by
+omitting that coordinate from the requirement model.
+
+The verifier checks each constrained coordinate against the realized
+`ExecutionContext`.
+
+### Canonical command
+
+For the `RunStageRef` and loaded stage spec belonging to stage `s`, the executor
+constructs:
+
+```text
+python <BaseSpec.script> <RunStageRef.spec>
+```
+
+The resolved stage record must satisfy:
+
+```python
+ResolvedBaseSpec.command == (
+    "python",
+    str(ResolvedBaseSpec.spec.script),
+    str(run_stage_ref.spec),
+)
+```
+
+A stage type requiring another argument declares that argument through an
+explicit typed field. The executor derives the complete command from the stage
+spec.
+
+---
+
+## 14. Run, attempt, and measurement records
+
+```python
+class RunStageRef(ProtocolModel):
+    stage_id: StageId
+    spec: RepoRelPath
+    sha256: SHA256
+    bytes: int = Field(ge=0)
+
+
+class StageArtifactRef(ProtocolModel):
+    stage_id: StageId
+    artifact_name: ArtifactName
+
+
+class RunSpec(ProtocolModel):
+    schema_version: Literal[1] = 1
+    run_id: RunId
+    experiment_id: ExperimentId
+    variant_id: VariantId
+    replicate_id: ReplicateId
+
+    seed: int
+    source: GitSource
+    stages: tuple[RunStageRef, ...] = Field(min_length=1)
+    estimator: StageArtifactRef
+```
+
+`RunSpec.estimator` identifies the artifact whose loading contract reconstructs
+`theta_hat_q`.
+
+```python
+class RunAttempt(ProtocolModel):
+    attempt_id: int = Field(ge=1)
+    status: AttemptStatus
+
+    started_at: AwareDatetime
+    completed_at: AwareDatetime
+
+    resolved_stages: tuple[ResolvedStageRef, ...]
+    measurement_files: tuple[ResolvedFileRef, ...]
+    log_files: tuple[ResolvedFileRef, ...]
+
+    failure_reason: str | None
+```
+
+Each `ResolvedStageRef` contains the resolved stage-spec reference and its
+artifact-manifest mapping. `RunAttempt` therefore stores no parallel manifest
+inventory.
+
+A successful attempt satisfies:
+
+1. `failure_reason` is null.
+2. `resolved_stages` contains every run stage exactly once and in order.
+3. Every completed stage has at least one verified artifact manifest.
+4. `measurement_files` and `log_files` identify the files produced by that
+   attempt.
+
+A failed, preempted, or cancelled attempt records a nonempty `failure_reason`.
+Its `resolved_stages` form an ordered prefix of `RunSpec.stages`.
+
+`ResolvedRun` records all attempts in execution order and identifies the sole
+successful attempt when the run succeeds.
+
+### Measurements
+
+A measurement records:
+
+```text
+run_id
+attempt_id
+stage_id
+metric_id
+finite value
+measurement time
+optional epoch and step
+```
+
+The experiment supplies the permitted `metric_id` values. The verifier checks
+every row against the containing run, attempt, stage, and experiment.
+
+---
+
+## 15. Validation and external verification
+
+### Pydantic validators
+
+Pydantic validates relationships visible inside one loaded object:
+
+1. Identifier and path syntax.
+2. SHA-256 and Git-commit syntax.
+3. Required fields and discriminated unions.
+4. Nonempty artifact mappings.
+5. File-versus-bundle cardinality.
+6. Unique IDs, paths, artifact names, and bundle-member paths.
+7. Matching key sets embedded within one resolved stage spec.
+8. Attempt status, timestamp, and stage-prefix invariants.
+
+### External verifier
+
+The external verifier loads referenced files and checks relationships spanning
+multiple records.
+
+#### Run plan
+
+1. Retrieve `ResolvedRun.run_file` and verify its SHA-256 and byte count.
+2. Parse the file as `RunSpec` and compare it with `ResolvedRun.run`.
+3. Load the deterministic experiment and variant paths from `RunSpec.source`.
+4. Verify the experiment, variant, replicate, metric, and seed relationships.
+5. Retrieve each stage spec from the run-plan snapshot and verify its
+   `RunStageRef.sha256` and `RunStageRef.bytes`.
+6. Verify stage order, future-input order, output-path separation, and typed
+   variant parameters.
+
+#### Resolved execution
+
+1. Retrieve every `ResolvedStageRef.resolved_spec`.
+2. Parse each file through the resolved-stage-spec union.
+3. Verify the canonical command.
+4. Verify the resolved source, environment, execution context, inputs, and
+   completion time.
+5. Verify that each constrained runtime coordinate satisfies its plan policy.
+
+#### Artifact partition
+
+1. Compare the artifact-name keys across the stage spec, resolved stage spec,
+   and `ResolvedStageRef`.
+2. Retrieve every artifact manifest through
+   `ResolvedStageRef.artifacts[artifact_name]`.
+3. Verify each manifest's artifact name, artifact, stage spec, resolved stage
+   spec, and source.
+4. Retrieve every artifact file and bundle member and verify SHA-256 and byte
+   count.
+5. Verify bundle inventory, canonical ordering, path containment, and
+   cross-artifact disjointness.
+
+#### Input lineage
+
+1. For each stored input, verify its pointer, selected manifest, complete
+   artifact, and local materialization path.
+2. For each same-run input, select the producer's manifest directly through
+   `ResolvedStageRef.artifacts[FutureInputRef.producer_artifact]`.
+3. Verify that the selected manifest belongs to the named producer stage and
+   artifact.
+4. Materialize the complete artifact before executing the consumer.
+
+#### Run result
+
+1. Verify attempt order, timestamps, status, and completed-stage prefixes.
+2. Verify every measurement and log reference retained by each attempt.
+3. Verify that the successful attempt completed every declared stage in order.
+4. Load `RunSpec.estimator` through the successful attempt's stage and artifact
+   mappings.
+
+---
+
+## 16. Execution and publication sequence
+
+### Before execution
+
+1. Commit source code, experiment and variant files, metric implementations,
+   lockfile, and promoted-input pointers as source commit A.
+2. Select the experiment, variant, and replicate.
+3. Create the concrete stage specs.
+4. Construct `RunSpec` with source commit A, the selected seed, ordered
+   `RunStageRef` records, and the estimator artifact reference.
+5. Validate the complete run plan.
+6. Calculate the SHA-256 and byte count of every stage-spec file.
+7. Publish `RunSpec` and every stage spec together as run-plan commit B.
+8. Retrieve commit B and verify every published file.
+
+### For each attempt
+
+1. Allocate the next `attempt_id`.
+2. Check out source commit A into a clean workspace.
+3. Retrieve the run plan from commit B.
+4. Materialize and verify every stored input.
+5. For each stage in order:
+   1. Resolve its same-run inputs through earlier `ResolvedStageRef` records.
+   2. Verify the environment and numerical controls.
+   3. Apply the run seed to every controlled random-number generator.
+   4. Construct and record the canonical command.
+   5. Execute the stage script with its stage-spec path.
+   6. Classify the declared artifact outputs into `A(s)` and `F_s(a)`.
+   7. Record measurements and logs.
+   8. Publish and verify the completed-stage records described below.
+6. Record the attempt's terminal status and completion time.
+7. After one attempt succeeds, write and publish `ResolvedRun`.
+
+### Successful-stage publication
+
+```text
+Commit C — artifact bytes in the artifact repository
+└── one file or complete bundle-member set per artifact name
+
+Commit D — resolved stage spec in the artifact repository
+└── ResolvedBaseSpec.artifacts
+
+Commit E — artifact manifests in the artifact repository
+└── one manifest per artifact name
+
+ResolvedStageRef
+├── resolved_spec → commit D
+└── artifacts
+    └── artifact name → manifest at commit E
+
+Commit F — optional promotion pointer in Git
+└── inputs/<name>.pointer.yaml → selected manifest at commit E
+        │
+        └── may become an input pointer in a later source commit A
+```
+
+The executor:
+
+1. Hashes every artifact file and bundle member.
+2. Publishes all artifact bytes at commit C.
+3. Publishes the resolved stage spec at commit D.
+4. Constructs one manifest per artifact name.
+5. Publishes all manifests at commit E.
+6. Retrieves and verifies commits C, D, and E.
+7. Constructs `ResolvedStageRef` from the verified references.
+8. Adds the completed stage to the current `RunAttempt`.
+
+Promotion is a separate selection operation. It commits an `ArtifactPointer`
+under `inputs/` at optional commit F.
+
+---
+
+## 17. Reference cases
+
+| Stage output | Artifact partition |
+|---|---|
+| Final estimator stored in `model.pt` | One `ResolvedArtifactFile` named `model` |
+| Estimator requiring `model.pt` and `config.pkl` | One `ResolvedArtifactBundle` named `model` |
+| Sharded estimator plus its index | One `ResolvedArtifactBundle` |
+| Model and independently consumed embeddings | Two named artifacts |
+| Model and exact-continuation state selected independently | Two named artifacts |
+| Checkpoint whose loader requires model, optimizer, scheduler, RNG, and sampler files together | One checkpoint bundle |
+| Persisted prediction matrix consumed independently | One named artifact |
+| Loss or correlation value | Measurement |
+| Forward-pass activation reconstructed during the stage | Stage-local value |
+| Activation explicitly consumed by another stage | Named artifact |
+
+Example with two artifacts:
 
 ```yaml
 artifacts:
@@ -202,534 +1165,31 @@ artifacts:
     path: artifacts/perturbation_embeddings.pt
 ```
 
-The example declares two artifacts. `model` is one bundle artifact.
-`perturbation_embeddings` is one file artifact.
-
----
-
-## 5. Resolved artifacts
-
-### Resolved file artifact
-
-```python
-class ResolvedArtifactFile(ProtocolModel):
-    kind: Literal["file"] = "file"
-    file: ResolvedFileRef
-```
-
-`file` records the exact artifact bytes through:
-
-- `ResolvedFileRef.sha256`.
-- `ResolvedFileRef.bytes`.
-- `ResolvedFileRef.stored_at`.
-
-### Resolved bundle member
-
-```python
-class ResolvedArtifactBundleMember(ProtocolModel):
-    relative_path: RepoRelPath
-    file: ResolvedFileRef
-```
-
-`relative_path` identifies one member beneath the bundle root declared by
-`ArtifactBundleSpec.path`. `file` records that member's exact bytes and storage
-location.
-
-### Resolved bundle artifact
-
-```python
-class ResolvedArtifactBundle(ProtocolModel):
-    kind: Literal["bundle"] = "bundle"
-    members: tuple[ResolvedArtifactBundleMember, ...] = Field(min_length=2)
-```
-
-The two-member minimum gives `file` and `bundle` disjoint physical meanings:
+The resolved records satisfy:
 
 ```text
-one physical file       → ResolvedArtifactFile
-two or more files       → ResolvedArtifactBundle
-```
-
-### Resolved artifact union
-
-```python
-ResolvedArtifact = Annotated[
-    ResolvedArtifactFile | ResolvedArtifactBundle,
-    Field(discriminator="kind"),
-]
-```
-
-### Resolved stage spec
-
-```python
-class ResolvedBaseSpec(ProtocolModel):
-    spec: BaseSpec
-    artifacts: dict[ArtifactName, ResolvedArtifact] = Field(min_length=1)
-```
-
-Concrete resolved stage-spec classes retain their existing source,
-environment, execution-context, command, input, and completion fields.
-
----
-
-## 6. Artifact manifest
-
-Each named artifact receives one manifest.
-
-```python
-class ArtifactManifest(ProtocolModel):
-    schema_version: Literal[1] = 1
-
-    artifact_name: ArtifactName
-    artifact: ResolvedArtifact
-    resolved_spec: ResolvedFileRef
-    spec: ResolvedFileRef
-    source: ResolvedGitFileRef
-
-    created_at: AwareDatetime
-```
-
-The manifest binds:
-
-```text
-artifact name
-├── exact file or bundle
-├── stage spec that declared the artifact
-├── resolved stage spec that recorded the completed execution
-└── source entry point used by that execution
-```
-
-For a bundle, `ArtifactManifest.artifact` contains the complete member
-inventory. The verifier establishes member-path uniqueness independently of
-tuple order. Canonical serialization sorts members by `relative_path`.
-
----
-
-## 7. Completed-stage reference
-
-```python
-class ResolvedStageRef(ProtocolModel):
-    stage_id: StageId
-    resolved_spec: ResolvedFileRef
-    artifacts: dict[
-        ArtifactName,
-        ResolvedArtifactManifestRef,
-    ] = Field(min_length=1)
-```
-
-One `ResolvedStageRef` binds the completed stage to:
-
-```text
-ResolvedStageRef
-├── stage_id
-├── resolved_spec
-└── artifacts
-    ├── artifact_name_a → manifest reference
-    └── artifact_name_b → manifest reference
-```
-
-Each dictionary value identifies the exact manifest file for that artifact
-name. Loading the manifest reaches the exact file or bundle.
-
----
-
-## 8. Cross-record contracts
-
-For one successfully completed stage `S`, define:
-
-```text
-D(S) = set(ResolvedBaseSpec.spec.artifacts)
-R(S) = set(ResolvedBaseSpec.artifacts)
-M(S) = set(ResolvedStageRef.artifacts)
-```
-
-The artifact-name sets satisfy:
-
-```text
-D(S) == R(S) == M(S)
-D(S) != ∅
-```
-
-For every `artifact_name` in that set:
-
-```text
-ResolvedStageRef.artifacts[artifact_name]
-→ retrieve and verify manifest bytes
-→ parse ArtifactManifest
-```
-
-The loaded records satisfy:
-
-```text
-ArtifactManifest.artifact_name
-==
-artifact_name
-```
-
-```text
-ArtifactManifest.artifact
-==
-ResolvedBaseSpec.artifacts[artifact_name]
-```
-
-```text
-ArtifactManifest.resolved_spec
-==
-ResolvedStageRef.resolved_spec
-```
-
-```text
-ArtifactManifest.source
-==
-ResolvedBaseSpec.source
-```
-
-The verifier retrieves `ArtifactManifest.spec`, parses the stage spec, and
-requires:
-
-```text
-loaded ArtifactManifest.spec
-==
-ResolvedBaseSpec.spec
+A(train)
+├── F_train(model)
+│   ├── artifacts/model/config.pkl
+│   └── artifacts/model/model.pt
+└── F_train(perturbation_embeddings)
+    └── artifacts/perturbation_embeddings.pt
 ```
 
 ---
 
-## 9. Path contracts
-
-### File artifact
-
-For an artifact declared as `ArtifactFileSpec`:
-
-```text
-ResolvedArtifactFile.file.stored_at.path
-==
-ArtifactFileSpec.path
-```
-
-### Bundle artifact
-
-For each member of an artifact declared as `ArtifactBundleSpec`:
-
-```text
-ResolvedArtifactBundleMember.file.stored_at.path
-==
-ArtifactBundleSpec.path
-/
-ResolvedArtifactBundleMember.relative_path
-```
-
-Bundle requirements:
-
-1. `members` contains at least two records.
-2. Every `relative_path` is unique within the bundle.
-3. Every member is a regular file.
-4. Every member path remains beneath `ArtifactBundleSpec.path`.
-5. Every retained artifact file beneath the bundle root appears exactly once in
-   `members`.
-
-Stage-level path requirements:
-
-1. Artifact declaration paths are pairwise non-overlapping.
-2. Two artifact names cannot claim the same stored file path.
-3. Distinct paths may contain identical bytes and therefore the same SHA-256.
-
-Valid roots:
-
-```text
-artifacts/model
-artifacts/perturbation_embeddings.pt
-```
-
-Overlapping roots:
-
-```text
-artifacts/model
-artifacts/model/embeddings
-```
-
----
-
-## 10. Same-run future inputs
-
-A future input identifies both the producing stage and the named artifact it
-will consume.
-
-```python
-class FutureInputRef(ProtocolModel):
-    kind: Literal["future"] = "future"
-    producer_stage_id: StageId
-    producer_artifact: ArtifactName
-```
-
-Example:
-
-```yaml
-inputs:
-  embeddings:
-    kind: future
-    producer_stage_id: train
-    producer_artifact: perturbation_embeddings
-```
-
-The resolved input records the exact manifest consumed:
-
-```python
-class ResolvedFutureInputRef(ProtocolModel):
-    kind: Literal["future"] = "future"
-    manifest: ResolvedArtifactManifestRef
-```
-
-The verifier traverses:
-
-```text
-FutureInputRef.producer_stage_id
-→ producer ResolvedStageRef
-
-FutureInputRef.producer_artifact
-→ producer ResolvedStageRef.artifacts[producer_artifact]
-```
-
-The requested and resolved input records satisfy:
-
-```text
-ResolvedFutureInputRef.manifest
-==
-producer ResolvedStageRef.artifacts[
-    FutureInputRef.producer_artifact
-]
-```
-
-The loaded manifest then satisfies:
-
-```text
-ArtifactManifest.artifact_name
-==
-FutureInputRef.producer_artifact
-```
-
-```text
-ArtifactManifest.resolved_spec
-==
-producer ResolvedStageRef.resolved_spec
-```
-
-```text
-ArtifactManifest.artifact
-==
-producer ResolvedBaseSpec.artifacts[
-    FutureInputRef.producer_artifact
-]
-```
-
-The executor materializes:
-
-- A file artifact at its canonical file path.
-- Every bundle member beneath its canonical bundle root.
-
----
-
-## 11. Stored inputs and promotion pointers
-
-`ArtifactPointer` continues to select one artifact manifest:
-
-```python
-class ArtifactPointer(ProtocolModel):
-    schema_version: Literal[1] = 1
-    manifest: ResolvedArtifactManifestRef
-```
-
-The pointer traversal remains:
-
-```text
-StoredInputRef.pointer
-→ ArtifactPointer.manifest
-→ ArtifactManifest.artifact
-→ ResolvedArtifactFile | ResolvedArtifactBundle
-```
-
-For a file artifact, `StoredInputRef.path` is the local file path supplied to
-the consuming stage.
-
-For a bundle artifact, `StoredInputRef.path` is the local bundle root. The
-executor places each member at:
-
-```text
-StoredInputRef.path
-/
-ResolvedArtifactBundleMember.relative_path
-```
-
-The pointer selects the complete artifact. A pointer to a bundle therefore
-selects every member recorded by the bundle manifest.
-
----
-
-## 12. Retained-file classification
-
-Every file retained as part of successful stage completion belongs to exactly
-one protocol role:
-
-1. A member of one named artifact.
-2. A measurement file.
-3. A log file.
-4. A protocol record.
-
-The executor removes stage-local temporary files from the accepted workspace
-state.
-
-A tensor or other computational value receives its own `ArtifactName` when both
-conditions hold:
-
-1. **Durable:** Its physical representation is retained after successful stage
-   completion.
-2. **Independently addressable:** A later protocol operation must be able to
-   retrieve that value without retrieving another artifact.
-
-Independent addressability is expressed through a named downstream artifact
-input, an `ArtifactPointer`, an artifact-specific parity result, or a
-continuation contract.
-
-A computational value remains stage-local when its lifetime ends within the
-stage execution and no later protocol record addresses it. Its effect may be
-reflected in the stage's retained artifacts or measurements.
-
----
-
-## 13. Publication contract
-
-For one successful stage:
-
-```text
-Commit C — artifact bytes
-├── artifact_name_a
-│   └── file or complete bundle member set
-└── artifact_name_b
-    └── file or complete bundle member set
-
-Commit D — resolved stage spec
-└── ResolvedBaseSpec.artifacts
-    ├── artifact_name_a → exact resolved artifact
-    └── artifact_name_b → exact resolved artifact
-
-Commit E — artifact manifests
-├── artifact_name_a.manifest.yaml
-└── artifact_name_b.manifest.yaml
-
-ResolvedStageRef
-├── resolved_spec → commit D
-└── artifacts
-    ├── artifact_name_a → manifest at commit E
-    └── artifact_name_b → manifest at commit E
-```
-
-Publication sequence:
-
-1. Execute the stage command.
-2. Classify every retained stage-created file.
-3. Calculate the SHA-256 and byte count of every artifact file and bundle
-   member.
-4. Publish all artifact bytes at commit C.
-5. Construct and publish the resolved stage spec at commit D.
-6. Construct one manifest per artifact name.
-7. Publish all artifact manifests at commit E.
-8. Retrieve and verify commits C, D, and E.
-9. Construct `ResolvedStageRef` from the verified resolved-spec and manifest
-   references.
-10. Attach `ResolvedStageRef` to the current `RunAttempt`.
-
-All artifact files produced by the stage share commit C. All artifact manifests
-produced by the stage share commit E.
-
-An interrupted stage retains operational failure evidence through its attempt
-record. A completed `ResolvedStageRef` represents a stage whose complete
-declared artifact set passed the publication and verification sequence.
-
----
-
-## 14. Artifact parity
-
-### File artifact fingerprint
-
-```text
-(
-    kind = "file",
-    sha256,
-    bytes,
-)
-```
-
-### Bundle artifact fingerprint
-
-```text
-(
-    kind = "bundle",
-    sorted(
-        (
-            member.relative_path,
-            member.file.sha256,
-            member.file.bytes,
-        )
-        for member in members
-    ),
-)
-```
-
-### Stage parity
-
-Two stage executions have artifact parity when:
-
-1. Their artifact-name sets are equal.
-2. The artifact kind is equal for every artifact name.
-3. The artifact fingerprint is equal for every artifact name.
-
-Repository, storage path, and storage commit identify where verified bytes are
-retrieved. Artifact parity is calculated from artifact kind, member identity,
-SHA-256, and byte count.
-
----
-
-## 15. Reference-model probes
-
-The contract produces the following classifications:
-
-| Durable result | Artifact classification |
-|---|---|
-| One checkpoint file | One `ResolvedArtifactFile` |
-| `model.pt` plus required `config.pkl` | One `ResolvedArtifactBundle` named `model` |
-| Sharded checkpoint plus index | One `ResolvedArtifactBundle` |
-| Model plus independently reusable embeddings | Two named artifacts |
-| Shared trunk plus independently deployable heads | One artifact per independently consumed component |
-| Best inference model plus resumable training state | Two named artifacts |
-| Persisted prediction matrix | Separate named artifact |
-| Loss or correlation values | Measurements |
-| Forward-pass activations used only inside the stage | Stage-local values |
-| Persisted activation trace used as parity evidence | Named artifact |
-
-The model-plus-embeddings case resolves as:
-
-```text
-train stage
-├── artifact: model
-│   └── file or bundle
-└── artifact: perturbation_embeddings
-    └── file or bundle
-```
-
-The `model` and `perturbation_embeddings` values have separate manifest,
-consumption, promotion, replacement, and parity lifecycles.
-
----
-
-## 16. Review sequence
-
-The version 2 review proceeds in this order:
-
-1. Freeze the artifact definitions and boundary.
-2. Freeze the class names and field shapes.
-3. Freeze the cross-record equalities.
-4. Freeze path, publication, and parity rules.
-5. Probe additional real model-output layouts.
-6. Map the frozen contract onto each affected section of `ProvenanceS1.md`.
-7. Map the frozen contract onto `models_v4.py`, `verifier.py`, and focused
-   tests.
+## 18. Migration sequence
+
+1. Freeze the runtime-state definition and strict-reproducibility condition.
+2. Freeze the exact requested-environment and execution-context field shapes.
+3. Freeze the typed `VariantStageParams` models.
+4. Freeze `StageArtifactRef` and the final-estimator selector.
+5. Freeze the stage, artifact, and physical-file partition contracts.
+6. Propagate the artifact mapping through stage specs, resolved stage specs,
+   manifests, future inputs, attempts, and resolved runs.
+7. Map the frozen contract onto `ProvenanceS1.md`.
+8. Update `models_v4.py`.
+9. Update `verifier.py`.
+10. Replace affected tests with focused tests of the new invariants.
+11. Execute one complete dummy run and reject one deliberately corrupted
+    referenced file.
