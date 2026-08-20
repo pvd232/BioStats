@@ -54,19 +54,52 @@ It defines the map from the chosen runtime state and dataset to the fitted param
 
 ---
 
-## 3. Run plan and permitted runtime states
+## 3. Run plan and strict parameter reproducibility
 
-Let `Q` be the set of valid run plans and let `q` be one member of `Q`.
+Let $q$ be a run plan. The plan fixes $\alpha$, $\beta$, and
+$D_q\in\mathcal D$, and induces a nonempty set of permitted runtime states
+$E_q\subseteq E$.
 
-The complete plan `q` contains:
+Define the estimator restricted by $q$ as:
 
-```text
-RunSpec
-└── ordered RunStageRef records
-    └── exact stage-spec files
-```
+$$
+T_{\alpha,\beta,q}:E_q\rightarrow\Theta_\alpha,
+$$
 
-Formally:
+where:
+
+$$
+T_{\alpha,\beta,q}(e)
+=
+\widetilde T_{\alpha,\beta}(D_q,e).
+$$
+
+The plan $q$ provides strict parameter reproducibility exactly when:
+
+$$
+\forall e,e'\in E_q,
+\qquad
+T_{\alpha,\beta,q}(e)
+=
+T_{\alpha,\beta,q}(e').
+$$
+
+Because $E_q$ is nonempty, this common value exists. Denote it by
+$\widehat\theta_q$. Therefore:
+
+$$
+\forall e\in E_q,
+\qquad
+T_{\alpha,\beta,q}(e)
+=
+\widehat\theta_q.
+$$
+
+---
+
+## 4. Protocol representation and partition hierarchy
+
+The run plan has the form:
 
 $$
 q
@@ -77,165 +110,64 @@ r,
 \ldots,
 \sigma_m
 \right),
+\qquad
+m\geq 1,
 $$
 
-where `r` is the `RunSpec`, each `sigma_i` is the stage spec identified by the
-corresponding `RunStageRef`, and `m` is at least one.
+where $r$ is a `RunSpec`, the specification for how a model training run will be executed, and $\sigma_i$ refers to the $i^{th}$ `RunStageRef`.
+This is a shorthand for "run stage reference", a file that encodes a pointer to the specification for stage[i] of the model. The index reflects the stage execution order.
 
-`RunSpec.source`, `VariantSpec.stage_params`, and the loaded stage specs fix
-`alpha` and `beta` for the run.
-
-The dataset `D_q` is the collection of external artifact inputs fixed before
-execution through `StoredInputRef.pointer`. Same-run artifact references connect
-intermediate stage outputs within the execution represented by the estimator.
-A download stage establishes an external data root; its output enters `D_q` for
-a later run after its artifact manifest is published and selected by a pointer.
-
-Every runtime coordinate receives one policy in `q`:
-
-1. **Exact:** the realized value must equal one recorded value.
-2. **Permitted set:** the realized value must belong to a recorded finite set.
-3. **Unrestricted:** the coordinate may take any value in its domain.
-
-Let `e satisfies q` mean that every exact and permitted-set constraint in `q`
-holds for runtime state `e`. The states permitted by `q` are:
-
-$$
-E_q
-=
-\left\{
-e\in E
-:
-e\text{ satisfies }q
-\right\}.
-$$
-
-### Strict parameter reproducibility
-
-The plan `q` provides strict parameter reproducibility when:
-
-$$
-E_q\neq\varnothing
-$$
-
-and there exists one parameter value `theta_hat_q` such that:
-
-$$
-\exists\widehat{\theta}_q\in\Theta_{\alpha}
-\quad
-\forall e\in E_q,
-\quad
-\widetilde{T}_{\alpha,\beta}(D_q,e)
-=
-\widehat{\theta}_q.
-$$
-
-Equivalently, all runtime variation permitted by `q` leaves the fitted
-parameters unchanged.
-
-### Operational parity criterion
-
-`RunSpec.estimator` identifies the named artifact that reconstructs
-`theta_hat_q`. Stage 1 represents equality of that artifact through exact
-physical-file identity:
+The protocol represents $q$ through:
 
 ```text
-same artifact name
-+ same ordered file or bundle-member paths
-+ same SHA-256 for every file
-+ same byte count for every file
-→ strict estimator-artifact parity
+RunSpec r
+├── source
+├── experiment, variant, replicate, and seed
+├── ordered RunStageRef records
+└── estimator
+
+RunStageRef[i]
+└── identifies the exact stage-spec file σᵢ
+    ├── inputs
+    ├── script
+    ├── environment
+    ├── reproducibility controls
+    ├── parameters
+    └── declared artifacts
 ```
 
-Protocol assumption: the loader fixed by the source snapshot and environment is
-deterministic. It therefore maps identical estimator-artifact files to the same
-parameter value. The verifier establishes the file equalities; a benchmark
-replay later tests whether the complete execution reproduces them.
+A successful execution under $e\in E_q$ is recorded through:
 
-### Direct consequences
+```text
+ResolvedRun
+├── run → RunSpec r
+├── run_file → exact run-plan file
+└── successful RunAttempt
+    └── resolved_stages[]
+        └── ResolvedStageRef
+            ├── resolved_spec → loads ResolvedBaseSpec
+            └── artifacts
+                └── artifact name → ResolvedArtifactManifestRef
+```
 
-1. **Counterexample:** if two states `e` and `e_prime` in `E_q` produce
-   different parameter values, `q` fails strict parameter reproducibility.
-2. **Refinement:** if `q_prime` preserves the dataset and estimator and satisfies
-   `E_q_prime` contained in `E_q`, then strict reproducibility of `q` implies
-   strict reproducibility of `q_prime`.
-3. **Empirical evidence:** matching outputs from finitely many executions test
-   the universal condition. A differing output disproves it.
+The run plan induces three successive partitions:
+
+```text
+run plan q
+│
+└── ordered stage partition Π(q)
+    └── successful stage s
+        └── artifact partition A(s)
+            └── artifact a
+                └── physical-file partition F_s(a)
+```
+
+The next two sections define these partitions and their cardinality and
+membership requirements.
 
 ---
 
-## 4. Runtime coordinates represented by the protocol
-
-The following records connect the plan to one realized runtime state:
-
-| Runtime coordinate | Plan record | Realized record |
-|---|---|---|
-| Source snapshot | `RunSpec.source` and `BaseSpec.script` | `ResolvedBaseSpec.source` |
-| Stage-spec bytes and order | `RunSpec.stages` | `RunAttempt.resolved_stages` |
-| Input bytes | `StoredInputRef` or `FutureInputRef` | `ResolvedInternalSpec.inputs` |
-| Stage parameters | stage-specific `params` | embedded `ResolvedBaseSpec.spec.params` |
-| Provisioned environment | `GCEEnvironmentSpec` | `ResolvedGCEEnvironment` |
-| Randomness, algorithms, precision, and parallelism | `ReproducibilitySpec` | applied controls in `ExecutionContext` |
-| Executed command | derived from `BaseSpec.script` and `RunStageRef.spec` | `ResolvedBaseSpec.command` |
-
-For Stage 1 strict execution, the plan fixes:
-
-```text
-source and dependency bytes
-input bytes
-stage-spec bytes and order
-command
-stage parameters
-seed
-deterministic-algorithm settings
-precision settings
-machine image
-machine type and compute backend
-numerical-runtime versions
-parallelism
-```
-
-Location-only facts such as GCE zone remain unrestricted.
-
-A coordinate omitted from the plan remains variable in `E_q`. If variation in
-that coordinate changes the fitted parameters, the resulting pair of executions
-is a counterexample to strict parameter reproducibility.
-
----
-
-## 5. Source snapshot and run-plan snapshot
-
-The protocol uses two immutable Git snapshots.
-
-```text
-Source commit A
-├── source code
-├── experiment file
-├── variant files
-├── metric implementations
-├── lockfile
-└── promoted-input pointers
-        │
-        ▼ create and validate the concrete run plan
-Run-plan commit B
-├── <run_id>.run.yaml
-└── stage-spec files
-        │
-        ▼ execute B's plan using A's source
-stage execution
-```
-
-`RunSpec.source` identifies commit A. `ResolvedRun.run_file.stored_at` identifies
-commit B. Every `RunStageRef` supplies the path, SHA-256, and byte count of one
-stage spec stored in commit B.
-
-The source snapshot is created first. The concrete `RunSpec` and stage specs are
-then validated, hashed, and published together in the run-plan snapshot before
-execution begins.
-
----
-
-## 6. Stage partition
+## 5. Stage partition
 
 The run plan declares the finite ordered stage sequence:
 
@@ -265,7 +197,7 @@ Stage 1 accepts `Pi(q)` as declared by the run plan.
 
 ---
 
-## 7. Artifact and physical-file partitions
+## 6. Artifact and physical-file partitions
 
 Let `s` be a successfully completed stage.
 
@@ -367,7 +299,78 @@ records retain their separate roles in `RunAttempt` and `ResolvedRun`.
 
 ---
 
-## 8. File identity and storage
+## 7. Runtime coordinates represented by the protocol
+
+The following records connect the plan to one realized runtime state:
+
+| Runtime coordinate | Plan record | Realized record |
+|---|---|---|
+| Source snapshot | `RunSpec.source` and `BaseSpec.script` | `ResolvedBaseSpec.source` |
+| Stage-spec bytes and order | `RunSpec.stages` | `RunAttempt.resolved_stages` |
+| Input bytes | `StoredInputRef` or `FutureInputRef` | `ResolvedInternalSpec.inputs` |
+| Stage parameters | stage-specific `params` | embedded `ResolvedBaseSpec.spec.params` |
+| Provisioned environment | `GCEEnvironmentSpec` | `ResolvedGCEEnvironment` |
+| Randomness, algorithms, precision, and parallelism | `ReproducibilitySpec` | applied controls in `ExecutionContext` |
+| Executed command | derived from `BaseSpec.script` and `RunStageRef.spec` | `ResolvedBaseSpec.command` |
+
+For Stage 1 strict execution, the plan fixes:
+
+```text
+source and dependency bytes
+input bytes
+stage-spec bytes and order
+command
+stage parameters
+seed
+deterministic-algorithm settings
+precision settings
+machine image
+machine type and compute backend
+numerical-runtime versions
+parallelism
+```
+
+Location-only facts such as GCE zone remain unrestricted.
+
+A coordinate omitted from the plan remains variable in $E_q$. If variation in
+that coordinate changes the fitted parameters, the resulting pair of executions
+is a counterexample to strict parameter reproducibility.
+
+---
+
+## 8. Source snapshot and run-plan snapshot
+
+The protocol uses two immutable Git snapshots.
+
+```text
+Source commit A
+├── source code
+├── experiment file
+├── variant files
+├── metric implementations
+├── lockfile
+└── promoted-input pointers
+        │
+        ▼ create and validate the concrete run plan
+Run-plan commit B
+├── <run_id>.run.yaml
+└── stage-spec files
+        │
+        ▼ execute B's plan using A's source
+stage execution
+```
+
+`RunSpec.source` identifies commit A. `ResolvedRun.run_file.stored_at` identifies
+commit B. Every `RunStageRef` supplies the path, SHA-256, and byte count of one
+stage spec stored in commit B.
+
+The source snapshot is created first. The concrete `RunSpec` and stage specs are
+then validated, hashed, and published together in the run-plan snapshot before
+execution begins.
+
+---
+
+## 9. File identity and storage
 
 All protocol models reject unexpected fields and are frozen after validation:
 
@@ -469,7 +472,7 @@ path and the artifact's remote storage path.
 
 ---
 
-## 9. Artifact declarations and resolved artifacts
+## 10. Artifact declarations and resolved artifacts
 
 ```python
 ArtifactName = HumanId
@@ -565,7 +568,7 @@ non-overlapping.
 
 ---
 
-## 10. Artifact manifests and promotion pointers
+## 11. Artifact manifests and promotion pointers
 
 Each artifact name receives one manifest:
 
@@ -665,7 +668,7 @@ Stage completion creates artifacts and manifests. Promotion creates the pointer.
 
 ---
 
-## 11. Stage inputs
+## 12. Stage inputs
 
 ### Stored input
 
@@ -758,7 +761,7 @@ an `ArtifactPointer` after promotion.
 
 ---
 
-## 12. Experiment, variant, replicate, and seed
+## 13. Experiment, variant, replicate, and seed
 
 ```text
 ExperimentSpec
@@ -849,7 +852,7 @@ same seed. A different replicate seed produces a different run.
 
 ---
 
-## 13. Environment, numerical controls, and command
+## 14. Environment, numerical controls, and command
 
 The pre-execution records and realized records have separate roles:
 
@@ -909,7 +912,7 @@ spec.
 
 ---
 
-## 14. Run, attempt, and measurement records
+## 15. Run, attempt, and measurement records
 
 ```python
 class RunStageRef(ProtocolModel):
@@ -992,7 +995,7 @@ every row against the containing run, attempt, stage, and experiment.
 
 ---
 
-## 15. Validation and external verification
+## 16. Validation and external verification
 
 ### Pydantic validators
 
@@ -1065,7 +1068,7 @@ multiple records.
 
 ---
 
-## 16. Execution and publication sequence
+## 17. Execution and publication sequence
 
 ### Before execution
 
@@ -1137,7 +1140,7 @@ under `inputs/` at optional commit F.
 
 ---
 
-## 17. Reference cases
+## 18. Reference cases
 
 | Stage output | Artifact partition |
 |---|---|
@@ -1178,7 +1181,7 @@ A(train)
 
 ---
 
-## 18. Migration sequence
+## 19. Migration sequence
 
 1. Freeze the runtime-state definition and strict-reproducibility condition.
 2. Freeze the exact requested-environment and execution-context field shapes.
