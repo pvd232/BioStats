@@ -97,73 +97,94 @@ $$
 
 ---
 
-## 4. Protocol representation and partition hierarchy
+## 4. Protocol hierarchy
 
-The run plan has the form:
-
-$$
-q
-=
-\left(
-r,
-\sigma_1,
-\ldots,
-\sigma_m
-\right),
-\qquad
-m\geq 1,
-$$
-
-where $r$ is a `RunSpec`, the specification for how a model training run will be executed, and $\sigma_i$ refers to the $i^{th}$ `RunStageRef`.
-This is a shorthand for "run stage reference", a file that encodes a pointer to the specification for stage[i] of the model. The index reflects the stage execution order.
-
-The protocol represents $q$ through:
+The run plan $q$ defined in Section 3 consists of one `RunSpec` and the exact
+stage-spec files identified by its ordered `RunStageRef` records.
 
 ```text
-RunSpec r
+ExperimentSpec
+├── factors
+│   └── FactorSpec.levels
+├── variant_ids
+├── replicates
+│   └── ReplicateSpec.seed
+└── metric_ids
+
+VariantSpec
+├── levels
+└── stage_params
+
+RunSpec
+├── experiment_id
+├── variant_id
+├── replicate_id
+├── seed
 ├── source
-├── experiment, variant, replicate, and seed
-├── ordered RunStageRef records
-└── estimator
+├── stages → ordered RunStageRef records
+└── estimator: StageArtifactRef
 
-RunStageRef[i]
-└── identifies the exact stage-spec file σᵢ
-    ├── inputs
-    ├── script
-    ├── environment
-    ├── reproducibility controls
-    ├── parameters
-    └── declared artifacts
-```
+BaseSpec subclass
+├── inputs
+├── script
+├── environment
+├── reproducibility
+├── params
+└── artifacts
+    └── artifact name → ArtifactSpec
 
-A successful execution under $e\in E_q$ is recorded through:
-
-```text
 ResolvedRun
-├── run → RunSpec r
-├── run_file → exact run-plan file
-└── successful RunAttempt
-    └── resolved_stages[]
-        └── ResolvedStageRef
-            ├── resolved_spec → loads ResolvedBaseSpec
-            └── artifacts
-                └── artifact name → ResolvedArtifactManifestRef
+├── run
+│   └── embedded RunSpec
+├── run_file
+│   └── ResolvedFileRef identifying the serialized RunSpec
+├── attempts
+│   └── RunAttempt
+│       ├── resolved_stages
+│       │   └── ResolvedStageRef
+│       │       ├── resolved_spec
+│       │       │   └── loads ResolvedBaseSpec
+│       │       └── artifacts
+│       │           └── artifact name
+│       │               → ResolvedArtifactManifestRef
+│       │               → loads ArtifactManifest
+│       │               → identifies ResolvedArtifact
+│       ├── measurement_files
+│       └── log_files
+├── successful_attempt_id
+├── status
+└── completed_at
+
+ResolvedArtifact
+├── ResolvedArtifactFile
+│   └── one ResolvedFileRef
+└── ResolvedArtifactBundle
+    └── two or more ResolvedArtifactBundleMember records
+
+StoredInputRef
+└── pointer → ArtifactPointerRef
+    └── loads ArtifactPointer
+        └── manifest → ResolvedArtifactManifestRef
+
+FutureInputRef
+├── producer_stage_id
+└── producer_artifact
+    └── producer ResolvedStageRef.artifacts[producer_artifact]
+
+Measurement
+├── run_id
+├── attempt_id
+├── stage_id
+├── metric_id
+└── value
 ```
 
-The run plan induces three successive partitions:
-
-```text
-run plan q
-│
-└── ordered stage partition Π(q)
-    └── successful stage s
-        └── artifact partition A(s)
-            └── artifact a
-                └── physical-file partition F_s(a)
-```
-
-The next two sections define these partitions and their cardinality and
-membership requirements.
+A successful `RunAttempt` records one execution under some $e\in E_q$.
+`RunSpec.stages` supplies the ordered stage partition $\Pi(q)$.
+`BaseSpec.artifacts`, `ResolvedBaseSpec.artifacts`, and
+`ResolvedStageRef.artifacts` jointly represent the artifact partition $A(s)$.
+Each loaded `ArtifactManifest.artifact` represents the physical-file partition
+$F_s(a)$ for one named artifact.
 
 ---
 
