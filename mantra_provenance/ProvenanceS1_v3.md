@@ -1056,8 +1056,15 @@ ResolvedArtifact = Annotated[
 
 
 class ResolvedBaseSpec(ProtocolModel):
+    schema_version: Literal[1] = 1
+    kind: str
     spec: BaseSpec
+    source: ResolvedGitFileRef
+    environment: ResolvedGCEEnvironment
+    execution_context: ExecutionContext
+    command: tuple[str, ...] = Field(min_length=1)
     artifacts: dict[ArtifactName, ResolvedArtifact] = Field(min_length=1)
+    completed_at: AwareDatetime
 ```
 
 The artifact-name sets are equal:
@@ -1187,11 +1194,11 @@ class RunSpec(ProtocolModel):
     estimator: StageArtifactRef
 ```
 
-`RunSpec.seed` is the global seed $zeta_q$ assigned to the selected replicate.
+`RunSpec.seed` is the global seed $\zeta_q$ assigned to the selected replicate.
 The executor applies it to every controlled random-number generator according
 to `RunSpec.reproducibility`.
 
-`RunSpec.environment` supplies $h_q$. For stage $omega_j$:
+`RunSpec.environment` supplies $h_q$. For stage $\omega_j$:
 
 ```text
 BaseSpec.environment is present
@@ -1371,7 +1378,262 @@ ResolvedRun.successful_attempt_id
 → complete successful RunAttempt
 ```
 
-## 15. Protocol mapping
+## 15. Environment, reproducibility, and execution records
+
+### Requested environment
+
+```python
+class GCEMachineImageRef(ProtocolModel):
+    project: NonEmptyStr
+    name: NonEmptyStr
+
+
+class CPUComputeSpec(ProtocolModel):
+    kind: Literal["cpu"] = "cpu"
+
+
+class CUDAComputeSpec(ProtocolModel):
+    kind: Literal["cuda"] = "cuda"
+    model: NonEmptyStr
+    count: int = Field(ge=1)
+
+
+ComputeSpec = Annotated[
+    CPUComputeSpec | CUDAComputeSpec,
+    Field(discriminator="kind"),
+]
+
+
+class GCEEnvironmentSpec(ProtocolModel):
+    kind: Literal["gce"] = "gce"
+    machine_image: GCEMachineImageRef
+    machine_type: NonEmptyStr
+    compute: ComputeSpec
+    lockfile: GitFileRef
+```
+
+`RunSpec.environment` supplies the shared `GCEEnvironmentSpec`. A stage-level
+`BaseSpec.environment` supplies the selected stage's environment override.
+
+### Run-wide reproducibility controls
+
+```python
+class TorchDeterminismSpec(ProtocolModel):
+    deterministic_algorithms: bool
+    deterministic_warn_only: bool
+    cudnn_deterministic: bool
+    cudnn_benchmark: bool
+    cublas_workspace_config: Literal[":16:8", ":4096:8"] | None
+
+
+class TorchPrecisionSpec(ProtocolModel):
+    float32_matmul_precision: Literal["highest", "high", "medium"]
+    cudnn_allow_tf32: bool
+    autocast_enabled: bool
+    autocast_dtype: Literal["float16", "bfloat16"] | None
+
+
+class ParallelismSpec(ProtocolModel):
+    process_count: int = Field(ge=1)
+    torch_intraop_threads: int = Field(ge=1)
+    torch_interop_threads: int = Field(ge=1)
+    dataloader_workers: int = Field(ge=0)
+
+
+class ReproducibilitySpec(ProtocolModel):
+    determinism: TorchDeterminismSpec
+    precision: TorchPrecisionSpec
+    parallelism: ParallelismSpec
+```
+
+The global seed occurs once in `RunSpec.seed`. `ReproducibilitySpec` records
+the remaining numerical controls shared by every stage.
+
+### Realized environment and runtime state
+
+```python
+class ResolvedGCEMachineImageRef(GCEMachineImageRef):
+    id: NonEmptyStr
+
+
+class ResolvedGitFileRef(ResolvedFileRef):
+    stored_at: GitFileRef
+
+
+class ResolvedGCEEnvironment(ProtocolModel):
+    kind: Literal["gce"] = "gce"
+    machine_image: ResolvedGCEMachineImageRef
+    machine_type: NonEmptyStr
+    compute: ComputeSpec
+    lockfile: ResolvedGitFileRef
+
+
+class GCEHostContext(ProtocolModel):
+    provider: Literal["gce"] = "gce"
+    machine_type: NonEmptyStr
+    zone: NonEmptyStr
+    guest_os_name: NonEmptyStr
+    guest_os_version: NonEmptyStr
+    kernel_release: NonEmptyStr
+
+
+class CPUContext(ProtocolModel):
+    architecture: NonEmptyStr
+    model: NonEmptyStr
+    instruction_features: tuple[NonEmptyStr, ...] = Field(min_length=1)
+
+
+class CPUBackendContext(ProtocolModel):
+    kind: Literal["cpu"] = "cpu"
+    device: Literal["cpu"] = "cpu"
+
+
+class CUDADeviceContext(ProtocolModel):
+    ordinal: int = Field(ge=0)
+    model: NonEmptyStr
+    compute_capability_major: int = Field(ge=0)
+    compute_capability_minor: int = Field(ge=0)
+    memory_bytes: int = Field(gt=0)
+
+
+class CUDABackendContext(ProtocolModel):
+    kind: Literal["cuda"] = "cuda"
+    gpu_devices: tuple[CUDADeviceContext, ...] = Field(min_length=1)
+    nvidia_driver_version: NonEmptyStr
+    pytorch_cuda_version: NonEmptyStr
+    cudnn_version: NonEmptyStr
+
+
+ComputeBackendContext = Annotated[
+    CPUBackendContext | CUDABackendContext,
+    Field(discriminator="kind"),
+]
+
+
+class NativeLibraryContext(ProtocolModel):
+    implementation: NonEmptyStr
+    version: NonEmptyStr
+
+
+class NativeThreadPoolContext(NativeLibraryContext):
+    threads: int = Field(ge=1)
+
+
+class NumericalRuntimeContext(ProtocolModel):
+    python_version: NonEmptyStr
+    pytorch_version: NonEmptyStr
+    numpy_version: NonEmptyStr
+    blas: NativeLibraryContext
+    lapack: NativeLibraryContext
+    native_thread_pools: tuple[NativeThreadPoolContext, ...]
+
+
+class RandomnessContext(ProtocolModel):
+    python_seed: int
+    numpy_seed: int
+    torch_seed: int
+    dataloader_seed: int
+
+
+class ExecutionContext(ProtocolModel):
+    host: GCEHostContext
+    cpu: CPUContext
+    backend: ComputeBackendContext
+    numerical_runtime: NumericalRuntimeContext
+    randomness: RandomnessContext
+    determinism: TorchDeterminismSpec
+    precision: TorchPrecisionSpec
+    parallelism: ParallelismSpec
+```
+
+For stage $\omega_j$, let $\widetilde{h}_j$ denote its resolved environment and
+let $x_j$ denote its execution context. The realized runtime state recorded by
+the protocol is:
+
+$$
+e_j
+=
+\left(
+\widetilde{h}_j,
+x_j
+\right).
+$$
+
+The verifier establishes $e_j\in E_{q,j}$ through these equalities:
+
+```text
+ResolvedGCEEnvironment.machine_image.project
+== selected GCEEnvironmentSpec.machine_image.project
+
+ResolvedGCEEnvironment.machine_image.name
+== selected GCEEnvironmentSpec.machine_image.name
+
+ResolvedGCEEnvironment.machine_type
+== selected GCEEnvironmentSpec.machine_type
+== ExecutionContext.host.machine_type
+
+ResolvedGCEEnvironment.compute
+== selected GCEEnvironmentSpec.compute
+
+ResolvedGCEEnvironment.lockfile.stored_at
+== selected GCEEnvironmentSpec.lockfile
+
+ExecutionContext.determinism
+== RunSpec.reproducibility.determinism
+
+ExecutionContext.precision
+== RunSpec.reproducibility.precision
+
+ExecutionContext.parallelism
+== RunSpec.reproducibility.parallelism
+
+ExecutionContext.randomness.python_seed
+== ExecutionContext.randomness.numpy_seed
+== ExecutionContext.randomness.torch_seed
+== ExecutionContext.randomness.dataloader_seed
+== RunSpec.seed
+```
+
+For a CPU environment, `ExecutionContext.backend.kind` is `cpu`. For a CUDA
+environment, the backend is `cuda`, its number of devices equals
+`CUDAComputeSpec.count`, and each device model equals `CUDAComputeSpec.model`.
+
+The verifier checks the resolved machine-image identity and verifies the
+lockfile and source-entrypoint bytes. `ExecutionContext` records the runtime
+library implementations and versions used by the stage.
+
+### Source and command
+
+`ResolvedBaseSpec.source` identifies `BaseSpec.script` at `RunSpec.source`:
+
+```text
+ResolvedBaseSpec.source.stored_at.repository
+== RunSpec.source.repository
+
+ResolvedBaseSpec.source.stored_at.commit
+== RunSpec.source.commit
+
+ResolvedBaseSpec.source.stored_at.path
+== ResolvedBaseSpec.spec.script
+```
+
+For the `RunStageRef` belonging to stage $\omega_j$, the executor constructs:
+
+```text
+python <BaseSpec.script> <RunStageRef.spec>
+```
+
+The resolved record satisfies:
+
+```python
+ResolvedBaseSpec.command == (
+    "python",
+    str(ResolvedBaseSpec.spec.script),
+    str(run_stage_ref.spec),
+)
+```
+
+## 16. Protocol mapping
 
 The terminal checkpoint of every training stage is represented by two reserved
 artifacts:
