@@ -30,7 +30,16 @@ I_\alpha
 \mathcal{G}_\alpha.
 $$
 
-An estimator specification $\beta$ determines the procedure used to select a parameter value from data.
+The estimator specification $\beta$ determines the map from datasets to
+parameter values:
+
+$$
+T_{\alpha,\beta}
+:
+\mathcal{D}
+\longrightarrow
+\Theta_\alpha.
+$$
 
 The run plan $q$ fixes:
 
@@ -1028,7 +1037,27 @@ class BaseSpec(ProtocolModel):
 ```
 
 For a single-file artifact, `path` identifies its file. For a bundle artifact,
-`path` identifies its directory root.
+`path` identifies its directory root. Every artifact path has the form:
+
+```text
+experiments/<experiment_id>/runs/<variant_id>/<run_id>/artifacts/
+    <category>/<entity_id>/<file_or_bundle_path>
+```
+
+The artifact category is `datasets` for a download stage, `priors` for a build
+stage, `models` for an embed or train stage, and `evaluations` for an evaluate
+stage. A single-file artifact includes a filename after `<entity_id>`. A bundle
+root may equal the identity directory or a directory beneath it.
+
+The stage entrypoints are:
+
+```text
+DownloadSpec → src/mantra/datasets/<dataset_id>/download.py
+BuildSpec    → src/mantra/priors/<prior_id>/build.py
+EmbedSpec    → src/mantra/models/<model_id>/embed.py
+TrainSpec    → src/mantra/models/<model_id>/train.py
+EvaluateSpec → src/mantra/models/<model_id>/evaluate.py
+```
 
 An artifact loader is a Python file at:
 
@@ -1127,9 +1156,9 @@ ResolvedBundleMember.file.path
 BundleArtifactSpec.path / ResolvedBundleMember.relative_path
 ```
 
-Bundle-member paths are unique, remain beneath the bundle root, and appear in
-canonical `relative_path` order. Artifact roots within one stage are pairwise
-non-overlapping.
+Bundle-member paths are unique, pairwise non-overlapping, remain beneath the
+bundle root, and appear in canonical `relative_path` order. Artifact roots
+within one stage are pairwise non-overlapping.
 
 The verifier verifies every file in $F_j(a)$, materializes the file or
 directory, invokes the loader named by the corresponding `ArtifactSpec`, and
@@ -1182,6 +1211,9 @@ declared output $y_j$.
 ### Run plan
 
 ```python
+RNGSeed = Annotated[int, Field(ge=0, le=2**32 - 1)]
+
+
 class StageArtifactRef(ProtocolModel):
     stage_id: StageId
     artifact_name: ArtifactName
@@ -1202,7 +1234,7 @@ class RunSpec(ProtocolModel):
     replicate_id: ReplicateId
     benchmark_id: BenchmarkId | None = None
 
-    seed: int
+    seed: RNGSeed
     source: GitSource
     environment: GCEEnvironmentSpec
     reproducibility: ReproducibilitySpec
@@ -1212,8 +1244,12 @@ class RunSpec(ProtocolModel):
 ```
 
 `RunSpec.seed` is the global seed $\zeta_q$ assigned to the selected replicate.
-The executor applies it to every controlled random-number generator according
-to `RunSpec.reproducibility`.
+Its range is the shared domain accepted by NumPy's legacy
+[random-state seeding](https://numpy.org/doc/2.0/reference/random/legacy.html)
+and PyTorch's
+[generator seeding](https://docs.pytorch.org/docs/stable/generated/torch.Generator.html).
+The executor applies it to each generator according to
+`RunSpec.reproducibility`.
 
 `RunSpec.environment` supplies $h_q$. For stage $\omega_j$:
 
@@ -1229,8 +1265,14 @@ BaseSpec.environment is absent
 override changes $h_{q,j}$ and leaves $c_q$ unchanged.
 
 The ordered `RunStageRef` records identify the exact stage-spec files in
-$\boldsymbol{\omega}_q$. Stage IDs and stage-spec paths are unique. The
-`RunSpec` file and the stage-spec files it identifies constitute $q$.
+$\boldsymbol{\omega}_q$. Stage IDs and stage-spec paths are unique. Each stage
+spec path equals:
+
+```text
+experiments/<experiment_id>/runs/<variant_id>/<run_id>/stages/<stage_id>/spec.yaml
+```
+
+The `RunSpec` file and the stage-spec files it identifies constitute $q$.
 
 ### Artifact selection and promotion
 
@@ -1278,8 +1320,17 @@ ArtifactPointer.run
 → exact artifact files
 ```
 
-Every `ArtifactPointerRef.path` begins with `inputs/` and ends with
-`.pointer.yaml`.
+Every `ArtifactPointerRef.path` has the form:
+
+```text
+inputs/<category>/<entity_id>/<selection_name>.pointer.yaml
+```
+
+The permitted categories are `benchmarks`, `datasets`, `models`, and `priors`.
+
+When the selected run names a benchmark and `ArtifactPointer.artifact` equals
+`RunSpec.estimator`, `ArtifactPointer.benchmark_result` identifies the passed
+`BenchmarkResult` that authorizes promotion.
 
 ### Stage inputs
 
@@ -1305,8 +1356,9 @@ ResolvedStoredInputRef.pointer.stored_at
 StoredInputRef.pointer
 ```
 
-`StoredInputRef.path` is the local file path or bundle root supplied to the
-consuming stage.
+`StoredInputRef.path` identifies the local file path or bundle root supplied to
+the consuming stage. Its category and entity ID equal those in
+`StoredInputRef.pointer.path`.
 
 A same-run input selects one artifact from an earlier stage:
 
@@ -1370,15 +1422,15 @@ class ResolvedRun(ProtocolModel):
 ```
 
 Attempt IDs are unique and strictly increasing. Each attempt's
-`resolved_stages` is an ordered prefix of `RunSpec.stages`. Its stage snapshots,
-measurement-file references, and log-file references are unique. Measurement
-and log references are disjoint.
+`resolved_stages` is an ordered prefix of `RunSpec.stages`. Its stage snapshots
+are unique. Measurement-file storage locations and log-file storage locations
+are unique and disjoint.
 
 A successful attempt satisfies:
 
 1. Its `failure_reason` is null.
-2. Its `resolved_stages` contains every declared stage exactly once and in
-   order.
+2. Its `resolved_stages` is nonempty and contains every declared stage exactly
+   once and in order.
 3. Every `ResolvedStageRef` identifies a verified stage-result snapshot.
 
 A failed, preempted, or cancelled attempt records a nonempty `failure_reason`.
@@ -1552,10 +1604,10 @@ class NumericalRuntimeContext(ProtocolModel):
 
 
 class RandomnessContext(ProtocolModel):
-    python_seed: int
-    numpy_seed: int
-    torch_seed: int
-    dataloader_seed: int
+    python_seed: RNGSeed
+    numpy_seed: RNGSeed
+    torch_seed: RNGSeed
+    dataloader_seed: RNGSeed
 
 
 class ExecutionContext(ProtocolModel):
@@ -1568,6 +1620,8 @@ class ExecutionContext(ProtocolModel):
     precision: TorchPrecisionSpec
     parallelism: ParallelismSpec
 ```
+
+CUDA device ordinals are unique within one `CUDABackendContext`.
 
 For stage $\omega_j$, let $\widetilde{h}_j$ denote its resolved environment and
 let $x_j$ denote its execution context. The realized runtime state recorded by
@@ -1668,7 +1722,7 @@ class FactorSpec(ProtocolModel):
 
 class ReplicateSpec(ProtocolModel):
     replicate_id: ReplicateId
-    seed: int
+    seed: RNGSeed
 
 
 class ExperimentSpec(ProtocolModel):
@@ -1735,7 +1789,7 @@ class VariantSpec(ProtocolModel):
     experiment_id: ExperimentId
     variant_id: VariantId
     levels: dict[FactorId, LevelId]
-    stage_params: tuple[VariantStageParams, ...] = ()
+    stage_params: tuple[VariantStageParams, ...] = Field(min_length=1)
 ```
 
 The factor names in `VariantSpec.levels` equal the factor names in the selected
@@ -2361,7 +2415,8 @@ ResolvedBenchmarkSpecRef.stored_at.path
 
 The selected run attempt and `BenchmarkResult.confirmation` have distinct
 attempt IDs, `succeeded` status, and every stage declared by the shared
-`RunSpec`.
+`RunSpec`. `BenchmarkResult.completed_at` is at or after the completion times of
+the selected `ResolvedRun` and confirmation attempt.
 
 Let their realized runtime states be $e,e'\in E_q$. Estimator parity requires:
 
@@ -2726,6 +2781,9 @@ repository/
 │           └── <loader_id>.py
 ├── tests/
 ├── inputs/
+│   ├── benchmarks/
+│   │   └── <benchmark_id>/
+│   │       └── <selection_name>.pointer.yaml
 │   ├── datasets/
 │   │   └── <dataset_id>/
 │   │       └── <selection_name>.pointer.yaml

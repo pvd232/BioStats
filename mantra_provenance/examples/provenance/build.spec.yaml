@@ -1,15 +1,19 @@
-schema_version: 1
-kind: build
+artifacts:
+  prior:
+    kind: bundle
+    loader: prior_bundle
+    path: experiments/model_eval/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAB/artifacts/priors/toy
+environment: null
 inputs:
-  raw_data:
-    kind: repo
-    path: artifacts/raw/raw-expression.csv
-script: scripts/build.py
-environment:
-  kind: python-lock
-  lockfile: pylock.toml
-  requires_python: ">=3.12,<3.13"
-params:
-  normalize: true
-output: artifacts/processed/expression.pt
-
+  dataset:
+    kind: stored
+    path: inputs/datasets/toy/current.bin
+    pointer:
+      commit: "4444444444444444444444444444444444444444"
+      kind: git
+      path: inputs/datasets/toy/current.pointer.yaml
+      repository: https://github.com/example/mantra
+kind: build
+params: {}
+schema_version: 1
+script: src/mantra/priors/toy/build.py

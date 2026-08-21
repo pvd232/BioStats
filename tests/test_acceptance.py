@@ -47,6 +47,7 @@ from mantra_provenance.models_v4 import (
 from mantra_provenance.verifier import (
     VerificationError,
     verify_benchmark_result,
+    verify_promoted_artifact,
     verify_run_result,
 )
 
@@ -720,7 +721,7 @@ def build_complete_fixture(
         artifacts={
             "predictions": {
                 "kind": "file",
-                "path": f"{run_root}/artifacts/evaluations/predictions.bin",
+                "path": f"{run_root}/artifacts/evaluations/toy_strict/predictions.bin",
                 "loader": "bytes_file",
             }
         },
@@ -1132,6 +1133,33 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(VerificationError, "new stage-result snapshots"):
             verify_benchmark_result(reused_result, fetcher=store.fetch)
+
+    def test_benchmarked_estimator_requires_benchmark_result(self) -> None:
+        result, _, store = build_benchmark_fixture()
+        pointer = ArtifactPointer(
+            run=result.run,
+            artifact={
+                "stage_id": "train",
+                "artifact_name": MODEL_PARAMETERS,
+            },
+        )
+
+        with self.assertRaisesRegex(VerificationError, "requires a benchmark result"):
+            verify_promoted_artifact(pointer, fetcher=store.fetch)
+
+    def test_benchmark_result_follows_selected_run_completion(self) -> None:
+        result, resolved_run, store = build_benchmark_fixture()
+        premature = result.model_copy(
+            update={
+                "completed_at": resolved_run.completed_at.replace(
+                    minute=45,
+                    second=30,
+                )
+            }
+        )
+
+        with self.assertRaisesRegex(VerificationError, "selected run completion"):
+            verify_benchmark_result(premature, fetcher=store.fetch)
 
 
 if __name__ == "__main__":

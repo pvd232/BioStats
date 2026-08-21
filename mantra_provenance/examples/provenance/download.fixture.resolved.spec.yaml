@@ -1,69 +1,114 @@
-schema_version: 1
-kind: download
-spec:
-  schema_version: 1
-  kind: download
-  inputs:
-    source:
-      kind: remote
-      url: https://example.org/mantra/raw-expression.csv
-  script: scripts/download.py
-  environment:
-    kind: python-lock
-    lockfile: pylock.toml
-    requires_python: ">=3.12,<3.13"
-  params:
-    timeout_seconds: 60
-  output: artifacts/raw/raw-expression.csv
-spec_source:
-  path: examples/provenance/download.spec.yaml
-  raw_sha256: b3ff22bf31740455d75164ac17e993138c467b9065d38cd252745dcfce2a1bce
-  repository: https://github.com/example/mantra
-  commit: dddddddddddddddddddddddddddddddddddddddd
-inputs:
-  source:
-    kind: external
-    artifact:
-      sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-      bytes: 1048576
-      locations:
-        - kind: remote
-          url: https://example.org/mantra/raw-expression.csv
-code:
-  repository: https://github.com/example/mantra
-  commit: dddddddddddddddddddddddddddddddddddddddd
-  tree: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
-  entrypoint: scripts/download.py
-  entrypoint_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-environment:
-  kind: python-lock
-  lockfile:
-    sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-    bytes: 4096
-    locations:
-      - kind: repo
-        path: pylock.toml
-  python_implementation: CPython
-  python_version: 3.12.4
+artifacts:
+  dataset:
+    file:
+      bytes: 19
+      path: experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA/artifacts/datasets/toy/dataset.bin
+      sha256: ff4d9a2c0010c81febd3543419ccb5c7661227272e13307cc4eaab3d69d90d71
+    kind: file
+  split:
+    file:
+      bytes: 15
+      path: experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA/artifacts/datasets/toy/split.json
+      sha256: cc3b7081a32a1fb7ad2274549b2cf812ca297eb4a83e7d3ed13626395eff3f0a
+    kind: file
 command:
   - python
-  - scripts/download.py
-  - --source
-  - https://example.org/mantra/raw-expression.csv
-  - --output
-  - artifacts/raw/raw-expression.csv
-output:
-  sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  bytes: 1048576
-  locations:
-    - kind: repo
-      path: artifacts/raw/raw-expression.csv
-    - kind: remote
-      url: https://huggingface.co/datasets/example/mantra/resolve/0123456/raw-expression.csv
+  - src/mantra/datasets/toy/download.py
+  - experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA/stages/download/spec.yaml
+completed_at: "2026-08-20T20:10:00Z"
+environment:
+  compute:
+    kind: cpu
+  kind: gce
+  lockfile:
+    bytes: 13
+    sha256: 3c2f134d506eaabc7f88a3e16c96d59f406471419ecda997602a042899cc13c8
+    stored_at:
+      commit: "1111111111111111111111111111111111111111"
+      kind: git
+      path: environment.yml
+      repository: https://github.com/example/mantra
+  machine_image:
+    id: "123456789"
+    name: mantra-image
+    project: mantra-project
+  machine_type: n2-standard-8
 execution_context:
-  operating_system: linux
-  architecture: x86_64
-  accelerator: null
-  device: null
-  runtime_versions:
-    pydantic: 2.12.3
+  backend:
+    device: cpu
+    kind: cpu
+  cpu:
+    architecture: x86_64
+    instruction_features: [avx2]
+    model: Intel Cascade Lake
+  determinism:
+    cublas_workspace_config: ":4096:8"
+    cudnn_benchmark: false
+    cudnn_deterministic: true
+    deterministic_algorithms: true
+    deterministic_warn_only: false
+  host:
+    guest_os_name: debian
+    guest_os_version: "12"
+    kernel_release: "6.1"
+    machine_type: n2-standard-8
+    provider: gce
+    zone: us-central1-a
+  numerical_runtime:
+    blas: {implementation: openblas, version: 0.3.30}
+    lapack: {implementation: openblas, version: 0.3.30}
+    native_thread_pools:
+      - {implementation: openblas, threads: 1, version: 0.3.30}
+    numpy_version: 2.3.0
+    python_version: 3.14.0
+    pytorch_version: 2.8.0
+  parallelism:
+    dataloader_workers: 0
+    process_count: 1
+    torch_interop_threads: 1
+    torch_intraop_threads: 1
+  precision:
+    autocast_dtype: null
+    autocast_enabled: false
+    cudnn_allow_tf32: false
+    float32_matmul_precision: highest
+  randomness:
+    dataloader_seed: 42
+    numpy_seed: 42
+    python_seed: 42
+    torch_seed: 42
+inputs:
+  archive:
+    kind: remote
+    url: https://example.com/toy-v1.tar.gz
+    version: v1
+kind: download
+retrieved_at: "2026-08-20T20:05:00Z"
+schema_version: 1
+source:
+  bytes: 11
+  sha256: 1d1f584e9b70775f170b219746c0a4e1c076f56603afd3f9882a14940e78e592
+  stored_at:
+    commit: "1111111111111111111111111111111111111111"
+    kind: git
+    path: src/mantra/datasets/toy/download.py
+    repository: https://github.com/example/mantra
+spec:
+  artifacts:
+    dataset:
+      kind: file
+      loader: bytes_file
+      path: experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA/artifacts/datasets/toy/dataset.bin
+    split:
+      kind: file
+      loader: bytes_file
+      path: experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA/artifacts/datasets/toy/split.json
+  environment: null
+  inputs:
+    archive:
+      kind: remote
+      url: https://example.com/toy-v1.tar.gz
+      version: v1
+  kind: download
+  schema_version: 1
+  script: src/mantra/datasets/toy/download.py

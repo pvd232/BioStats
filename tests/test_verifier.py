@@ -238,8 +238,10 @@ def train_spec(*, future_prior: bool = False) -> TrainSpec:
     else:
         inputs["training_dataset"] = {
             "kind": "stored",
-            "pointer": artifact_pointer("inputs/datasets/replogle.pointer.yaml"),
-            "path": "inputs/datasets/replogle.h5ad",
+            "pointer": artifact_pointer(
+                "inputs/datasets/replogle/current.pointer.yaml"
+            ),
+            "path": "inputs/datasets/replogle/dataset.h5ad",
         }
 
     return TrainSpec(
@@ -249,12 +251,15 @@ def train_spec(*, future_prior: bool = False) -> TrainSpec:
         artifacts={
             MODEL_PARAMETERS: {
                 "kind": "file",
-                "path": f"{RUN_ROOT}/artifacts/train/model_parameters.safetensors",
+                "path": (
+                    f"{RUN_ROOT}/artifacts/models/strand/"
+                    "model_parameters.safetensors"
+                ),
                 "loader": "model_parameters",
             },
             CONTINUATION_STATE: {
                 "kind": "file",
-                "path": f"{RUN_ROOT}/artifacts/train/continuation_state.pt",
+                "path": f"{RUN_ROOT}/artifacts/models/strand/continuation_state.pt",
                 "loader": "continuation_state",
             },
         },
@@ -267,15 +272,17 @@ def build_spec() -> BuildSpec:
         inputs={
             "depmap": {
                 "kind": "stored",
-                "pointer": artifact_pointer("inputs/priors/depmap.pointer.yaml"),
-                "path": "inputs/priors/depmap.parquet",
+                "pointer": artifact_pointer(
+                    "inputs/priors/depmap/current.pointer.yaml"
+                ),
+                "path": "inputs/priors/depmap/prior.parquet",
             }
         },
         params={},
         artifacts={
             "prior": {
                 "kind": "file",
-                "path": f"{RUN_ROOT}/artifacts/build/prior.pt",
+                "path": f"{RUN_ROOT}/artifacts/priors/depmap/prior.pt",
                 "loader": "prior",
             }
         },
@@ -419,7 +426,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
                 "training_dataset": {
                     "kind": "stored",
                     "pointer": resolved_pointer(
-                        "inputs/datasets/replogle.pointer.yaml"
+                        "inputs/datasets/replogle/current.pointer.yaml"
                     ),
                 }
             },
@@ -428,7 +435,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
                     "kind": "file",
                     "file": {
                         "path": (
-                            f"{RUN_ROOT}/artifacts/train/"
+                            f"{RUN_ROOT}/artifacts/models/strand/"
                             "model_parameters.safetensors"
                         ),
                         "sha256": sha256(model_raw),
@@ -438,7 +445,10 @@ class RunAndStageVerificationTests(unittest.TestCase):
                 CONTINUATION_STATE: {
                     "kind": "file",
                     "file": {
-                        "path": f"{RUN_ROOT}/artifacts/train/continuation_state.pt",
+                        "path": (
+                            f"{RUN_ROOT}/artifacts/models/strand/"
+                            "continuation_state.pt"
+                        ),
                         "sha256": sha256(continuation_raw),
                         "bytes": len(continuation_raw),
                     },
@@ -482,8 +492,13 @@ class RunAndStageVerificationTests(unittest.TestCase):
             f"{RUN_ROOT}/stages/train/resolved.yaml": resolved_raw,
             str(spec.script): source_raw,
             "uv.lock": lock_raw,
-            f"{RUN_ROOT}/artifacts/train/model_parameters.safetensors": model_raw,
-            f"{RUN_ROOT}/artifacts/train/continuation_state.pt": continuation_raw,
+            (
+                f"{RUN_ROOT}/artifacts/models/strand/"
+                "model_parameters.safetensors"
+            ): model_raw,
+            (
+                f"{RUN_ROOT}/artifacts/models/strand/continuation_state.pt"
+            ): continuation_raw,
             "src/mantra/artifact_loaders/model_parameters.py": loader_raw,
             "src/mantra/artifact_loaders/continuation_state.py": loader_raw,
         }
@@ -638,16 +653,16 @@ class RunPlanRelationshipTests(unittest.TestCase):
                 "evaluation_dataset": {
                     "kind": "stored",
                     "pointer": artifact_pointer(
-                        "inputs/datasets/replogle_test.pointer.yaml"
+                        "inputs/datasets/replogle_test/current.pointer.yaml"
                     ),
-                    "path": "inputs/datasets/replogle_test.h5ad",
+                    "path": "inputs/datasets/replogle_test/dataset.h5ad",
                 },
                 "perturbation_split": {
                     "kind": "stored",
                     "pointer": artifact_pointer(
-                        "inputs/benchmarks/replogle_split.pointer.yaml"
+                        "inputs/benchmarks/replogle/test_split.pointer.yaml"
                     ),
-                    "path": "inputs/benchmarks/replogle_split.json",
+                    "path": "inputs/benchmarks/replogle/test_split.json",
                 },
             },
             params={
@@ -657,7 +672,10 @@ class RunPlanRelationshipTests(unittest.TestCase):
             artifacts={
                 "predictions": {
                     "kind": "file",
-                    "path": f"{RUN_ROOT}/artifacts/evaluate/predictions.parquet",
+                    "path": (
+                        f"{RUN_ROOT}/artifacts/evaluations/replogle_strict/"
+                        "predictions.parquet"
+                    ),
                     "loader": "predictions",
                 }
             },
@@ -691,11 +709,11 @@ class RunPlanRelationshipTests(unittest.TestCase):
         benchmark = BenchmarkSpec(
             benchmark_id="replogle_strict",
             evaluation_dataset=artifact_pointer(
-                "inputs/datasets/replogle_test.pointer.yaml"
+                "inputs/datasets/replogle_test/current.pointer.yaml"
             ),
             splits={
                 "perturbation_split": artifact_pointer(
-                    "inputs/benchmarks/replogle_split.pointer.yaml"
+                    "inputs/benchmarks/replogle/test_split.pointer.yaml"
                 )
             },
             metrics=(
@@ -824,14 +842,16 @@ class FutureInputVerificationTests(unittest.TestCase):
             inputs={
                 "depmap": {
                     "kind": "stored",
-                    "pointer": resolved_pointer("inputs/priors/depmap.pointer.yaml"),
+                    "pointer": resolved_pointer(
+                        "inputs/priors/depmap/current.pointer.yaml"
+                    ),
                 }
             },
             artifacts={
                 "prior": {
                     "kind": "file",
                     "file": {
-                        "path": f"{RUN_ROOT}/artifacts/build/prior.pt",
+                        "path": f"{RUN_ROOT}/artifacts/priors/depmap/prior.pt",
                         "sha256": sha256(prior_raw),
                         "bytes": len(prior_raw),
                     },
@@ -853,7 +873,7 @@ class FutureInputVerificationTests(unittest.TestCase):
                     "kind": "file",
                     "file": {
                         "path": (
-                            f"{RUN_ROOT}/artifacts/train/"
+                            f"{RUN_ROOT}/artifacts/models/strand/"
                             "model_parameters.safetensors"
                         ),
                         "sha256": "1" * 64,
@@ -863,7 +883,10 @@ class FutureInputVerificationTests(unittest.TestCase):
                 CONTINUATION_STATE: {
                     "kind": "file",
                     "file": {
-                        "path": f"{RUN_ROOT}/artifacts/train/continuation_state.pt",
+                        "path": (
+                            f"{RUN_ROOT}/artifacts/models/strand/"
+                            "continuation_state.pt"
+                        ),
                         "sha256": "2" * 64,
                         "bytes": 1,
                     },
@@ -899,7 +922,7 @@ class FutureInputVerificationTests(unittest.TestCase):
             run,
             {"build": resolved_build, "train": resolved_train},
             fetcher=lambda location: {
-                f"{RUN_ROOT}/artifacts/build/prior.pt": prior_raw
+                f"{RUN_ROOT}/artifacts/priors/depmap/prior.pt": prior_raw
             }[location.path],
         )
 
@@ -919,7 +942,7 @@ class FutureInputVerificationTests(unittest.TestCase):
             run,
             {"build": resolved_build, "train": resolved_train},
             fetcher=lambda location: {
-                f"{RUN_ROOT}/artifacts/build/prior.pt": prior_raw
+                f"{RUN_ROOT}/artifacts/priors/depmap/prior.pt": prior_raw
             }[location.path],
         )
         self.assertEqual(

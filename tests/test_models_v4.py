@@ -11,18 +11,22 @@ from mantra_provenance.models_v4 import (
     CONTINUATION_STATE,
     MODEL_PARAMETERS,
     PREDICTIONS,
+    CUDABackendContext,
     EvaluateSpec,
     ResolvedBundleArtifact,
+    RunAttempt,
     RunSpec,
     TrainSpec,
     VariantSpec,
 )
-from mantra_provenance.yaml_io import load_spec
+from mantra_provenance.yaml_io import load_resolved_spec, load_spec
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64
 GIT_COMMIT = "a" * 40
 REPOSITORY = "https://github.com/example/mantra"
+RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+RUN_ROOT = f"experiments/e001_strand/runs/baseline/{RUN_ID}"
 
 
 def git_file(path: str) -> dict:
@@ -93,8 +97,8 @@ def train_payload() -> dict:
         "script": "src/mantra/models/strand/train.py",
         "inputs": {
             "training_dataset": stored_input(
-                "inputs/datasets/replogle.h5ad",
-                "inputs/datasets/replogle.pointer.yaml",
+                "inputs/datasets/replogle/dataset.h5ad",
+                "inputs/datasets/replogle/current.pointer.yaml",
             ),
         },
         "params": {
@@ -104,85 +108,180 @@ def train_payload() -> dict:
         },
         "artifacts": {
             MODEL_PARAMETERS: artifact(
-                "artifacts/train/model_parameters.safetensors",
+                f"{RUN_ROOT}/artifacts/models/strand/model_parameters.safetensors",
                 "model_parameters",
             ),
             CONTINUATION_STATE: artifact(
-                "artifacts/train/continuation_state.pt",
+                f"{RUN_ROOT}/artifacts/models/strand/continuation_state.pt",
                 "continuation_state",
             ),
         },
     }
 
 
+def run_payload() -> dict:
+    return {
+        "run_id": RUN_ID,
+        "experiment_id": "e001_strand",
+        "variant_id": "baseline",
+        "replicate_id": "replicate_01",
+        "seed": 42,
+        "source": {
+            "kind": "git",
+            "repository": REPOSITORY,
+            "commit": GIT_COMMIT,
+        },
+        "environment": environment(),
+        "reproducibility": reproducibility(),
+        "stages": [
+            {
+                "stage_id": "train",
+                "spec": f"{RUN_ROOT}/stages/train/spec.yaml",
+                "sha256": SHA_A,
+                "bytes": 100,
+            }
+        ],
+        "estimator": {
+            "stage_id": "train",
+            "artifact_name": MODEL_PARAMETERS,
+        },
+    }
+
+
 class RunPlanTests(unittest.TestCase):
     def test_run_plan_owns_shared_environment_and_reproducibility(self) -> None:
-        run = RunSpec.model_validate(
-            {
-                "run_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-                "experiment_id": "e001_strand",
-                "variant_id": "baseline",
-                "replicate_id": "replicate_01",
-                "seed": 42,
-                "source": {
-                    "kind": "git",
-                    "repository": REPOSITORY,
-                    "commit": GIT_COMMIT,
-                },
-                "environment": environment(),
-                "reproducibility": reproducibility(),
-                "stages": [
-                    {
-                        "stage_id": "train",
-                        "spec": "stages/train.spec.yaml",
-                        "sha256": SHA_A,
-                        "bytes": 100,
-                    }
-                ],
-                "estimator": {
-                    "stage_id": "train",
-                    "artifact_name": MODEL_PARAMETERS,
-                },
-            }
-        )
+        run = RunSpec.model_validate(run_payload())
 
         self.assertEqual(run.seed, 42)
         self.assertEqual(run.environment.machine_type, "n2-standard-8")
         self.assertEqual(run.estimator.artifact_name, MODEL_PARAMETERS)
 
     def test_estimator_must_select_model_parameters(self) -> None:
-        payload = {
-            "run_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            "experiment_id": "e001_strand",
-            "variant_id": "baseline",
-            "replicate_id": "replicate_01",
-            "seed": 42,
-            "source": {
-                "kind": "git",
-                "repository": REPOSITORY,
-                "commit": GIT_COMMIT,
-            },
-            "environment": environment(),
-            "reproducibility": reproducibility(),
-            "stages": [
-                {
-                    "stage_id": "train",
-                    "spec": "stages/train.spec.yaml",
-                    "sha256": SHA_A,
-                    "bytes": 100,
-                }
-            ],
-            "estimator": {
-                "stage_id": "train",
-                "artifact_name": CONTINUATION_STATE,
-            },
-        }
+        payload = run_payload()
+        payload["estimator"]["artifact_name"] = CONTINUATION_STATE
 
         with self.assertRaisesRegex(ValidationError, "model_parameters"):
             RunSpec.model_validate(payload)
 
+    def test_stage_spec_reference_uses_canonical_run_path(self) -> None:
+        payload = run_payload()
+        payload["stages"][0]["spec"] = "stages/train/spec.yaml"
+
+        with self.assertRaisesRegex(ValidationError, "canonical run path"):
+            RunSpec.model_validate(payload)
+
+    def test_global_seed_uses_the_shared_generator_range(self) -> None:
+        maximum = run_payload()
+        maximum["seed"] = 2**32 - 1
+        self.assertEqual(RunSpec.model_validate(maximum).seed, 2**32 - 1)
+
+        for invalid_seed in (-1, 2**32):
+            with self.subTest(seed=invalid_seed):
+                payload = run_payload()
+                payload["seed"] = invalid_seed
+                with self.assertRaises(ValidationError):
+                    RunSpec.model_validate(payload)
+
+    def test_successful_attempt_requires_a_completed_stage(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "completed stage"):
+            RunAttempt.model_validate(
+                {
+                    "attempt_id": 1,
+                    "status": "succeeded",
+                    "started_at": "2026-08-20T20:00:00Z",
+                    "completed_at": "2026-08-20T20:01:00Z",
+                    "resolved_stages": [],
+                    "measurement_files": [],
+                    "log_files": [],
+                    "failure_reason": None,
+                }
+            )
+
+    def test_attempt_file_storage_locations_are_unique(self) -> None:
+        location = {
+            "kind": "huggingface",
+            "repository": "example/mantra-runs",
+            "commit": GIT_COMMIT,
+            "path": f"{RUN_ROOT}/logs/1.train.stdout.log",
+            "repo_type": "dataset",
+        }
+        payload = {
+            "attempt_id": 1,
+            "status": "failed",
+            "started_at": "2026-08-20T20:00:00Z",
+            "completed_at": "2026-08-20T20:01:00Z",
+            "resolved_stages": [],
+            "measurement_files": [],
+            "log_files": [
+                {"sha256": SHA_A, "bytes": 1, "stored_at": location},
+                {"sha256": SHA_B, "bytes": 1, "stored_at": location},
+            ],
+            "failure_reason": "stage failed",
+        }
+
+        with self.assertRaisesRegex(ValidationError, "storage locations"):
+            RunAttempt.model_validate(payload)
+
+
+class RuntimeInvariantTests(unittest.TestCase):
+    def test_cuda_device_ordinals_are_unique(self) -> None:
+        device = {
+            "ordinal": 0,
+            "model": "NVIDIA L4",
+            "compute_capability_major": 8,
+            "compute_capability_minor": 9,
+            "memory_bytes": 24_000_000_000,
+        }
+        with self.assertRaisesRegex(ValidationError, "ordinals"):
+            CUDABackendContext.model_validate(
+                {
+                    "kind": "cuda",
+                    "gpu_devices": [device, device],
+                    "nvidia_driver_version": "580.65",
+                    "pytorch_cuda_version": "12.8",
+                    "cudnn_version": "9.10",
+                }
+            )
+
 
 class TrainingCheckpointTests(unittest.TestCase):
+    def test_stage_paths_use_protocol_roots(self) -> None:
+        invalid_script = train_payload()
+        invalid_script["script"] = "scripts/train.py"
+        with self.assertRaisesRegex(ValidationError, "canonical category"):
+            TrainSpec.model_validate(invalid_script)
+
+        wrong_script_category = train_payload()
+        wrong_script_category["script"] = "src/mantra/priors/strand/train.py"
+        with self.assertRaisesRegex(ValidationError, "canonical category"):
+            TrainSpec.model_validate(wrong_script_category)
+
+        invalid_input = train_payload()
+        invalid_input["inputs"]["training_dataset"]["path"] = "data/train.h5ad"
+        with self.assertRaisesRegex(ValidationError, "category and entity ID"):
+            TrainSpec.model_validate(invalid_input)
+
+        invalid_pointer = train_payload()
+        invalid_pointer["inputs"]["training_dataset"]["pointer"]["path"] = (
+            "inputs/datasets/replogle.pointer.yaml"
+        )
+        with self.assertRaisesRegex(ValidationError, "selection_name"):
+            TrainSpec.model_validate(invalid_pointer)
+
+        invalid_artifact = train_payload()
+        invalid_artifact["artifacts"][MODEL_PARAMETERS]["path"] = (
+            "artifacts/model_parameters.safetensors"
+        )
+        with self.assertRaisesRegex(ValidationError, "category and entity ID"):
+            TrainSpec.model_validate(invalid_artifact)
+
+        wrong_artifact_category = train_payload()
+        wrong_artifact_category["artifacts"][MODEL_PARAMETERS]["path"] = (
+            f"{RUN_ROOT}/artifacts/priors/strand/model_parameters.safetensors"
+        )
+        with self.assertRaisesRegex(ValidationError, "category and entity ID"):
+            TrainSpec.model_validate(wrong_artifact_category)
+
     def test_train_requires_both_terminal_checkpoint_artifacts(self) -> None:
         payload = train_payload()
         del payload["artifacts"][CONTINUATION_STATE]
@@ -258,8 +357,8 @@ class EvaluationTests(unittest.TestCase):
                         "producer_artifact": MODEL_PARAMETERS,
                     },
                     "evaluation_dataset": stored_input(
-                        "inputs/datasets/replogle_test.h5ad",
-                        "inputs/datasets/replogle_test.pointer.yaml",
+                        "inputs/datasets/replogle_test/dataset.h5ad",
+                        "inputs/datasets/replogle_test/current.pointer.yaml",
                     ),
                     "perturbation_split": stored_input(
                         "inputs/benchmarks/replogle/perturbations.json",
@@ -272,7 +371,7 @@ class EvaluationTests(unittest.TestCase):
                 },
                 "artifacts": {
                     PREDICTIONS: artifact(
-                        "artifacts/evaluate/predictions.parquet",
+                        f"{RUN_ROOT}/artifacts/evaluations/strand/predictions.parquet",
                         "predictions",
                     )
                 },
@@ -287,12 +386,12 @@ class EvaluationTests(unittest.TestCase):
             "script": "src/mantra/models/strand/evaluate.py",
             "inputs": {
                 "model_parameters": stored_input(
-                    "inputs/models/strand.safetensors",
-                    "inputs/models/strand.pointer.yaml",
+                    "inputs/models/strand/model_parameters.safetensors",
+                    "inputs/models/strand/current.pointer.yaml",
                 ),
                 "evaluation_dataset": stored_input(
-                    "inputs/datasets/replogle_test.h5ad",
-                    "inputs/datasets/replogle_test.pointer.yaml",
+                    "inputs/datasets/replogle_test/dataset.h5ad",
+                    "inputs/datasets/replogle_test/current.pointer.yaml",
                 ),
                 "split": stored_input(
                     "inputs/benchmarks/replogle/split.json",
@@ -305,11 +404,11 @@ class EvaluationTests(unittest.TestCase):
             },
             "artifacts": {
                 PREDICTIONS: artifact(
-                    "artifacts/evaluate/predictions.parquet",
+                    f"{RUN_ROOT}/artifacts/evaluations/strand/predictions.parquet",
                     "predictions",
                 ),
                 MODEL_PARAMETERS: artifact(
-                    "artifacts/evaluate/model_parameters.safetensors",
+                    f"{RUN_ROOT}/artifacts/evaluations/strand/model_parameters.safetensors",
                     "model_parameters",
                 ),
             },
@@ -334,6 +433,32 @@ class ArtifactAndVariantTests(unittest.TestCase):
                                 "bytes": 10,
                             },
                         }
+                    ],
+                }
+            )
+
+    def test_bundle_member_paths_cannot_overlap(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "must not overlap"):
+            ResolvedBundleArtifact.model_validate(
+                {
+                    "kind": "bundle",
+                    "members": [
+                        {
+                            "relative_path": "model",
+                            "file": {
+                                "path": "artifacts/model",
+                                "sha256": SHA_A,
+                                "bytes": 10,
+                            },
+                        },
+                        {
+                            "relative_path": "model/weights.bin",
+                            "file": {
+                                "path": "artifacts/model/weights.bin",
+                                "sha256": SHA_B,
+                                "bytes": 20,
+                            },
+                        },
                     ],
                 }
             )
@@ -368,8 +493,37 @@ class ArtifactAndVariantTests(unittest.TestCase):
                 }
             )
 
+    def test_variant_requires_stage_parameters(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "at least 1 item"):
+            VariantSpec.model_validate(
+                {
+                    "experiment_id": "e001_strand",
+                    "variant_id": "baseline",
+                    "levels": {},
+                    "stage_params": [],
+                }
+            )
+
 
 class YAMLLoadingTests(unittest.TestCase):
+    def test_active_examples_load_through_v4_unions(self) -> None:
+        examples = (
+            ("download.spec.yaml", load_spec),
+            ("build.spec.yaml", load_spec),
+            ("download.fixture.resolved.spec.yaml", load_resolved_spec),
+            ("build.fixture.resolved.spec.yaml", load_resolved_spec),
+        )
+        example_root = (
+            Path(__file__).parents[1]
+            / "mantra_provenance"
+            / "examples"
+            / "provenance"
+        )
+
+        for filename, loader in examples:
+            with self.subTest(filename=filename):
+                loader(example_root / filename)
+
     def test_stage_spec_loads_through_the_v4_union(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "train.spec.yaml"

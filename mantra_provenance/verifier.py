@@ -1134,6 +1134,16 @@ def verify_promoted_artifact(
         raise VerificationError(
             "artifact pointer run reference is outside the canonical run path"
         )
+
+    if (
+        verified_plan.run.benchmark_id is not None
+        and pointer.artifact == verified_plan.run.estimator
+        and pointer.benchmark_result is None
+    ):
+        raise VerificationError(
+            "promotion of a benchmarked estimator requires a benchmark result"
+        )
+
     resolved_stages = verify_resolved_stages(
         resolved_run,
         verified_plan.run,
@@ -1470,6 +1480,11 @@ def verify_benchmark_result(
         ) from exc
 
     verified_run = verify_run_result(resolved_run, fetcher=fetcher)
+
+    if result.completed_at < resolved_run.completed_at:
+        raise VerificationError(
+            "benchmark result cannot precede the selected run completion"
+        )
 
     expected_run_location = f"{run_root(verified_run.plan.run)}/resolved.yaml"
     if result.run.stored_at.path != expected_run_location:

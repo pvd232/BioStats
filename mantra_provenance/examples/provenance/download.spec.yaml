@@ -1,15 +1,18 @@
-schema_version: 1
-kind: download
+artifacts:
+  dataset:
+    kind: file
+    loader: bytes_file
+    path: experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA/artifacts/datasets/toy/dataset.bin
+  split:
+    kind: file
+    loader: bytes_file
+    path: experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA/artifacts/datasets/toy/split.json
+environment: null
 inputs:
-  source:
+  archive:
     kind: remote
-    url: https://example.org/mantra/raw-expression.csv
-script: scripts/download.py
-environment:
-  kind: python-lock
-  lockfile: pylock.toml
-  requires_python: ">=3.12,<3.13"
-params:
-  timeout_seconds: 60
-output: artifacts/raw/raw-expression.csv
-
+    url: https://example.com/toy-v1.tar.gz
+    version: v1
+kind: download
+schema_version: 1
+script: src/mantra/datasets/toy/download.py

@@ -67,6 +67,7 @@ ArtifactName = HumanId
 ArtifactLoaderId = HumanId
 BenchmarkId = HumanId
 SelectionName = HumanId
+RNGSeed = Annotated[int, Field(ge=0, le=2**32 - 1)]
 
 MODEL_PARAMETERS: ArtifactName = "model_parameters"
 CONTINUATION_STATE: ArtifactName = "continuation_state"
@@ -115,11 +116,21 @@ class ArtifactPointerRef(GitFileRef):
 
     @model_validator(mode="after")
     def validate_pointer_path(self) -> ArtifactPointerRef:
-        if not self.path.startswith("inputs/") or not self.path.endswith(
-            ".pointer.yaml"
+        parts = self.path.split("/")
+        selection_name = (
+            parts[3].removesuffix(".pointer.yaml") if len(parts) == 4 else ""
+        )
+        if (
+            len(parts) != 4
+            or parts[0] != "inputs"
+            or parts[1] not in {"benchmarks", "datasets", "models", "priors"}
+            or not parts[3].endswith(".pointer.yaml")
+            or re.fullmatch(r"[a-z][a-z0-9_]*", parts[2]) is None
+            or re.fullmatch(r"[a-z][a-z0-9_]*", selection_name) is None
         ):
             raise ValueError(
-                "artifact pointer path must match inputs/**/*.pointer.yaml"
+                "artifact pointer path must match "
+                "inputs/<category>/<entity_id>/<selection_name>.pointer.yaml"
             )
         return self
 
@@ -443,7 +454,7 @@ class FactorSpec(ProtocolModel):
 
 class ReplicateSpec(ProtocolModel):
     replicate_id: ReplicateId
-    seed: int
+    seed: RNGSeed
 
 
 class ExperimentSpec(ProtocolModel):
@@ -516,6 +527,9 @@ class RunAttempt(ProtocolModel):
         if self.status == "succeeded" and self.failure_reason is not None:
             raise ValueError("successful attempts must not have a failure reason")
 
+        if self.status == "succeeded" and not self.resolved_stages:
+            raise ValueError("successful attempts must contain a completed stage")
+
         if self.status != "succeeded" and (
             self.failure_reason is None or not self.failure_reason.strip()
         ):
@@ -538,14 +552,18 @@ class RunAttempt(ProtocolModel):
                 raise ValueError("resolved stages must use distinct snapshots")
             snapshots.add(stage.snapshot)
 
-        if len(set(self.measurement_files)) != len(self.measurement_files):
-            raise ValueError("measurement file references must be unique")
+        measurement_locations = tuple(
+            reference.stored_at for reference in self.measurement_files
+        )
+        if len(set(measurement_locations)) != len(measurement_locations):
+            raise ValueError("measurement file storage locations must be unique")
 
-        if len(set(self.log_files)) != len(self.log_files):
-            raise ValueError("log file references must be unique")
+        log_locations = tuple(reference.stored_at for reference in self.log_files)
+        if len(set(log_locations)) != len(log_locations):
+            raise ValueError("log file storage locations must be unique")
 
-        if set(self.measurement_files) & set(self.log_files):
-            raise ValueError("measurement and log file references must be disjoint")
+        if set(measurement_locations) & set(log_locations):
+            raise ValueError("measurement and log storage locations must be disjoint")
 
         return self
 
@@ -567,7 +585,7 @@ class RunSpec(ProtocolModel):
     replicate_id: ReplicateId
     benchmark_id: BenchmarkId | None = None
 
-    seed: int
+    seed: RNGSeed
     source: GitSource
     environment: GCEEnvironmentSpec
     reproducibility: ReproducibilitySpec
@@ -584,6 +602,16 @@ class RunSpec(ProtocolModel):
         stage_spec_paths = tuple(stage.spec for stage in self.stages)
         if len(set(stage_spec_paths)) != len(stage_spec_paths):
             raise ValueError("stage spec paths must be unique")
+
+        run_root = (
+            f"experiments/{self.experiment_id}/runs/{self.variant_id}/{self.run_id}"
+        )
+        for stage in self.stages:
+            expected_path = f"{run_root}/stages/{stage.stage_id}/spec.yaml"
+            if stage.spec != expected_path:
+                raise ValueError(
+                    f"stage {stage.stage_id!r} spec must use its canonical run path"
+                )
 
         if self.estimator.stage_id not in set(stage_ids):
             raise ValueError("estimator must select a declared run stage")
@@ -738,6 +766,13 @@ class CUDABackendContext(ProtocolModel):
     pytorch_cuda_version: NonEmptyStr
     cudnn_version: NonEmptyStr
 
+    @model_validator(mode="after")
+    def validate_unique_device_ordinals(self) -> CUDABackendContext:
+        ordinals = tuple(device.ordinal for device in self.gpu_devices)
+        if len(set(ordinals)) != len(ordinals):
+            raise ValueError("CUDA device ordinals must be unique")
+        return self
+
 
 ComputeBackendContext = Annotated[
     CPUBackendContext | CUDABackendContext,
@@ -765,10 +800,10 @@ class NumericalRuntimeContext(ProtocolModel):
 
 
 class RandomnessContext(ProtocolModel):
-    python_seed: int
-    numpy_seed: int
-    torch_seed: int
-    dataloader_seed: int
+    python_seed: RNGSeed
+    numpy_seed: RNGSeed
+    torch_seed: RNGSeed
+    dataloader_seed: RNGSeed
 
     @model_validator(mode="after")
     def validate_shared_seed(self) -> RandomnessContext:
@@ -813,6 +848,20 @@ class StoredInputRef(ProtocolModel):
     kind: Literal["stored"] = "stored"
     pointer: ArtifactPointerRef
     path: RepoRelPath
+
+    @model_validator(mode="after")
+    def validate_materialization_path(self) -> StoredInputRef:
+        pointer_scope = self.pointer.path.split("/")[:3]
+        materialization_parts = self.path.split("/")
+        if (
+            len(materialization_parts) < 3
+            or materialization_parts[:3] != pointer_scope
+            or self.path == self.pointer.path
+        ):
+            raise ValueError(
+                "stored input path must use the pointer's category and entity ID"
+            )
+        return self
 
 
 class FutureInputRef(ProtocolModel):
@@ -870,9 +919,47 @@ class BaseSpec(ProtocolModel):
 
     @model_validator(mode="after")
     def validate_artifact_paths(self) -> BaseSpec:
+        stage_paths = {
+            "download": ("datasets", "download.py", "datasets"),
+            "build": ("priors", "build.py", "priors"),
+            "embed": ("models", "embed.py", "models"),
+            "train": ("models", "train.py", "models"),
+            "evaluate": ("models", "evaluate.py", "evaluations"),
+        }
+        stage_path = stage_paths.get(self.kind)
+        if stage_path is None:
+            raise ValueError("stage kind has no canonical path contract")
+        source_category, operation, artifact_category = stage_path
+        script_parts = self.script.split("/")
+        if (
+            len(script_parts) != 5
+            or script_parts[:3] != ["src", "mantra", source_category]
+            or re.fullmatch(r"[a-z][a-z0-9_]*", script_parts[3]) is None
+            or script_parts[4] != operation
+        ):
+            raise ValueError(
+                "stage script must use its canonical category, entity ID, "
+                "and operation"
+            )
+
         artifact_roots: dict[RepoRelPath, ArtifactName] = {}
 
         for name, artifact in self.artifacts.items():
+            parts = artifact.path.split("/")
+            if (
+                len(parts) < 8
+                or parts[0] != "experiments"
+                or parts[2] != "runs"
+                or parts[5] != "artifacts"
+                or parts[6] != artifact_category
+                or re.fullmatch(r"[a-z][a-z0-9_]*", parts[7]) is None
+                or (artifact.kind == "file" and len(parts) < 9)
+            ):
+                raise ValueError(
+                    f"artifact {name!r} path must use a run artifact category "
+                    "and entity ID"
+                )
+
             if repo_file_paths_overlap(artifact.path, self.script):
                 raise ValueError(
                     f"artifact {name!r} path collides with the stage script"
@@ -1093,7 +1180,7 @@ class VariantSpec(ProtocolModel):
     experiment_id: ExperimentId
     variant_id: VariantId
     levels: dict[FactorId, LevelId]
-    stage_params: tuple[VariantStageParams, ...] = ()
+    stage_params: tuple[VariantStageParams, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_unique_stage_ids(self) -> VariantSpec:
@@ -1153,6 +1240,21 @@ class ResolvedBundleArtifact(ProtocolModel):
 
     kind: Literal["bundle"] = "bundle"
     members: tuple[ResolvedBundleMember, ...] = Field(min_length=2)
+
+    @model_validator(mode="after")
+    def validate_member_paths(self) -> ResolvedBundleArtifact:
+        relative_paths = tuple(member.relative_path for member in self.members)
+        if len(set(relative_paths)) != len(relative_paths):
+            raise ValueError("bundle member paths must be unique")
+        if relative_paths != tuple(sorted(relative_paths)):
+            raise ValueError("bundle members must use canonical path order")
+
+        for index, relative_path in enumerate(relative_paths):
+            for prior_path in relative_paths[:index]:
+                if repo_file_paths_overlap(relative_path, prior_path):
+                    raise ValueError("bundle member paths must not overlap")
+
+        return self
 
 
 ResolvedArtifact = Annotated[
@@ -1214,18 +1316,6 @@ class ResolvedBaseSpec(ProtocolModel):
                 declared_artifact.kind == "bundle"
                 and resolved_artifact.kind == "bundle"
             ):
-                relative_paths = tuple(
-                    member.relative_path for member in resolved_artifact.members
-                )
-                if len(set(relative_paths)) != len(relative_paths):
-                    raise ValueError(
-                        f"resolved artifact {name!r} member paths must be unique"
-                    )
-                if relative_paths != tuple(sorted(relative_paths)):
-                    raise ValueError(
-                        f"resolved artifact {name!r} members must use canonical order"
-                    )
-
                 for member in resolved_artifact.members:
                     expected_path = f"{declared_artifact.path}/{member.relative_path}"
                     if member.file.path != expected_path:
