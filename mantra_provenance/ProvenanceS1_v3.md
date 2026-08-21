@@ -3073,6 +3073,8 @@ worker RNG states used by their implementations.
 
 ### Separate generators
 
+#### Explicitly assigned generators
+
 The following configuration gives the DataLoader and `RandomSampler` different
 generator objects:
 
@@ -3108,9 +3110,9 @@ sampler generator S₀
     └── S₀ → S₁
 ```
 
-Giving both generators the same numeric seed does not join their states. The
-protocol uses one shared generator because replay then captures and restores
-one DataLoader sampling state.
+Giving both generators the same numeric seed does not join their states.
+
+#### No generator supplied
 
 When no generator is supplied, PyTorch uses its default CPU generator to draw
 the DataLoader base seed and a seed for a private `RandomSampler` generator.
@@ -3125,6 +3127,10 @@ default PyTorch CPU generator
 private RandomSampler generator
 └── generates the shuffled permutation
 ```
+
+Both variants use distinct generator states for DataLoader base-seed generation
+and shuffled-permutation generation. The protocol uses one shared generator so
+replay captures and restores one DataLoader sampling state.
 
 ### Epoch boundary
 
