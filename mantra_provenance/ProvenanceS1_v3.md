@@ -336,8 +336,8 @@ b_k^{(0)}
 $$
 
 This joint definition preserves the dependencies created during
-initialization. Parameter initialization may advance a random-number
-generator. The optimization state is constructed for the initialized
+initialization. Random parameter initialization advances the generator it
+uses. The optimization state is constructed for the initialized
 parameters. The random-number-generator state $r_k^{(0)}$ is the state after
 initialization completes, and $b_k^{(0)}$ is the resulting sampler and batch
 state.
