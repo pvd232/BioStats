@@ -38,6 +38,10 @@ The run plan $q$ fixes:
 - The estimator specification $\beta$.
 - The dataset selection $D_q$.
 
+The exact dataset artifacts selected by the stage inputs, together with the
+stage scripts and typed parameters that select samples, features, quality
+controls, and transformations, determine $D_q$.
+
 The final parameter value produced by the run is denoted:
 
 $$
@@ -179,13 +183,14 @@ The complete plan is:
 ```text
 run plan q
 ├── metadata m_q
-│   └── fixes α, β, Dq, the run identities, and global seed ζq
+│   └── identifies the run, experiment, variant, replicate, source,
+│       estimator output, optional benchmark, and global seed ζq
 ├── reproducibility c_q
 │   └── fixes deterministic-algorithm, precision, and parallelism controls
 ├── environment h_q
 │   └── shared environment
 └── stages ω_q = ⟨ω₁, …, ωₘ⟩
-    └── exact ordered stage specifications
+    └── exact ordered stage specifications that complete α, β, and Dq
 ```
 
 Together, the experiment, variant, replicate, and experiment decisions determine
@@ -768,6 +773,11 @@ These rules supply direct parsimony tests:
 - A file can be removed from $F_j(a)$ exactly when $L_a$ still reconstructs
   $v_a^{(j)}$ from the remaining files.
 
+Experiment design declares the required replay positions and independently
+loadable uses. Plan authoring applies these tests before $q$ is frozen. Once
+$q$ is frozen, its stage boundaries, artifact names, and file sets are the
+selected representation enforced by Pydantic and the external verifier.
+
 With the permitted replay states and required uses fixed, the resulting stage
 sequence, artifact partition, and file sets are the coarsest complete
 representation.
@@ -1007,6 +1017,8 @@ ArtifactSpec = Annotated[
 
 
 class BaseSpec(ProtocolModel):
+    schema_version: Literal[1] = 1
+    kind: str
     script: RepoRelPath
     environment: GCEEnvironmentSpec | None = None
     artifacts: dict[ArtifactName, ArtifactSpec] = Field(min_length=1)
