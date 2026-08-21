@@ -43,6 +43,7 @@ from mantra_provenance.verifier import (
     read_resolved_file,
     read_snapshot_file,
     verify_attempt_files,
+    verify_attempt_future_inputs,
     verify_future_inputs,
     verify_resolved_stages,
     verify_run_plan_relationships,
@@ -904,6 +905,25 @@ class FutureInputVerificationTests(unittest.TestCase):
 
         self.assertEqual(
             verified["train"]["prior"].files[0].content,
+            prior_raw,
+        )
+
+        failed_attempt = attempt.model_copy(
+            update={
+                "status": "failed",
+                "failure_reason": "later stage failed",
+            }
+        )
+        failed_verified = verify_attempt_future_inputs(
+            failed_attempt,
+            run,
+            {"build": resolved_build, "train": resolved_train},
+            fetcher=lambda location: {
+                f"{RUN_ROOT}/artifacts/build/prior.pt": prior_raw
+            }[location.path],
+        )
+        self.assertEqual(
+            failed_verified["train"]["prior"].files[0].content,
             prior_raw,
         )
 

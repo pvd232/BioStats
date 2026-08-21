@@ -220,8 +220,11 @@ The complete permitted runtime-state set is:
 $$
 E_q
 =
-\prod_{j=1}^{m}
-E_{q,j}.
+E_{q,1}
+\times
+\cdots
+\times
+E_{q,m}.
 $$
 
 One execution realizes:
@@ -955,9 +958,9 @@ A standalone file records its storage location and content identity:
 
 ```python
 class ResolvedFileRef(ProtocolModel):
-    stored_at: StorageRef
     sha256: SHA256
     bytes: int = Field(ge=0)
+    stored_at: StorageRef
 ```
 
 A completed stage is published as one immutable snapshot:
@@ -1017,8 +1020,8 @@ ArtifactSpec = Annotated[
 
 
 class BaseSpec(ProtocolModel):
-    schema_version: Literal[1] = 1
     kind: str
+    schema_version: Literal[1] = 1
     script: RepoRelPath
     environment: GCEEnvironmentSpec | None = None
     artifacts: dict[ArtifactName, ArtifactSpec] = Field(min_length=1)
@@ -1201,8 +1204,8 @@ class RunSpec(ProtocolModel):
 
     seed: int
     source: GitSource
-    reproducibility: ReproducibilitySpec
     environment: GCEEnvironmentSpec
+    reproducibility: ReproducibilitySpec
 
     stages: tuple[RunStageRef, ...] = Field(min_length=1)
     estimator: StageArtifactRef
@@ -2566,11 +2569,13 @@ For a `ResolvedRun`, the verifier:
    `RunSpec.stages`.
 3. Requires the successful attempt to contain every stage exactly once and in
    order.
-4. Verifies every measurement and log file.
-5. Requires canonical measurement and log paths.
-6. Checks every measurement against the run, attempt, stage, experiment, and
+4. Verifies every stored and same-run input consumed by every completed stage
+   in every attempt.
+5. Verifies every measurement and log file.
+6. Requires canonical measurement and log paths.
+7. Checks every measurement against the run, attempt, stage, experiment, and
    stage-specific metric identities.
-7. Loads the estimator artifact selected by `RunSpec.estimator`.
+8. Loads the estimator artifact selected by `RunSpec.estimator`.
 
 For a `BenchmarkResult`, the verifier additionally performs the benchmark-spec,
 confirmation-attempt, estimator-parity, prediction-parity, metric-criterion,

@@ -24,6 +24,7 @@ from .models_v4 import (
     CONTINUATION_STATE,
     EVALUATION_MODEL_INPUT,
     MODEL_PARAMETERS,
+    PREDICTIONS,
     ArtifactPointer,
     ArtifactSpec,
     BaseSpec,
@@ -1080,6 +1081,13 @@ def verify_run_result(
             require_complete=complete,
             fetcher=fetcher,
         )
+        verify_stored_inputs(verified_stages, fetcher=fetcher)
+        verify_attempt_future_inputs(
+            attempt,
+            plan.run,
+            verified_stages,
+            fetcher=fetcher,
+        )
         all_measurements.extend(
             verify_attempt_files(
                 attempt,
@@ -1098,14 +1106,6 @@ def verify_run_result(
             raise VerificationError("successful run has no estimator-producing stage")
         if plan.run.estimator.artifact_name not in estimator_stage.artifacts:
             raise VerificationError("successful run has no selected estimator artifact")
-
-        verify_stored_inputs(successful_stages, fetcher=fetcher)
-        verify_future_inputs(
-            resolved_run,
-            plan.run,
-            successful_stages,
-            fetcher=fetcher,
-        )
 
     return VerifiedRunResult(
         plan=plan,
@@ -1331,12 +1331,29 @@ def verify_future_inputs(
     if successful_attempt is None or successful_attempt.status != "succeeded":
         raise VerificationError("successful attempt could not be identified")
 
+    return verify_attempt_future_inputs(
+        successful_attempt,
+        run,
+        resolved_stages,
+        fetcher=fetcher,
+    )
+
+
+def verify_attempt_future_inputs(
+    attempt: RunAttempt,
+    run: RunSpec,
+    resolved_stages: Mapping[StageId, ResolvedBaseSpec],
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> dict[StageId, dict[InputName, VerifiedInput]]:
+    """Verify same-attempt inputs consumed by every completed stage."""
+
     stage_positions: dict[StageId, int] = {}
     for position, stage_reference in enumerate(run.stages):
         stage_positions[stage_reference.stage_id] = position
 
     completed_stages = {
-        stage.stage_id: stage for stage in successful_attempt.resolved_stages
+        stage.stage_id: stage for stage in attempt.resolved_stages
     }
 
     verified_inputs: dict[StageId, dict[InputName, VerifiedInput]] = {}
@@ -1516,10 +1533,10 @@ def verify_benchmark_result(
         raise VerificationError("benchmark verification requires one evaluation stage")
     evaluation_stage_id = evaluation_stage_ids[0]
     selected_predictions = verified_run.resolved_stages[evaluation_stage_id].artifacts[
-        "predictions"
+        PREDICTIONS
     ]
     confirmation_predictions = confirmation_stages[evaluation_stage_id].artifacts[
-        "predictions"
+        PREDICTIONS
     ]
     prediction_parity = selected_predictions == confirmation_predictions
 
