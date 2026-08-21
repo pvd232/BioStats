@@ -892,7 +892,264 @@ ResolvedArtifactPointerRef
 └── bytes
 ```
 
-## 13. Protocol mapping
+## 13. File, artifact, and stage-result records
+
+Every protocol record is closed and immutable after validation:
+
+```python
+class ProtocolModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+```
+
+The records below use these shared types:
+
+| Type | Accepted value |
+|---|---|
+| `HumanId` | A lowercase identifier matching `^[a-z][a-z0-9_]*$`. |
+| `RepoRelPath` | A normalized POSIX path relative to the repository root. |
+| `SHA256` | A 64-character lowercase hexadecimal digest. |
+| `GitCommit` | A 40- or 64-character lowercase hexadecimal commit ID. |
+| `NonEmptyStr` | A string containing at least one character. |
+
+### Exact file identity
+
+A standalone file is stored at an immutable Git or Hugging Face revision:
+
+```python
+class GitFileRef(ProtocolModel):
+    kind: Literal["git"] = "git"
+    repository: HttpUrl
+    commit: GitCommit
+    path: RepoRelPath
+
+
+class HuggingFaceFileRef(ProtocolModel):
+    kind: Literal["huggingface"] = "huggingface"
+    repository: NonEmptyStr
+    commit: GitCommit
+    path: RepoRelPath
+    repo_type: Literal["model", "dataset", "space"]
+
+
+StorageRef = Annotated[
+    GitFileRef | HuggingFaceFileRef,
+    Field(discriminator="kind"),
+]
+```
+
+A standalone file records its storage location and content identity:
+
+```python
+class ResolvedFileRef(ProtocolModel):
+    stored_at: StorageRef
+    sha256: SHA256
+    bytes: int = Field(ge=0)
+```
+
+A completed stage is published as one immutable snapshot:
+
+```python
+class StageResultSnapshotRef(ProtocolModel):
+    kind: Literal["huggingface"] = "huggingface"
+    repository: NonEmptyStr
+    commit: GitCommit
+    repo_type: Literal["model", "dataset", "space"]
+```
+
+Each file within that snapshot records its repository-relative path and content
+identity:
+
+```python
+class SnapshotFileRef(ProtocolModel):
+    path: RepoRelPath
+    sha256: SHA256
+    bytes: int = Field(ge=0)
+```
+
+The exact storage location of a snapshot file is determined by:
+
+```text
+StageResultSnapshotRef.repository
++ StageResultSnapshotRef.commit
++ SnapshotFileRef.path
+```
+
+The verifier retrieves that file and requires equality with
+`SnapshotFileRef.sha256` and `SnapshotFileRef.bytes`.
+
+### Artifact declarations
+
+```python
+ArtifactName = HumanId
+ArtifactLoaderId = HumanId
+
+
+class SingleFileArtifactSpec(ProtocolModel):
+    kind: Literal["file"] = "file"
+    path: RepoRelPath
+    loader: ArtifactLoaderId
+
+
+class BundleArtifactSpec(ProtocolModel):
+    kind: Literal["bundle"] = "bundle"
+    path: RepoRelPath
+    loader: ArtifactLoaderId
+
+
+ArtifactSpec = Annotated[
+    SingleFileArtifactSpec | BundleArtifactSpec,
+    Field(discriminator="kind"),
+]
+
+
+class BaseSpec(ProtocolModel):
+    artifacts: dict[ArtifactName, ArtifactSpec] = Field(min_length=1)
+```
+
+For a single-file artifact, `path` identifies its file. For a bundle artifact,
+`path` identifies its directory root.
+
+An artifact loader is a Python file at:
+
+```text
+src/mantra/artifact_loaders/<loader_id>.py
+```
+
+`RunSpec.source` identifies the exact repository revision containing the loader.
+The loader defines:
+
+```python
+def load(path: Path) -> object:
+    ...
+```
+
+For a single-file artifact, the executor supplies the materialized file path.
+For a bundle artifact, the executor supplies the materialized directory path.
+
+### Resolved artifacts
+
+```python
+class ResolvedSingleFileArtifact(ProtocolModel):
+    kind: Literal["file"] = "file"
+    file: SnapshotFileRef
+
+
+class ResolvedBundleMember(ProtocolModel):
+    relative_path: RepoRelPath
+    file: SnapshotFileRef
+
+
+class ResolvedBundleArtifact(ProtocolModel):
+    kind: Literal["bundle"] = "bundle"
+    members: tuple[ResolvedBundleMember, ...] = Field(min_length=2)
+
+
+ResolvedArtifact = Annotated[
+    ResolvedSingleFileArtifact | ResolvedBundleArtifact,
+    Field(discriminator="kind"),
+]
+
+
+class ResolvedBaseSpec(ProtocolModel):
+    spec: BaseSpec
+    artifacts: dict[ArtifactName, ResolvedArtifact] = Field(min_length=1)
+```
+
+The artifact-name sets are equal:
+
+```text
+keys(ResolvedBaseSpec.spec.artifacts)
+==
+keys(ResolvedBaseSpec.artifacts)
+```
+
+The cardinality of $F_j(a)$ determines the resolved form:
+
+$$
+\left|F_j(a)\right|
+=
+1
+\quad\Longleftrightarrow\quad
+\text{ResolvedSingleFileArtifact},
+$$
+
+and:
+
+$$
+\left|F_j(a)\right|
+\geq
+2
+\quad\Longleftrightarrow\quad
+\text{ResolvedBundleArtifact}.
+$$
+
+For a single-file artifact:
+
+```text
+ResolvedSingleFileArtifact.file.path
+==
+SingleFileArtifactSpec.path
+```
+
+For every bundle member:
+
+```text
+ResolvedBundleMember.file.path
+==
+BundleArtifactSpec.path / ResolvedBundleMember.relative_path
+```
+
+Bundle-member paths are unique, remain beneath the bundle root, and appear in
+canonical `relative_path` order. Artifact roots within one stage are pairwise
+non-overlapping.
+
+The executor verifies every file in $F_j(a)$, materializes the file or
+directory, invokes the loader named by the corresponding `ArtifactSpec`, and
+requires:
+
+$$
+L_a
+\left(
+F_j(a)
+\right)
+=
+v_a^{(j)}.
+$$
+
+### Stage-result snapshot
+
+```python
+class ResolvedStageRef(ProtocolModel):
+    stage_id: StageId
+    snapshot: StageResultSnapshotRef
+    resolved_spec: SnapshotFileRef
+```
+
+`ResolvedStageRef.snapshot` contains:
+
+```text
+one resolved stage-spec file
++ every file in every resolved artifact
+```
+
+`ResolvedStageRef.resolved_spec` identifies the resolved stage-spec file within
+that snapshot. The loaded resolved spec identifies every artifact file through
+its `artifacts` mapping.
+
+```text
+ResolvedStageRef
+├── snapshot
+├── resolved_spec
+│   └── loads one ResolvedBaseSpec subtype
+└── snapshot + resolved artifact file paths
+    └── identifies every physical artifact file
+```
+
+A completed stage has one `ResolvedStageRef`. Its snapshot commit therefore
+binds the resolved execution record and every file representing the stage's
+declared output $y_j$.
+
+## 14. Protocol mapping
 
 The terminal checkpoint of every training stage is represented by two reserved
 artifacts:
