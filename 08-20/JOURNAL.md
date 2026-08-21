@@ -388,3 +388,58 @@ embedding controls into typed `BuildParams` and `EmbedParams`. Then implement
 the corresponding `src/mantra/<entity>/<entity_id>/<operation>.py` entrypoints
 and artifact loaders, execute one real run through the executor, and submit its
 published records to `verify_run_result()` and `verify_benchmark_result()`.
+
+## Post-close invariant audit
+
+The workday continued past midnight. A second end-to-end audit traced the
+incorrect empty `VariantSpec.stage_params` default through the complete model,
+verifier, examples, repository layout, and formal specification.
+
+### Corrections
+
+- `VariantSpec.stage_params` now contains at least one typed stage-parameter
+  record. Every valid run contains a training stage, so the empty state had no
+  valid end-to-end interpretation.
+- A successful `RunAttempt` contains at least one completed stage.
+- Promotion of a benchmarked estimator requires its passed benchmark result.
+- A benchmark result cannot precede the selected run's completion.
+- Stage-spec paths, stage entrypoints, artifact paths, promotion-pointer paths,
+  and stored-input materialization paths implement the frozen repository tree.
+- Stage entrypoints bind stage kind to dataset, prior, or model identity.
+  Artifact paths bind stage kind to the matching dataset, prior, model, or
+  evaluation category and an explicit entity ID.
+- Bundle member paths are unique, ordered, and pairwise non-overlapping.
+- The global seed and every recorded generator seed lie in the shared
+  inclusive range from zero through $2^{32}-1$.
+- CUDA devices have unique ordinals within one execution context.
+- Measurement and log storage locations are unique and disjoint within an
+  attempt.
+- The active download and build YAML examples now validate through the v4
+  public loaders, and the test suite enforces that property.
+- Section 1 uses $T_{\alpha,\beta}$ for the estimator, preserving the notation
+  used by $T_{\alpha,\beta,q}$ and leaving $E$ exclusively for runtime-state
+  spaces.
+
+### Final validation
+
+```text
+ruff check mantra_provenance tests
+→ All checks passed
+
+python -m pytest -q
+→ 37 passed, 6 subtests passed in 0.79s
+
+pyright
+→ 0 errors, 0 warnings, 0 informations
+```
+
+The document audit also established:
+
+- all 78 documented class field lists match `models_v4.py`;
+- six public JSON schemas generate;
+- KaTeX parses 57 display and 126 inline expressions;
+- Pandoc renders the complete v3 specification;
+- all repository-relative links resolve; and
+- `git diff --check` passes.
+
+The invariant-hardening implementation is commit `9bdf78f`.
