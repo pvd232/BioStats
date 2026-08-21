@@ -1,8 +1,8 @@
 """Fourth draft of the Pydantic models for the MANTRA provenance protocol.
 
 This version separates execution requests, verified data artifacts,
-the exact Git source tree, the GCE machine-image environment, observed
-execution conditions, and the manifest connecting an artifact to its producer.
+the exact Git source tree, requested environments, observed execution
+conditions, and immutable stage-result snapshots.
 """
 
 from __future__ import annotations
@@ -220,36 +220,41 @@ class ResolvedGCEMachineImageRef(GCEMachineImageRef):
     id: str = Field(min_length=1)
 
 
+class CPUComputeSpec(ProtocolModel):
+    kind: Literal["cpu"] = "cpu"
+
+
+class CUDAComputeSpec(ProtocolModel):
+    kind: Literal["cuda"] = "cuda"
+    model: NonEmptyStr
+    count: int = Field(ge=1)
+
+
+ComputeSpec = Annotated[
+    CPUComputeSpec | CUDAComputeSpec,
+    Field(discriminator="kind"),
+]
+
+
 class GCEEnvironmentSpec(ProtocolModel):
     kind: Literal["gce"] = "gce"
-
     machine_image: GCEMachineImageRef
+    machine_type: NonEmptyStr
+    compute: ComputeSpec
     lockfile: GitFileRef
 
 
 class ResolvedGCEEnvironment(ProtocolModel):
     kind: Literal["gce"] = "gce"
     machine_image: ResolvedGCEMachineImageRef
+    machine_type: NonEmptyStr
+    compute: ComputeSpec
     lockfile: ResolvedGitFileRef
 
 
 # ---------------------------------------------------------------------------
-# Randomness, determinism, and precision
+# Determinism, precision, and parallelism
 # ---------------------------------------------------------------------------
-
-
-class RNGSeedSpec(ProtocolModel):
-    """
-    Seeds for the run-wide random-number generators controlled by MANTRA.
-
-    Algorithm-specific generators remain parameters of the operation that
-    creates them.
-    """
-
-    python_seed: int
-    numpy_seed: int
-    torch_seed: int
-    dataloader_seed: int | None
 
 
 class TorchDeterminismSpec(ProtocolModel):
@@ -284,54 +289,19 @@ class TorchPrecisionSpec(ProtocolModel):
         return self
 
 
-class StrictReproducibilitySpec(ProtocolModel):
-    """
-    Requests an execution for which MANTRA expects a replay under the recorded
-    conditions to reproduce the output bytes.
-    """
+class ParallelismSpec(ProtocolModel):
+    process_count: int = Field(ge=1)
+    torch_intraop_threads: int = Field(ge=1)
+    torch_interop_threads: int = Field(ge=1)
+    dataloader_workers: int = Field(ge=0)
 
-    mode: Literal["strict"] = "strict"
 
-    randomness: RNGSeedSpec
+class ReproducibilitySpec(ProtocolModel):
+    """Numerical controls applied to every stage in a run."""
+
     determinism: TorchDeterminismSpec
     precision: TorchPrecisionSpec
-
-    @model_validator(mode="after")
-    def validate_strict_policy(self) -> StrictReproducibilitySpec:
-        determinism = self.determinism
-
-        if not determinism.deterministic_algorithms:
-            raise ValueError("strict mode requires deterministic_algorithms=true")
-
-        if determinism.deterministic_warn_only:
-            raise ValueError("strict mode requires deterministic_warn_only=false")
-
-        if not determinism.cudnn_deterministic:
-            raise ValueError("strict mode requires cudnn_deterministic=true")
-
-        if determinism.cudnn_benchmark:
-            raise ValueError("strict mode requires cudnn_benchmark=false")
-
-        return self
-
-
-class RelaxedReproducibilitySpec(ProtocolModel):
-    """
-    Records the same controls as strict mode while allowing performance-oriented
-    algorithms, defaults, and nondeterministic implementations.
-    """
-
-    mode: Literal["relaxed"] = "relaxed"
-
-    randomness: RNGSeedSpec
-    determinism: TorchDeterminismSpec
-    precision: TorchPrecisionSpec
-
-
-ReproducibilitySpec = Annotated[
-    StrictReproducibilitySpec | RelaxedReproducibilitySpec,
-    Field(discriminator="mode"),
-]
+    parallelism: ParallelismSpec
 
 # ---------------------------------------------------------------------------
 # Measurement
@@ -521,6 +491,8 @@ class RunSpec(ProtocolModel):
 
     seed: int
     source: GitSource
+    environment: GCEEnvironmentSpec
+    reproducibility: ReproducibilitySpec
 
     stages: tuple[RunStageRef, ...] = Field(min_length=1)
     estimator: StageArtifactRef
@@ -660,10 +632,7 @@ class CUDABackendContext(ProtocolModel):
 
     kind: Literal["cuda"] = "cuda"
 
-    gpu_devices: tuple[CUDADeviceContext, ...] = Field(
-        min_length=1,
-        max_length=1,
-    )
+    gpu_devices: tuple[CUDADeviceContext, ...] = Field(min_length=1)
 
     nvidia_driver_version: NonEmptyStr
     pytorch_cuda_version: NonEmptyStr
@@ -682,7 +651,7 @@ class NativeLibraryContext(ProtocolModel):
 
 
 class NativeThreadPoolContext(NativeLibraryContext):
-    threads: Literal[1] = 1
+    threads: int = Field(ge=1)
 
 
 class NumericalRuntimeContext(ProtocolModel):
@@ -695,13 +664,23 @@ class NumericalRuntimeContext(ProtocolModel):
     native_thread_pools: tuple[NativeThreadPoolContext, ...]
 
 
-class ParallelismContext(ProtocolModel):
-    """Process, thread, worker, and distributed settings actually used."""
+class RandomnessContext(ProtocolModel):
+    python_seed: int
+    numpy_seed: int
+    torch_seed: int
+    dataloader_seed: int
 
-    process_count: Literal[1] = 1
-    torch_intraop_threads: Literal[1] = 1
-    torch_interop_threads: Literal[1] = 1
-    dataloader_workers: Literal[0] = 0
+    @model_validator(mode="after")
+    def validate_shared_seed(self) -> RandomnessContext:
+        seeds = {
+            self.python_seed,
+            self.numpy_seed,
+            self.torch_seed,
+            self.dataloader_seed,
+        }
+        if len(seeds) != 1:
+            raise ValueError("all recorded random-number generators must use one seed")
+        return self
 
 
 class ExecutionContext(ProtocolModel):
@@ -717,7 +696,10 @@ class ExecutionContext(ProtocolModel):
     cpu: CPUContext
     backend: ComputeBackendContext
     numerical_runtime: NumericalRuntimeContext
-    parallelism: ParallelismContext
+    randomness: RandomnessContext
+    determinism: TorchDeterminismSpec
+    precision: TorchPrecisionSpec
+    parallelism: ParallelismSpec
 
 
 # ---------------------------------------------------------------------------
@@ -781,8 +763,7 @@ class BaseSpec(ProtocolModel):
 
     script: RepoRelPath
 
-    environment: GCEEnvironmentSpec
-    reproducibility: ReproducibilitySpec
+    environment: GCEEnvironmentSpec | None = None
 
     artifacts: dict[ArtifactName, ArtifactSpec] = Field(min_length=1)
 
@@ -1012,36 +993,62 @@ class ResolvedBaseSpec(ProtocolModel):
                             "its declared bundle root plus relative path"
                         )
 
-        resolved_image = self.environment.machine_image
-        requested_image = self.spec.environment.machine_image
+        requested_environment = self.spec.environment
+        if requested_environment is not None:
+            resolved_image = self.environment.machine_image
+            requested_image = requested_environment.machine_image
 
-        if (
-            resolved_image.project != requested_image.project
-            or resolved_image.name != requested_image.name
-        ):
+            if (
+                resolved_image.project != requested_image.project
+                or resolved_image.name != requested_image.name
+            ):
+                raise ValueError(
+                    "resolved machine image must match the stage environment override"
+                )
+
+            if self.environment.machine_type != requested_environment.machine_type:
+                raise ValueError(
+                    "resolved machine type must match the stage environment override"
+                )
+
+            if self.environment.compute != requested_environment.compute:
+                raise ValueError(
+                    "resolved compute must match the stage environment override"
+                )
+
+            resolved_lockfile = self.environment.lockfile
+            requested_lockfile = requested_environment.lockfile
+
+            if (
+                resolved_lockfile.stored_at.repository
+                != requested_lockfile.repository
+                or resolved_lockfile.stored_at.commit != requested_lockfile.commit
+                or resolved_lockfile.stored_at.path != requested_lockfile.path
+            ):
+                raise ValueError(
+                    "resolved lockfile must match the stage environment override"
+                )
+
+        if self.environment.machine_type != self.execution_context.host.machine_type:
             raise ValueError(
-                "resolved machine image must match the requested machine image"
+                "resolved machine type must match the observed host machine type"
             )
 
-        resolved_lockfile = self.environment.lockfile
-        requested_lockfile = self.spec.environment.lockfile
-
-        if (
-            resolved_lockfile.stored_at.repository != requested_lockfile.repository
-            or resolved_lockfile.stored_at.commit != requested_lockfile.commit
-            or resolved_lockfile.stored_at.path != requested_lockfile.path
-        ):
-            raise ValueError("resolved lockfile must match the requested Git file")
-
-        reproducibility = self.spec.reproducibility
+        compute = self.environment.compute
         backend = self.execution_context.backend
 
-        if (
-            reproducibility.mode == "strict"
-            and backend.kind == "cuda"
-            and reproducibility.determinism.cublas_workspace_config is None
-        ):
-            raise ValueError("strict CUDA execution requires cublas_workspace_config")
+        if compute.kind != backend.kind:
+            raise ValueError("resolved compute kind must match the observed backend")
+
+        if compute.kind == "cuda" and backend.kind == "cuda":
+            if len(backend.gpu_devices) != compute.count:
+                raise ValueError(
+                    "observed CUDA device count must match the resolved compute"
+                )
+            if any(device.model != compute.model for device in backend.gpu_devices):
+                raise ValueError(
+                    "observed CUDA device models must match the resolved compute"
+                )
 
         return self
 
