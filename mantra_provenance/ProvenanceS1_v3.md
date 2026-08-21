@@ -125,8 +125,9 @@ $$
 ### Run metadata
 
 The metadata $m_q$ identifies the run, experiment, variant, replicate, source,
-and estimator output. Each experiment replicate has one seed. The run uses the
-selected replicate's seed, denoted $\zeta_q$, as its global seed.
+estimator output, and optional benchmark. Each experiment replicate has one
+seed. The run uses the selected replicate's seed, denoted $\zeta_q$, as its
+global seed.
 
 ### Reproducibility controls
 
@@ -1184,6 +1185,7 @@ class RunSpec(ProtocolModel):
     experiment_id: ExperimentId
     variant_id: VariantId
     replicate_id: ReplicateId
+    benchmark_id: BenchmarkId | None = None
 
     seed: int
     source: GitSource
@@ -1237,6 +1239,7 @@ class ArtifactPointer(ProtocolModel):
     schema_version: Literal[1] = 1
     run: ResolvedRunRef
     artifact: StageArtifactRef
+    benchmark_result: ResolvedBenchmarkResultRef | None = None
 
 
 class ArtifactPointerRef(GitFileRef):
@@ -2240,3 +2243,137 @@ The resolved record is `ResolvedEvaluateSpec`. It embeds the exact
 `EvaluateSpec`, resolves every input, records the selected environment and
 runtime state, and records the `predictions` artifact in the same snapshot as
 the resolved spec.
+
+## 20. Benchmark specification and confirmation
+
+A benchmark fixes the evaluation data, splits, metrics, acceptance criteria,
+and confirmation count applied to candidate run plans.
+
+```python
+BenchmarkId = HumanId
+
+
+class MetricCriterion(ProtocolModel):
+    metric_id: MetricId
+    comparison: Literal["ge", "le"]
+    threshold: float = Field(allow_inf_nan=False)
+
+
+class BenchmarkSpec(ProtocolModel):
+    schema_version: Literal[1] = 1
+    benchmark_id: BenchmarkId
+    evaluation_dataset: ArtifactPointerRef
+    splits: dict[InputName, ArtifactPointerRef] = Field(min_length=1)
+    metrics: tuple[MetricCriterion, ...] = Field(min_length=1)
+    confirmation_count: Literal[2] = 2
+```
+
+Benchmark split names and metric IDs are unique. The benchmark file is:
+
+```text
+benchmarks/<benchmark_id>.spec.yaml
+```
+
+`RunSpec.source` identifies the exact benchmark file. A benchmark run satisfies:
+
+```text
+RunSpec.benchmark_id
+== BenchmarkSpec.benchmark_id
+
+exactly one loaded stage spec has kind evaluate
+
+EvaluateSpec.inputs[evaluation_dataset].pointer
+== BenchmarkSpec.evaluation_dataset
+
+set(EvaluateSpec.params.split_inputs)
+== set(BenchmarkSpec.splits)
+
+EvaluateSpec.inputs[split_name].pointer
+== BenchmarkSpec.splits[split_name]
+
+set(EvaluateSpec.params.metric_ids)
+== set(BenchmarkSpec.metrics.metric_id)
+```
+
+The benchmark executor completes one successful `ResolvedRun` and one separate
+confirmation execution of the same frozen $q$. The successful attempt selected
+by `ResolvedRun.successful_attempt_id` and the confirmation attempt use the same
+`RunSpec`, exact stage-spec files, source, seed, reproducibility controls,
+shared environment, stage overrides, and inputs.
+
+The confirmation record is:
+
+```python
+class ResolvedBenchmarkSpecRef(ResolvedFileRef):
+    kind: Literal["benchmark_spec"] = "benchmark_spec"
+    stored_at: GitFileRef
+
+
+class BenchmarkResult(ProtocolModel):
+    schema_version: Literal[1] = 1
+    benchmark: ResolvedBenchmarkSpecRef
+    run: ResolvedRunRef
+    confirmation: RunAttempt
+    status: Literal["passed", "failed"]
+    completed_at: AwareDatetime
+
+
+class ResolvedBenchmarkResultRef(ResolvedFileRef):
+    kind: Literal["benchmark_result"] = "benchmark_result"
+    stored_at: HuggingFaceFileRef
+```
+
+The benchmark reference satisfies:
+
+```text
+ResolvedBenchmarkSpecRef.stored_at.repository
+== RunSpec.source.repository
+
+ResolvedBenchmarkSpecRef.stored_at.commit
+== RunSpec.source.commit
+
+ResolvedBenchmarkSpecRef.stored_at.path
+== benchmarks/<RunSpec.benchmark_id>.spec.yaml
+```
+
+The selected run attempt and `BenchmarkResult.confirmation` have distinct
+attempt IDs, `succeeded` status, and every stage declared by the shared
+`RunSpec`.
+
+Let their realized runtime states be $e,e'\in E_q$. Estimator parity requires:
+
+$$
+T_{\alpha,\beta,q}(e)
+=
+T_{\alpha,\beta,q}(e')
+=
+\widehat{\theta}_q.
+$$
+
+The verifier establishes this equality by loading the artifact selected by
+`RunSpec.estimator` from the selected run attempt and confirmation attempt and
+comparing every file's SHA-256, byte count, relative path, and bundle
+membership.
+
+Prediction parity applies the same comparison to the `predictions` artifact
+produced by each attempt's evaluation stage.
+
+For every `MetricCriterion`, each attempt must contain a matching
+evaluation-stage `Measurement`. A `ge` criterion requires a value greater than
+or equal to its threshold. An `le` criterion requires a value less than or
+equal to its threshold.
+
+`BenchmarkResult.status` is `passed` exactly when estimator parity, prediction
+parity, and every metric criterion hold across both executions. A promoted
+benchmark estimator uses an `ArtifactPointer` satisfying:
+
+```text
+ArtifactPointer.run
+== BenchmarkResult.run
+
+ArtifactPointer.artifact
+== selected RunSpec.estimator
+
+ArtifactPointer.benchmark_result
+== ResolvedBenchmarkResultRef for the passed BenchmarkResult
+```
