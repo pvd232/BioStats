@@ -2579,7 +2579,9 @@ For a `ResolvedRun`, the verifier:
 
 For a `BenchmarkResult`, the verifier additionally performs the benchmark-spec,
 confirmation-attempt, estimator-parity, prediction-parity, metric-criterion,
-and promotion relationships defined in Section 20.
+and promotion relationships defined in Section 20. The confirmation uses a new
+attempt ID and stage-result snapshots disjoint from every attempt in the
+selected run.
 
 ## 22. Execution and publication sequence
 

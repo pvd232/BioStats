@@ -1497,8 +1497,31 @@ def verify_benchmark_result(
         for attempt in resolved_run.attempts
         if attempt.attempt_id == resolved_run.successful_attempt_id
     )
-    if result.confirmation.attempt_id == selected_attempt.attempt_id:
-        raise VerificationError("benchmark confirmation must use a distinct attempt ID")
+    original_attempt_ids = {attempt.attempt_id for attempt in resolved_run.attempts}
+    if result.confirmation.attempt_id in original_attempt_ids:
+        raise VerificationError("benchmark confirmation must use a new attempt ID")
+
+    original_snapshots = {
+        (
+            stage.snapshot.repository,
+            stage.snapshot.commit,
+            stage.snapshot.repo_type,
+        )
+        for attempt in resolved_run.attempts
+        for stage in attempt.resolved_stages
+    }
+    confirmation_snapshots = {
+        (
+            stage.snapshot.repository,
+            stage.snapshot.commit,
+            stage.snapshot.repo_type,
+        )
+        for stage in result.confirmation.resolved_stages
+    }
+    if original_snapshots & confirmation_snapshots:
+        raise VerificationError(
+            "benchmark confirmation must use new stage-result snapshots"
+        )
 
     confirmation_stages = verify_attempt_stages(
         result.confirmation,

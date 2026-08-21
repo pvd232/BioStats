@@ -14,6 +14,8 @@ from mantra_provenance.models_v4 import (
     ArtifactPointer,
     ArtifactPointerRef,
     BaseSpec,
+    BenchmarkResult,
+    BenchmarkSpec,
     BuildSpec,
     DownloadSpec,
     EvaluateSpec,
@@ -22,6 +24,7 @@ from mantra_provenance.models_v4 import (
     GitSource,
     HuggingFaceFileRef,
     ResolvedArtifactPointerRef,
+    ResolvedBenchmarkSpecRef,
     ResolvedBuildSpec,
     ResolvedDownloadSpec,
     ResolvedEvaluateSpec,
@@ -41,7 +44,11 @@ from mantra_provenance.models_v4 import (
     TrainSpec,
     VariantSpec,
 )
-from mantra_provenance.verifier import VerificationError, verify_run_result
+from mantra_provenance.verifier import (
+    VerificationError,
+    verify_benchmark_result,
+    verify_run_result,
+)
 
 SOURCE_REPOSITORY = "https://github.com/example/mantra"
 ARTIFACT_REPOSITORY = "example/mantra-runs"
@@ -253,6 +260,7 @@ def add_plan_records(
     experiment: ExperimentSpec,
     variant: VariantSpec,
     plan_commit: str,
+    benchmark: BenchmarkSpec | None = None,
 ) -> ResolvedRunSpecRef:
     source_commit = run.source.commit
     store.put(
@@ -266,6 +274,14 @@ def add_plan_records(
         ),
         yaml_bytes(variant),
     )
+    if benchmark is not None:
+        store.put(
+            git_file(
+                source_commit,
+                f"benchmarks/{benchmark.benchmark_id}.spec.yaml",
+            ),
+            yaml_bytes(benchmark),
+        )
 
     for run_stage, (_, spec) in zip(run.stages, stage_specs, strict=True):
         store.put(git_file(plan_commit, str(run_stage.spec)), yaml_bytes(spec))
@@ -601,7 +617,10 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
     }
 
 
-def build_complete_fixture() -> tuple[
+def build_complete_fixture(
+    *,
+    benchmark_enabled: bool = False,
+) -> tuple[
     ResolvedRun,
     DocumentStore,
     HuggingFaceFileRef,
@@ -719,6 +738,21 @@ def build_complete_fixture() -> tuple[
         stage_specs=stage_specs,
         estimator_stage_id="train",
     )
+    benchmark = None
+    if benchmark_enabled:
+        benchmark = BenchmarkSpec(
+            benchmark_id="toy_strict",
+            evaluation_dataset=resolved_dataset_pointer.stored_at,
+            splits={"test_split": resolved_split_pointer.stored_at},
+            metrics=(
+                {
+                    "metric_id": "pearson_correlation",
+                    "comparison": "ge",
+                    "threshold": 0.9,
+                },
+            ),
+        )
+        run = run.model_copy(update={"benchmark_id": benchmark.benchmark_id})
     experiment = ExperimentSpec(
         experiment_id="model_eval",
         factors=(),
@@ -747,6 +781,7 @@ def build_complete_fixture() -> tuple[
         experiment=experiment,
         variant=variant,
         plan_commit=MAIN_PLAN_COMMIT,
+        benchmark=benchmark,
     )
 
     add_loader(store, MAIN_SOURCE_COMMIT, "prior_bundle", bundle=True)
@@ -898,6 +933,169 @@ def build_complete_fixture() -> tuple[
     return resolved_run, store, tamper_location
 
 
+def copy_snapshot_files(
+    store: DocumentStore,
+    source_commit: str,
+    target_commit: str,
+) -> None:
+    for key, raw in tuple(store.documents.items()):
+        kind, repository, commit, path, repo_type = key
+        if (
+            kind == "huggingface"
+            and repository == ARTIFACT_REPOSITORY
+            and commit == source_commit
+            and repo_type == "dataset"
+        ):
+            store.put(hf_file(target_commit, path), raw)
+
+
+def build_benchmark_fixture() -> tuple[
+    BenchmarkResult,
+    ResolvedRun,
+    DocumentStore,
+]:
+    resolved_run, store, _ = build_complete_fixture(benchmark_enabled=True)
+    selected_attempt = resolved_run.attempts[-1]
+    run_root = str(resolved_run.spec.stored_at.path).removesuffix("/spec.yaml")
+
+    original_build, original_train, original_evaluate = selected_attempt.resolved_stages
+    build_commit = "c" * 40
+    train_commit = "d" * 40
+    evaluate_commit = "e" * 40
+
+    copy_snapshot_files(store, original_build.snapshot.commit, build_commit)
+    resolved_build = ResolvedBuildSpec.model_validate(
+        yaml.safe_load(
+            store.fetch(
+                hf_file(
+                    original_build.snapshot.commit,
+                    str(original_build.resolved_spec.path),
+                )
+            )
+        )
+    )
+    confirmation_build = publish_resolved_stage(
+        store,
+        run_root_path=run_root,
+        stage_id="build",
+        snapshot_commit=build_commit,
+        resolved_spec=resolved_build,
+    )
+
+    copy_snapshot_files(store, original_train.snapshot.commit, train_commit)
+    resolved_train = ResolvedTrainSpec.model_validate(
+        yaml.safe_load(
+            store.fetch(
+                hf_file(
+                    original_train.snapshot.commit,
+                    str(original_train.resolved_spec.path),
+                )
+            )
+        )
+    )
+    resolved_train = resolved_train.model_copy(
+        update={
+            "inputs": {
+                "prior": ResolvedFutureInputRef(producer=confirmation_build)
+            }
+        }
+    )
+    confirmation_train = publish_resolved_stage(
+        store,
+        run_root_path=run_root,
+        stage_id="train",
+        snapshot_commit=train_commit,
+        resolved_spec=resolved_train,
+    )
+
+    copy_snapshot_files(store, original_evaluate.snapshot.commit, evaluate_commit)
+    resolved_evaluate = ResolvedEvaluateSpec.model_validate(
+        yaml.safe_load(
+            store.fetch(
+                hf_file(
+                    original_evaluate.snapshot.commit,
+                    str(original_evaluate.resolved_spec.path),
+                )
+            )
+        )
+    )
+    resolved_evaluate = resolved_evaluate.model_copy(
+        update={
+            "inputs": {
+                **resolved_evaluate.inputs,
+                "model_parameters": ResolvedFutureInputRef(
+                    producer=confirmation_train
+                ),
+            }
+        }
+    )
+    confirmation_evaluate = publish_resolved_stage(
+        store,
+        run_root_path=run_root,
+        stage_id="evaluate",
+        snapshot_commit=evaluate_commit,
+        resolved_spec=resolved_evaluate,
+    )
+
+    measurement_raw = (
+        b'{"run_id":"01ARZ3NDEKTSV4RRFFQ69G5FAB",'
+        b'"attempt_id":2,"stage_id":"evaluate",'
+        b'"metric_id":"pearson_correlation","value":0.91,'
+        b'"measured_at":"2026-08-20T21:39:00Z"}\n'
+    )
+    measurement_location = hf_file(
+        "f" * 40,
+        f"{run_root}/measurements/evaluate.pearson_correlation.jsonl",
+    )
+    store.put(measurement_location, measurement_raw)
+    confirmation = RunAttempt(
+        attempt_id=2,
+        status="succeeded",
+        started_at=datetime(2026, 8, 20, 21, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 20, 21, 45, tzinfo=UTC),
+        resolved_stages=(
+            confirmation_build,
+            confirmation_train,
+            confirmation_evaluate,
+        ),
+        measurement_files=(
+            ResolvedFileRef(
+                sha256=sha256(measurement_raw),
+                bytes=len(measurement_raw),
+                stored_at=measurement_location,
+            ),
+        ),
+        log_files=(),
+        failure_reason=None,
+    )
+
+    resolved_run_raw = yaml_bytes(resolved_run)
+    resolved_run_location = hf_file("0" * 40, f"{run_root}/resolved.yaml")
+    store.put(resolved_run_location, resolved_run_raw)
+    run_reference = ResolvedRunRef(
+        sha256=sha256(resolved_run_raw),
+        bytes=len(resolved_run_raw),
+        stored_at=resolved_run_location,
+    )
+
+    benchmark_path = "benchmarks/toy_strict.spec.yaml"
+    benchmark_location = git_file(MAIN_SOURCE_COMMIT, benchmark_path)
+    benchmark_raw = store.fetch(benchmark_location)
+    benchmark_reference = ResolvedBenchmarkSpecRef(
+        sha256=sha256(benchmark_raw),
+        bytes=len(benchmark_raw),
+        stored_at=benchmark_location,
+    )
+    result = BenchmarkResult(
+        benchmark=benchmark_reference,
+        run=run_reference,
+        confirmation=confirmation,
+        status="passed",
+        completed_at=datetime(2026, 8, 20, 21, 50, tzinfo=UTC),
+    )
+    return result, resolved_run, store
+
+
 class CompleteProvenanceAcceptanceTests(unittest.TestCase):
     def test_complete_dummy_run_passes_full_verification(self) -> None:
         resolved_run, store, _ = build_complete_fixture()
@@ -914,6 +1112,26 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(VerificationError, "SHA-256 mismatch"):
             verify_run_result(resolved_run, fetcher=store.fetch)
+
+    def test_strict_benchmark_passes_two_execution_verification(self) -> None:
+        result, _, store = build_benchmark_fixture()
+
+        verified = verify_benchmark_result(result, fetcher=store.fetch)
+
+        self.assertEqual(verified.result.status, "passed")
+        self.assertEqual(verified.confirmation_measurements[0].value, 0.91)
+
+    def test_strict_benchmark_rejects_reused_stage_snapshots(self) -> None:
+        result, resolved_run, store = build_benchmark_fixture()
+        reused_confirmation = result.confirmation.model_copy(
+            update={"resolved_stages": resolved_run.attempts[-1].resolved_stages}
+        )
+        reused_result = result.model_copy(
+            update={"confirmation": reused_confirmation}
+        )
+
+        with self.assertRaisesRegex(VerificationError, "new stage-result snapshots"):
+            verify_benchmark_result(reused_result, fetcher=store.fetch)
 
 
 if __name__ == "__main__":
