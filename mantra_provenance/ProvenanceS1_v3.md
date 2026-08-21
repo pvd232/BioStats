@@ -916,10 +916,13 @@ The records below use these shared types:
 A standalone file is stored at an immutable Git or Hugging Face revision:
 
 ```python
-class GitFileRef(ProtocolModel):
+class GitSource(ProtocolModel):
     kind: Literal["git"] = "git"
     repository: HttpUrl
     commit: GitCommit
+
+
+class GitFileRef(GitSource):
     path: RepoRelPath
 
 
@@ -1003,6 +1006,8 @@ ArtifactSpec = Annotated[
 
 
 class BaseSpec(ProtocolModel):
+    script: RepoRelPath
+    environment: GCEEnvironmentSpec | None = None
     artifacts: dict[ArtifactName, ArtifactSpec] = Field(min_length=1)
 ```
 
@@ -1149,7 +1154,224 @@ A completed stage has one `ResolvedStageRef`. Its snapshot commit therefore
 binds the resolved execution record and every file representing the stage's
 declared output $y_j$.
 
-## 14. Protocol mapping
+## 14. Run, input, and attempt records
+
+### Run plan
+
+```python
+class StageArtifactRef(ProtocolModel):
+    stage_id: StageId
+    artifact_name: ArtifactName
+
+
+class RunStageRef(ProtocolModel):
+    stage_id: StageId
+    spec: RepoRelPath
+    sha256: SHA256
+    bytes: int = Field(ge=0)
+
+
+class RunSpec(ProtocolModel):
+    schema_version: Literal[1] = 1
+    run_id: RunId
+    experiment_id: ExperimentId
+    variant_id: VariantId
+    replicate_id: ReplicateId
+
+    seed: int
+    source: GitSource
+    reproducibility: ReproducibilitySpec
+    environment: GCEEnvironmentSpec
+
+    stages: tuple[RunStageRef, ...] = Field(min_length=1)
+    estimator: StageArtifactRef
+```
+
+`RunSpec.seed` is the global seed $zeta_q$ assigned to the selected replicate.
+The executor applies it to every controlled random-number generator according
+to `RunSpec.reproducibility`.
+
+`RunSpec.environment` supplies $h_q$. For stage $omega_j$:
+
+```text
+BaseSpec.environment is present
+→ h_q,j = BaseSpec.environment
+
+BaseSpec.environment is absent
+→ h_q,j = RunSpec.environment
+```
+
+`RunSpec.reproducibility` supplies $c_q$ to every stage. A stage environment
+override changes $h_{q,j}$ and leaves $c_q$ unchanged.
+
+The ordered `RunStageRef` records identify the exact stage-spec files in
+$\boldsymbol{\omega}_q$. Stage IDs and stage-spec paths are unique. The
+`RunSpec` file and the stage-spec files it identifies constitute $q$.
+
+### Artifact selection and promotion
+
+The terminal run record and run-plan record use role-specific file references:
+
+```python
+class ResolvedRunSpecRef(ResolvedFileRef):
+    kind: Literal["run_spec"] = "run_spec"
+    stored_at: GitFileRef
+
+
+class ResolvedRunRef(ResolvedFileRef):
+    kind: Literal["resolved_run"] = "resolved_run"
+    stored_at: HuggingFaceFileRef
+```
+
+An `ArtifactPointer` selects one artifact accepted for reuse:
+
+```python
+class ArtifactPointer(ProtocolModel):
+    schema_version: Literal[1] = 1
+    run: ResolvedRunRef
+    artifact: StageArtifactRef
+
+
+class ArtifactPointerRef(GitFileRef):
+    pass
+
+
+class ResolvedArtifactPointerRef(ResolvedFileRef):
+    kind: Literal["artifact_pointer"] = "artifact_pointer"
+    stored_at: ArtifactPointerRef
+```
+
+The selection path is:
+
+```text
+ArtifactPointer.run
+→ ResolvedRun
+→ successful RunAttempt
+→ ResolvedStageRef selected by StageArtifactRef.stage_id
+→ loaded ResolvedBaseSpec
+→ ResolvedBaseSpec.artifacts[StageArtifactRef.artifact_name]
+→ exact artifact files
+```
+
+### Stage inputs
+
+A stored input selects an artifact promoted from a completed run:
+
+```python
+class StoredInputRef(ProtocolModel):
+    kind: Literal["stored"] = "stored"
+    pointer: ArtifactPointerRef
+    path: RepoRelPath
+
+
+class ResolvedStoredInputRef(ProtocolModel):
+    kind: Literal["stored"] = "stored"
+    pointer: ResolvedArtifactPointerRef
+```
+
+The planned and resolved pointer locations are equal:
+
+```text
+ResolvedStoredInputRef.pointer.stored_at
+==
+StoredInputRef.pointer
+```
+
+`StoredInputRef.path` is the local file path or bundle root supplied to the
+consuming stage.
+
+A same-run input selects one artifact from an earlier stage:
+
+```python
+class FutureInputRef(ProtocolModel):
+    kind: Literal["future"] = "future"
+    producer_stage_id: StageId
+    producer_artifact: ArtifactName
+
+
+class ResolvedFutureInputRef(ProtocolModel):
+    kind: Literal["future"] = "future"
+    producer: ResolvedStageRef
+```
+
+For a consumer at stage position $j$, the producer occurs at a position
+$i<j$. The verifier requires:
+
+```text
+ResolvedFutureInputRef.producer.stage_id
+==
+FutureInputRef.producer_stage_id
+
+FutureInputRef.producer_artifact
+in
+keys(producer ResolvedBaseSpec.artifacts)
+```
+
+The selected artifact's declared path is its local file path or bundle root.
+
+### Attempts and terminal run result
+
+```python
+AttemptStatus = Literal[
+    "succeeded",
+    "failed",
+    "preempted",
+    "cancelled",
+]
+
+
+class RunAttempt(ProtocolModel):
+    attempt_id: int = Field(ge=1)
+    status: AttemptStatus
+    started_at: AwareDatetime
+    completed_at: AwareDatetime
+
+    resolved_stages: tuple[ResolvedStageRef, ...]
+    measurement_files: tuple[ResolvedFileRef, ...]
+    log_files: tuple[ResolvedFileRef, ...]
+    failure_reason: str | None
+
+
+class ResolvedRun(ProtocolModel):
+    schema_version: Literal[1] = 1
+    spec: ResolvedRunSpecRef
+    status: Literal["succeeded", "failed", "cancelled"]
+    attempts: tuple[RunAttempt, ...] = Field(min_length=1)
+    successful_attempt_id: int | None
+    completed_at: AwareDatetime
+```
+
+Attempt IDs are unique and strictly increasing. Each attempt's
+`resolved_stages` is an ordered prefix of `RunSpec.stages`.
+
+A successful attempt satisfies:
+
+1. Its `failure_reason` is null.
+2. Its `resolved_stages` contains every declared stage exactly once and in
+   order.
+3. Every `ResolvedStageRef` identifies a verified stage-result snapshot.
+
+A failed, preempted, or cancelled attempt records a nonempty `failure_reason`.
+
+A successful `ResolvedRun` identifies exactly one successful attempt through
+`successful_attempt_id`. A failed or cancelled `ResolvedRun` has no successful
+attempt. `ResolvedRun.spec` identifies the exact `RunSpec` file whose stages
+govern every attempt.
+
+```text
+ResolvedRun.spec
+→ RunSpec
+→ ordered RunStageRef records
+
+ResolvedRun.attempts
+→ ordered RunAttempt records
+→ ordered ResolvedStageRef prefixes
+
+ResolvedRun.successful_attempt_id
+→ complete successful RunAttempt
+```
+
+## 15. Protocol mapping
 
 The terminal checkpoint of every training stage is represented by two reserved
 artifacts:
