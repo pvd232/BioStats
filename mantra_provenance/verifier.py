@@ -536,7 +536,7 @@ def verify_run_plan_relationships(
 
 def verify_stage_plan(
     run: RunSpec,
-    run_file: ResolvedRunSpecRef,
+    run_spec_reference: ResolvedRunSpecRef,
     *,
     fetcher: StorageFetcher | None = None,
 ) -> dict[StageId, BaseSpec]:
@@ -545,7 +545,7 @@ def verify_stage_plan(
     loaded_stages: dict[StageId, BaseSpec] = {}
 
     for stage in run.stages:
-        plan_location = run_file.stored_at
+        plan_location = run_spec_reference.stored_at
         location = GitFileRef(
             repository=plan_location.repository,
             commit=plan_location.commit,
