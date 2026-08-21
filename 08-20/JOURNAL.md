@@ -214,3 +214,177 @@ pass. Stop at a bounded pair-vibe edit when the five-hour limit is reached.
 Record the last completed mandatory block, the exact check result, the first
 unfinished class or verifier function, and the next bounded edit. If all
 mandatory blocks pass, record which optional continuation is next.
+
+## End-of-day closeout
+
+### Outcome
+
+Stage 1 is complete at the provenance-framework boundary. The active contract,
+Pydantic graph, external verifier, evaluation records, benchmark records, and
+acceptance fixture now implement one connected v3 protocol.
+
+The authoritative files are:
+
+- [ProvenanceS1_v3.md](../mantra_provenance/ProvenanceS1_v3.md)
+- [models_v4.py](../mantra_provenance/models_v4.py)
+- [verifier.py](../mantra_provenance/verifier.py)
+- [test_acceptance.py](../tests/test_acceptance.py)
+- [mantra_provenance/README.md](../mantra_provenance/README.md)
+
+### Contract frozen today
+
+The formal foundation now begins with the plan space:
+
+$$
+\mathcal{Q}
+=
+\mathcal{M}
+\times
+\mathcal{C}
+\times
+\mathcal{H}
+\times
+\Omega^{+}.
+$$
+
+A plan $q$ contains run metadata, one run-wide reproducibility specification,
+one shared environment, and an ordered nonempty sequence of stage specs. A
+stage may declare an environment override. The shared reproducibility controls
+and selected stage environment induce each permitted runtime-state set
+$E_{q,j}$; their Cartesian product induces $E_q$.
+
+Each training stage produces one terminal checkpoint. The reserved artifacts
+are:
+
+```text
+model_parameters
+└── terminal model parameters
+
+continuation_state
+└── optimizer, RNG, and batch state required for exact continuation
+```
+
+Named artifacts partition the state exposed at a stage boundary. A single-file
+artifact has one physical file. A bundle has at least two members. Each declared
+loader reconstructs the named value from its verified file set.
+
+Completed stages publish one immutable stage-result snapshot containing the
+resolved stage spec and every file of every named artifact. Promotion pointers
+select a resolved run, producer stage, and artifact name. Same-run inputs select
+an earlier producer stage and artifact name directly. Artifact manifests are
+absent from the v3 graph.
+
+Evaluation consumes fixed model parameters, a stored evaluation dataset, and
+stored split inputs; it publishes predictions and records declared metrics.
+Benchmarking binds those inputs and metrics, verifies a second execution,
+requires estimator and prediction parity, applies metric criteria, and governs
+promotion.
+
+### Implementation completed
+
+- Run-wide environment and reproducibility controls with explicit stage
+  environment overrides.
+- Typed experiment, variant, replicate, run, stage, artifact, input,
+  evaluation, benchmark, attempt, measurement, and terminal-result records.
+- Exact source, run-plan, stage-result, artifact, measurement, log, benchmark,
+  and promotion references.
+- Canonical repository paths for run records, stage specs, resolved stage
+  specs, artifacts, promoted inputs, measurements, logs, and benchmark results.
+- Duplicate-key-safe YAML and JSON parsing.
+- Direct artifact reconstruction through loaders fixed by `RunSpec.source`.
+- Stored-input lineage, same-run lineage, checkpoint-pair selection, attempt
+  ordering, stage ordering, timestamp, environment, seed, command, and file
+  identity verification.
+- Input-lineage verification for every completed stage in every attempt.
+- Strict benchmark confirmation with a new attempt ID and disjoint stage-result
+  snapshots.
+- Ruff and Pyright in the declared test dependencies and the `mantra` Conda
+  environment.
+
+### Full-pass corrections
+
+The final audit found and closed these gaps:
+
+1. Download receipts now record retrieval time.
+2. YAML and measurement JSON objects reject duplicate field names.
+3. Attempt stage completion, snapshot identity, measurement identity, and log
+   identity are constrained.
+4. Stored checkpoint pointers select one run, one stage, and the two reserved
+   checkpoint artifacts.
+5. Successful evaluations emit exactly one row for every declared metric.
+6. Every attempt verifies the lineage of each completed stage's inputs.
+7. Benchmark confirmation uses a new attempt identity and new stage snapshots.
+8. Specification class examples follow canonical Pydantic field order.
+9. The runtime-state product equation renders through Pandoc.
+
+### Validation
+
+Executed in `/Users/machina/miniconda3/envs/mantra/bin/python`:
+
+```text
+ruff check mantra_provenance tests
+→ All checks passed
+
+pyright
+→ 0 errors, 0 warnings, 0 informations
+
+python -m pytest -q
+→ 26 passed in 0.63s
+```
+
+Additional gates:
+
+- `Spec`, `ResolvedSpec`, `RunSpec`, `ResolvedRun`, `BenchmarkSpec`, and
+  `BenchmarkResult` JSON schemas generated successfully.
+- All 78 classes reproduced in the v3 specification match their source field
+  names and order.
+- All Python blocks in the active specification parse.
+- Repository-relative documentation links resolve.
+- The v3 specification and directory README render through Pandoc.
+- `git diff --check` passes.
+
+The acceptance suite now proves:
+
+1. A complete provenance chain with a promoted stored input, same-run input,
+   bundle artifact, terminal checkpoint, evaluation, measurement, and terminal
+   run verifies.
+2. A changed referenced artifact byte is rejected.
+3. A two-execution strict benchmark verifies.
+4. A benchmark confirmation that reuses original stage snapshots is rejected.
+
+### Git record
+
+The v3 implementation spans 39 focused commits from `f943cb8` through
+`3358727`. The final audit increments are:
+
+```text
+d900b5c  harden resolved execution integrity
+0c9059d  add complete provenance acceptance fixture
+2835e75  enforce canonical provenance paths
+0ba7868  verify stored checkpoint selections
+acf7c27  align protocol documentation with verifier
+8d56fdc  complete pointer and measurement validation
+b78f57c  verify lineage across every run attempt
+3358727  require independent benchmark confirmation
+```
+
+### Current boundaries
+
+- `GCEEnvironmentSpec` is the implemented environment type.
+- `BuildParams` and `EmbedParams` contain no scientific fields until a concrete
+  build and embedding procedure supplies them.
+- Artifact loaders execute trusted Python from the Git revision selected by
+  `RunSpec.source` inside the verifier process.
+- This package verifies provenance records and reconstruction. Environment
+  provisioning and stage execution belong to the executor that consumes these
+  records.
+- The acceptance fixture uses an in-memory document store. Live Git and Hugging
+  Face retrieval remain an integration exercise.
+
+### Next session
+
+First action: choose the first concrete model pipeline and map its build and
+embedding controls into typed `BuildParams` and `EmbedParams`. Then implement
+the corresponding `src/mantra/<entity>/<entity_id>/<operation>.py` entrypoints
+and artifact loaders, execute one real run through the executor, and submit its
+published records to `verify_run_result()` and `verify_benchmark_result()`.
