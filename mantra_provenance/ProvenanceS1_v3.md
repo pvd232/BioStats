@@ -3010,11 +3010,45 @@ $$
 The operation $B_{\alpha,\beta,q,t}$:
 
 1. creates a DataLoader iterator when no iterator exists;
-2. obtains the next index batch and retrieves the selected observations;
-3. applies the configured transformations and collation;
-4. advances each generator consumed by iterator creation, sampling, and the
-   configured transformations; and
-5. records the resulting sampler and DataLoader position.
+2. obtains the next index batch;
+3. retrieves the selected observations;
+4. applies the configured transformations and collation;
+5. advances each generator consumed by these operations; and
+6. records the resulting sampler and DataLoader position.
+
+Let $r_{k,\mathrm{sampling}}^{(t+1)}$ contain the generator states after the
+iterator and sampler have selected the index batch for update $t+1$, but before
+the selected observations are retrieved, transformed, and collated. The
+generator-state transition inside $B_{\alpha,\beta,q,t}$ is:
+
+$$
+r_k^{(t)}
+\longmapsto
+r_{k,\mathrm{sampling}}^{(t+1)}
+\longmapsto
+r_{k,\mathrm{batch}}^{(t+1)}.
+$$
+
+The first transition includes generator changes caused by iterator creation and
+randomized index generation. The second includes generator changes caused by
+stochastic dataset retrieval, transformations, or custom collation.
+
+If selecting the index batch consumes no randomness, then:
+
+$$
+r_{k,\mathrm{sampling}}^{(t+1)}
+=
+r_k^{(t)}.
+$$
+
+If retrieving, transforming, and collating the selected observations consume
+no randomness, then:
+
+$$
+r_{k,\mathrm{batch}}^{(t+1)}
+=
+r_{k,\mathrm{sampling}}^{(t+1)}.
+$$
 
 For the first batch of a DataLoader pass:
 
@@ -3036,9 +3070,7 @@ after that batch.
 
 ### A.3 Gradient computation
 
-Using $d_k^{(t+1)}$, the training procedure clears the stored gradients,
-performs the forward computation, computes the loss, and performs
-backpropagation. Define:
+Using $d_k^{(t+1)}$, the training procedure clears the stored gradients, performs the forward computation, computes the loss, and performs backpropagation. Define:
 
 $$
 \begin{aligned}
@@ -3066,18 +3098,28 @@ Here:
 
 1. $\ell_k^{(t+1)}$ is the loss computed for update $t+1$.
 2. $g_k^{(t+1)}$ contains the resulting parameter gradients.
-3. $\theta_{k,\mathrm{forward}}^{(t+1)}$ contains the model parameters and
-   persistent buffers after the forward computation.
-4. $r_{k,\mathrm{gradient}}^{(t+1)}$ contains the generator states after
-   stochastic model operations used to compute the gradients.
+3. $\theta_{k,\mathrm{forward}}^{(t+1)}$ contains the model parameters and persistent buffers after the forward computation.
+4. $r_{k,\mathrm{gradient}}^{(t+1)}$ contains the generator states after the stochastic operations used to compute the gradients.
 
-During training, Dropout samples a new Bernoulli mask during each forward call.
-The generator state consumed by that sampling therefore advances from
-$r_{k,\mathrm{batch}}^{(t+1)}$ to
-$r_{k,\mathrm{gradient}}^{(t+1)}$. This behavior is defined by the PyTorch
-2.13.0 [`Dropout` implementation](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/nn/modules/dropout.py#L35-L72).
+**Generator state.** During training, Dropout samples a new Bernoulli mask during each forward call. Its sampling advances the applicable generator state:
 
-If the forward computation changes no persistent model buffers, then:
+$$
+r_{k,\mathrm{batch}}^{(t+1)}
+\longmapsto
+r_{k,\mathrm{gradient}}^{(t+1)}.
+$$
+
+This behavior is defined by the [PyTorch 2.13.0 `Dropout` implementation](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/nn/modules/dropout.py#L35-L72).
+
+If no operation between batch materialization and completed gradient computation consumes randomness, then:
+
+$$
+r_{k,\mathrm{gradient}}^{(t+1)}
+=
+r_{k,\mathrm{batch}}^{(t+1)}.
+$$
+
+**Persistent model buffers.** If the forward computation changes no persistent model buffers, then:
 
 $$
 \theta_{k,\mathrm{forward}}^{(t+1)}
@@ -3315,9 +3357,10 @@ automatic batching. The same generator supplies the DataLoader base seed and
 the `RandomSampler` permutation. `BatchSampler` groups indices without
 consuming randomness. The diagrams assume `persistent_workers=False`.
 
-The generator states shown below are components of
-$r_{k,\mathrm{batch}}^{(t+1)}$. The shuffled index sequence, its unread
-position, and any prefetched work are components of
+The generator states after iterator creation and randomized index generation
+form $r_{k,\mathrm{sampling}}^{(t+1)}$. The generator states after retrieval,
+transformation, and collation form $r_{k,\mathrm{batch}}^{(t+1)}$. The shuffled
+index sequence, its unread position, and any prefetched work are components of
 $b_{k,\mathrm{batch}}^{(t+1)}$.
 
 ### Single-process loading
@@ -3362,22 +3405,28 @@ first next(iterator)
 │   └── G₁ → G₂
 ├── BatchSampler consumes the first batch_size indices
 │   └── creates index batch 1
+├── sampling-state boundary
 ├── dataset retrieves those observations
 ├── transformations process those observations
 ├── collation combines them
+├── batch-state boundary
 └── returns batch 1
             │
             ▼
 second next(iterator)
 ├── BatchSampler consumes the next batch_size indices
 │   └── uses the existing shuffled sequence
-├── dataset retrieves and transforms those observations
+├── sampling-state boundary; no sampler draw occurs
+├── dataset retrieves those observations
+├── transformations process those observations
 ├── collation combines them
+├── batch-state boundary
 └── returns batch 2
             │
             ▼
 subsequent next(iterator) calls
-└── continue through the existing shuffled sequence
+└── repeat index grouping, retrieval, transformation, and collation
+    using the existing shuffled sequence
             │
             ▼
 all indices consumed
@@ -3412,6 +3461,13 @@ select additional observations.
 `BatchSampler` maintains a position in the sampler's index stream. In this
 single-process view, each `next(iterator)` consumes the next index batch from
 that stream. `BatchSampler` has no RNG state.
+
+For the first batch, the shared generator state after the base-seed draw and
+shuffled-permutation generation belongs to
+$r_{k,\mathrm{sampling}}^{(t+1)}$. Any generator changes caused by dataset
+retrieval, transformations, or custom collation occur between the sampling-state
+and batch-state boundaries. When those operations consume no randomness, the
+two states are equal.
 
 ### Multiprocess loading
 
@@ -3466,6 +3522,13 @@ Prefetching requests index batches while `iter(loader)` creates the
 multiprocess iterator. The shared generator can therefore supply both the base
 seed and the shuffled permutation before the caller's first
 `next(iterator)`.
+
+In this case, $r_{k,\mathrm{sampling}}^{(t+1)}$ includes the main-process
+generator state after every index-generation operation completed by the
+boundary, including work performed for prefetched batches.
+$r_{k,\mathrm{batch}}^{(t+1)}$ also includes the worker generator states after
+every retrieval, transformation, and collation operation completed by that
+boundary.
 
 For worker $i$, PyTorch sets the worker's Python and PyTorch seeds to the
 DataLoader base seed plus $i$. PyTorch derives the worker's NumPy seed from the
@@ -3548,9 +3611,9 @@ The next epoch begins with another `iter(loader)` call.
 
 This appendix follows the PyTorch 2.13.0 implementations of:
 
-- [`DataLoader` iterator and base-seed construction](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/utils/data/dataloader.py#L685-L715);
-- [`RandomSampler`](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/utils/data/sampler.py#L160-L185);
-- [`BatchSampler`](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/utils/data/sampler.py#L338-L349);
+- [`DataLoader` iterator and base-seed construction](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/utils/data/dataloader.py#L639-L644);
+- [`RandomSampler`](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/utils/data/sampler.py#L146-L170);
+- [`BatchSampler`](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/utils/data/sampler.py#L306-L316);
 - [multiprocess prefetching](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/utils/data/dataloader.py#L1274-L1276);
 - [worker-queue index dispatch](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/utils/data/dataloader.py#L1531-L1557); and
 - [worker RNG initialization](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/utils/data/_utils/worker.py#L274-L281).
