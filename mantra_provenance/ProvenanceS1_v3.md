@@ -2949,9 +2949,8 @@ At this boundary:
    buffers.
 2. $o_k^{(0)}$ contains the initial optimization state.
 3. $r_k^{(0)}$ contains every generator state after initialization.
-4. The DataLoader configuration exists.
-5. $b_k^{(0)}$ records the initial sampler position.
-6. No DataLoader iterator exists, and no batch has been selected.
+4. $b_k^{(0)}$ records the initial sampler position.
+5. The DataLoader configuration exists, however, the iterator it produces does not exist, and no batch has been selected.
 
 ```text
 global seed
