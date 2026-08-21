@@ -59,7 +59,8 @@ measurements, logs, and terminal estimator. Artifact loaders are selected by
 
 `verify_benchmark_result()` verifies a second successful attempt, its complete
 input lineage, estimator and prediction file parity, metric criteria, and
-promotion relationships.
+result status. `verify_promoted_artifact()` verifies the selected producer run
+and any benchmark result required to authorize estimator promotion.
 
 ## Public operations
 
@@ -71,6 +72,8 @@ promotion relationships.
   returns its connected run plan, successful resolved stages, and measurements.
 - `verify_benchmark_result(result, fetcher=...)` verifies the benchmark record,
   selected run, confirmation attempt, parity, and metric thresholds.
+- `verify_promoted_artifact(pointer, fetcher=...)` verifies a promoted
+  artifact's producer lineage and benchmark authorization when required.
 - A custom `fetcher` receives a `GitFileRef` or `HuggingFaceFileRef` and returns
   bytes. Omitting it uses the package Git and Hugging Face retrieval functions.
 

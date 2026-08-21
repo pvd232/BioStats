@@ -2546,9 +2546,10 @@ Pydantic enforces:
 6. Matching declared and resolved artifact-name sets inside one resolved stage
    spec.
 7. Attempt status, failure-reason, and timestamp relationships.
-8. The training checkpoint input pair and exclusive reserved output pair.
-9. The evaluation model, dataset, split, metric, and exclusive predictions
-   requirements.
+8. The training checkpoint input pair and training-stage ownership of the
+   `model_parameters` and `continuation_state` artifact names.
+9. The evaluation model, dataset, split, and metric requirements and
+   evaluation-stage ownership of the `predictions` artifact name.
 10. Benchmark split, metric, confirmation, and result requirements.
 
 ### Run-plan verification
@@ -2657,9 +2658,10 @@ For a same-run input, the verifier:
 4. Verifies and materializes the complete artifact.
 
 For each attempt, the verifier also requires every measurement and log file to
-belong to one immutable snapshot $D_i$. Measurement rows identify completed
-stages. Log paths identify completed stages or the next interrupted stage of a
-non-successful attempt.
+belong to one immutable snapshot $D_i$. Distinct attempts use disjoint
+stage-result and $D_i$ snapshots, and no $D_i$ equals a stage-result snapshot.
+Measurement rows identify completed stages. Log paths identify completed
+stages or the next interrupted stage of a non-successful attempt.
 
 ### Training-continuation verification
 
@@ -2693,20 +2695,23 @@ For a `ResolvedRun`, the verifier:
    `RunSpec.stages`.
 3. Requires the successful attempt to contain every stage exactly once and in
    order.
-4. Verifies every stored and same-run input consumed by every completed stage
+4. Requires stage-result and attempt-file snapshots to satisfy the
+   disjointness rules above.
+5. Verifies every stored and same-run input consumed by every completed stage
    in every attempt.
-5. Verifies every measurement and log file.
-6. Requires canonical measurement and log paths.
-7. Checks every measurement against the run, attempt, stage, experiment, and
+6. Verifies every measurement and log file.
+7. Requires canonical measurement and log paths.
+8. Checks every measurement against the run, attempt, stage, experiment, and
    stage-specific metric identities.
-8. Loads the estimator artifact selected by `RunSpec.estimator`.
+9. Loads the estimator artifact selected by `RunSpec.estimator`.
 
 For a `BenchmarkResult`, the verifier additionally performs the benchmark-spec,
-confirmation-attempt, estimator-parity, prediction-parity, metric-criterion,
-and promotion relationships defined in Section 20. The confirmation uses a new
-attempt ID, stage-result snapshots, and attempt-file snapshot disjoint from
-every attempt in the selected run. Its stored and same-run inputs pass the same
-lineage verification applied to the selected run.
+confirmation-attempt, estimator-parity, prediction-parity, and metric-criterion
+relationships defined in Section 20. The confirmation uses a new attempt ID,
+stage-result snapshots, and attempt-file snapshot disjoint from every attempt
+in the selected run. Its stored and same-run inputs pass the same lineage
+verification applied to the selected run. Artifact-pointer verification
+separately establishes the promotion relationships in Sections 14 and 20.
 
 ## 22. Execution and publication sequence
 
