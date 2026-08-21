@@ -42,9 +42,9 @@ from mantra_provenance.verifier import (
     read_snapshot_file,
     verify_attempt_files,
     verify_future_inputs,
-    verify_resolved_run_file,
     verify_resolved_stages,
     verify_run_plan_relationships,
+    verify_run_spec,
     verify_stage_plan,
 )
 
@@ -178,10 +178,10 @@ def resolved_pointer(path: str) -> ResolvedArtifactPointerRef:
     )
 
 
-def snapshot() -> StageResultSnapshotRef:
+def snapshot(*, commit: str = SNAPSHOT_COMMIT) -> StageResultSnapshotRef:
     return StageResultSnapshotRef(
         repository=HF_REPOSITORY,
-        commit=SNAPSHOT_COMMIT,
+        commit=commit,
         repo_type="dataset",
     )
 
@@ -344,9 +344,23 @@ class RunAndStageVerificationTests(unittest.TestCase):
         record = ResolvedRun.model_construct(spec=run_reference)
 
         self.assertEqual(
-            verify_resolved_run_file(record, fetcher=lambda _: raw),
+            verify_run_spec(record, fetcher=lambda _: raw),
             run,
         )
+
+        duplicate_raw = raw + b"seed: 43\n"
+        duplicate_record = record.model_copy(
+            update={
+                "spec": run_reference.model_copy(
+                    update={
+                        "sha256": sha256(duplicate_raw),
+                        "bytes": len(duplicate_raw),
+                    }
+                )
+            }
+        )
+        with self.assertRaisesRegex(VerificationError, "not a valid RunSpec"):
+            verify_run_spec(duplicate_record, fetcher=lambda _: duplicate_raw)
 
     def test_stage_plan_loads_named_future_artifact(self) -> None:
         build = build_spec()
@@ -529,6 +543,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             attempt,
             run,
             experiment,
+            {"train": spec},
             fetcher=lambda location: documents[location.path],
         )
 
@@ -699,7 +714,7 @@ class FutureInputVerificationTests(unittest.TestCase):
         )
         consumer_stage = ResolvedStageRef(
             stage_id="train",
-            snapshot=snapshot(),
+            snapshot=snapshot(commit="d" * 40),
             resolved_spec={
                 "path": "stages/train.spec.resolved.yaml",
                 "sha256": "f" * 64,

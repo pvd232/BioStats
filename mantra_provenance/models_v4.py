@@ -95,6 +95,7 @@ class RemoteFileRef(ProtocolModel):
     url: HttpUrl
     version: NonEmptyStr
 
+
 class GitSource(ProtocolModel):
     """A repository snapshot identified by an exact Git commit."""
 
@@ -105,6 +106,7 @@ class GitSource(ProtocolModel):
 
 class GitFileRef(GitSource):
     """A file stored at an exact Git revision."""
+
     path: RepoRelPath
 
 
@@ -327,6 +329,7 @@ class ReproducibilitySpec(ProtocolModel):
     precision: TorchPrecisionSpec
     parallelism: ParallelismSpec
 
+
 # ---------------------------------------------------------------------------
 # Measurement
 # ---------------------------------------------------------------------------
@@ -515,10 +518,25 @@ class RunAttempt(ProtocolModel):
             raise ValueError("attempt completion must be after attempt start")
 
         unique = set()
+        snapshots: set[StageResultSnapshotRef] = set()
         for stage in self.resolved_stages:
             if stage.stage_id in unique:
                 raise ValueError("resolved stage IDs must be unique")
             unique.add(stage.stage_id)
+
+            if stage.snapshot in snapshots:
+                raise ValueError("resolved stages must use distinct snapshots")
+            snapshots.add(stage.snapshot)
+
+        if len(set(self.measurement_files)) != len(self.measurement_files):
+            raise ValueError("measurement file references must be unique")
+
+        if len(set(self.log_files)) != len(self.log_files):
+            raise ValueError("log file references must be unique")
+
+        if set(self.measurement_files) & set(self.log_files):
+            raise ValueError("measurement and log file references must be disjoint")
+
         return self
 
 
@@ -778,6 +796,7 @@ class ExecutionContext(ProtocolModel):
 # Stage input references
 # ---------------------------------------------------------------------------
 
+
 class StoredInputRef(ProtocolModel):
     """A promoted artifact selected before the run begins."""
 
@@ -893,8 +912,7 @@ class InternalSpec(BaseSpec):
             for artifact_name, artifact in self.artifacts.items():
                 if repo_file_paths_overlap(artifact.path, ref.path):
                     raise ValueError(
-                        f"artifact {artifact_name!r} path collides with input "
-                        f"{name!r}"
+                        f"artifact {artifact_name!r} path collides with input {name!r}"
                     )
 
         return self
@@ -1015,20 +1033,14 @@ class EvaluateSpec(InternalSpec):
 
         if model_input.kind == "future":
             if model_input.producer_artifact != MODEL_PARAMETERS:
-                raise ValueError(
-                    "same-run evaluation must consume model_parameters"
-                )
+                raise ValueError("same-run evaluation must consume model_parameters")
 
         if PREDICTIONS not in self.artifacts:
             raise ValueError("evaluation must declare a predictions artifact")
 
-        forbidden_outputs = {MODEL_PARAMETERS, CONTINUATION_STATE} & set(
-            self.artifacts
-        )
+        forbidden_outputs = {MODEL_PARAMETERS, CONTINUATION_STATE} & set(self.artifacts)
         if forbidden_outputs:
-            raise ValueError(
-                "evaluation cannot publish training checkpoint artifacts"
-            )
+            raise ValueError("evaluation cannot publish training checkpoint artifacts")
 
         return self
 
@@ -1181,10 +1193,7 @@ class ResolvedBaseSpec(ProtocolModel):
                     f"resolved artifact {name!r} kind must match its declaration"
                 )
 
-            if (
-                declared_artifact.kind == "file"
-                and resolved_artifact.kind == "file"
-            ):
+            if declared_artifact.kind == "file" and resolved_artifact.kind == "file":
                 if resolved_artifact.file.path != declared_artifact.path:
                     raise ValueError(
                         f"resolved artifact {name!r} path must match its declaration"
@@ -1208,9 +1217,7 @@ class ResolvedBaseSpec(ProtocolModel):
                     )
 
                 for member in resolved_artifact.members:
-                    expected_path = (
-                        f"{declared_artifact.path}/{member.relative_path}"
-                    )
+                    expected_path = f"{declared_artifact.path}/{member.relative_path}"
                     if member.file.path != expected_path:
                         raise ValueError(
                             f"resolved artifact {name!r} member path must equal "
@@ -1244,8 +1251,7 @@ class ResolvedBaseSpec(ProtocolModel):
             requested_lockfile = requested_environment.lockfile
 
             if (
-                resolved_lockfile.stored_at.repository
-                != requested_lockfile.repository
+                resolved_lockfile.stored_at.repository != requested_lockfile.repository
                 or resolved_lockfile.stored_at.commit != requested_lockfile.commit
                 or resolved_lockfile.stored_at.path != requested_lockfile.path
             ):
@@ -1289,6 +1295,7 @@ class ResolvedDownloadSpec(ResolvedBaseSpec):
     spec: DownloadSpec  # pyright: ignore[reportIncompatibleVariableOverride]
 
     inputs: dict[InputName, RemoteFileRef]
+    retrieved_at: AwareDatetime
 
     @model_validator(mode="after")
     def validate_download_inputs(self) -> ResolvedDownloadSpec:
@@ -1296,6 +1303,9 @@ class ResolvedDownloadSpec(ResolvedBaseSpec):
             raise ValueError(
                 "resolved download inputs must match the stage spec remote inputs"
             )
+
+        if self.retrieved_at > self.completed_at:
+            raise ValueError("download retrieval cannot follow stage completion")
 
         return self
 

@@ -41,9 +41,15 @@ _SPEC_ADAPTER = TypeAdapter(Spec)
 _RESOLVED_SPEC_ADAPTER = TypeAdapter(ResolvedSpec)
 
 
+def load_yaml_bytes(raw: bytes) -> Any:
+    """Parse YAML bytes while rejecting duplicate mapping keys."""
+    if not isinstance(raw, bytes):
+        raise TypeError("YAML content must be bytes")
+    return yaml.load(raw, Loader=UniqueKeySafeLoader)
+
+
 def _load_yaml(path: Path) -> Any:
-    with path.open("r", encoding="utf-8") as stream:
-        return yaml.load(stream, Loader=UniqueKeySafeLoader)
+    return load_yaml_bytes(path.read_bytes())
 
 
 def load_spec(path: str | Path) -> Spec:

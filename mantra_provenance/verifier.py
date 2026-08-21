@@ -36,6 +36,7 @@ from .models_v4 import (
     ResolvedArtifact,
     ResolvedBaseSpec,
     ResolvedBundleArtifact,
+    ResolvedDownloadSpec,
     ResolvedFileRef,
     ResolvedFutureInputRef,
     ResolvedInternalSpec,
@@ -56,6 +57,7 @@ from .models_v4 import (
     VariantSpec,
     repo_file_paths_overlap,
 )
+from .yaml_io import load_yaml_bytes
 
 StorageFetcher = Callable[[StorageModel], bytes]
 SPEC_ADAPTER = TypeAdapter(Spec)
@@ -340,7 +342,7 @@ def load_verified_artifact(
             ) from exc
 
 
-def verify_resolved_run_file(
+def verify_run_spec(
     resolved_run: ResolvedRun,
     *,
     fetcher: StorageFetcher | None = None,
@@ -349,8 +351,8 @@ def verify_resolved_run_file(
     raw = read_resolved_file(resolved_run.spec, fetcher=fetcher)
 
     try:
-        file_run = RunSpec.model_validate(yaml.safe_load(raw))
-    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+        file_run = RunSpec.model_validate(load_yaml_bytes(raw))
+    except (yaml.YAMLError, ValueError) as exc:
         raise VerificationError("resolved run spec is not a valid RunSpec") from exc
 
     return file_run
@@ -377,16 +379,18 @@ def verify_experiment_and_variant(
 
     try:
         experiment = ExperimentSpec.model_validate(
-            yaml.safe_load(retrieve(experiment_location))
+            load_yaml_bytes(retrieve(experiment_location))
         )
-    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+    except (yaml.YAMLError, ValueError) as exc:
         raise VerificationError(
             "experiment file is not a valid ExperimentSpec document"
         ) from exc
 
     try:
-        variant = VariantSpec.model_validate(yaml.safe_load(retrieve(variant_location)))
-    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+        variant = VariantSpec.model_validate(
+            load_yaml_bytes(retrieve(variant_location))
+        )
+    except (yaml.YAMLError, ValueError) as exc:
         raise VerificationError(
             "variant file is not a valid VariantSpec document"
         ) from exc
@@ -443,8 +447,8 @@ def verify_benchmark_spec(
         path=f"benchmarks/{run.benchmark_id}.spec.yaml",
     )
     try:
-        benchmark = BenchmarkSpec.model_validate(yaml.safe_load(retrieve(location)))
-    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+        benchmark = BenchmarkSpec.model_validate(load_yaml_bytes(retrieve(location)))
+    except (yaml.YAMLError, ValueError) as exc:
         raise VerificationError(
             "benchmark file is not a valid BenchmarkSpec document"
         ) from exc
@@ -501,9 +505,7 @@ def verify_run_plan_relationships(
         stage for stage in stages.values() if isinstance(stage, EvaluateSpec)
     ]
     if len(evaluation_stages) != 1:
-        raise VerificationError(
-            "benchmark runs require exactly one evaluation stage"
-        )
+        raise VerificationError("benchmark runs require exactly one evaluation stage")
 
     evaluation = evaluation_stages[0]
     dataset_input = evaluation.inputs["evaluation_dataset"]
@@ -560,8 +562,8 @@ def verify_stage_plan(
         raw = verify_resolved_file_bytes(stage_reference, retrieve(location))
 
         try:
-            spec = SPEC_ADAPTER.validate_python(yaml.safe_load(raw))
-        except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+            spec = SPEC_ADAPTER.validate_python(load_yaml_bytes(raw))
+        except (yaml.YAMLError, ValueError) as exc:
             raise VerificationError(
                 f"stage {stage.stage_id!r} file is not a valid stage spec"
             ) from exc
@@ -642,7 +644,7 @@ def verify_run_plan(
     fetcher: StorageFetcher | None = None,
 ) -> VerifiedRunPlan:
     """Retrieve and verify every record constituting a frozen run plan."""
-    run = verify_resolved_run_file(resolved_run, fetcher=fetcher)
+    run = verify_run_spec(resolved_run, fetcher=fetcher)
     experiment, variant = verify_experiment_and_variant(run, fetcher=fetcher)
     benchmark = verify_benchmark_spec(run, fetcher=fetcher)
     stages = verify_stage_plan(run, resolved_run.spec, fetcher=fetcher)
@@ -693,8 +695,8 @@ def verify_attempt_stages(
             fetcher=fetcher,
         )
         try:
-            resolved_spec = RESOLVED_SPEC_ADAPTER.validate_python(yaml.safe_load(raw))
-        except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+            resolved_spec = RESOLVED_SPEC_ADAPTER.validate_python(load_yaml_bytes(raw))
+        except (yaml.YAMLError, ValueError) as exc:
             raise VerificationError(
                 f"stage {stage_reference.stage_id!r} file is not a valid "
                 "resolved stage spec"
@@ -717,14 +719,32 @@ def verify_attempt_stages(
             )
 
         if not (
-            attempt.started_at
-            < resolved_spec.completed_at
-            <= attempt.completed_at
+            attempt.started_at < resolved_spec.completed_at <= attempt.completed_at
         ):
             raise VerificationError(
                 f"stage {stage_reference.stage_id!r} completion time falls outside "
                 "the successful attempt"
             )
+
+        if isinstance(resolved_spec, ResolvedDownloadSpec) and not (
+            attempt.started_at
+            <= resolved_spec.retrieved_at
+            <= resolved_spec.completed_at
+        ):
+            raise VerificationError(
+                f"stage {stage_reference.stage_id!r} retrieval time falls outside "
+                "the stage execution"
+            )
+
+        if verified_stages:
+            previous_completed_at = next(
+                reversed(verified_stages.values())
+            ).completed_at
+            if resolved_spec.completed_at < previous_completed_at:
+                raise VerificationError(
+                    f"stage {stage_reference.stage_id!r} completed before its "
+                    "preceding stage"
+                )
 
         read_resolved_file(resolved_spec.source, fetcher=fetcher)
         read_resolved_file(resolved_spec.environment.lockfile, fetcher=fetcher)
@@ -738,8 +758,7 @@ def verify_attempt_stages(
             != requested_environment.machine_image.name
             or resolved_environment.machine_type != requested_environment.machine_type
             or resolved_environment.compute != requested_environment.compute
-            or resolved_environment.lockfile.stored_at
-            != requested_environment.lockfile
+            or resolved_environment.lockfile.stored_at != requested_environment.lockfile
         ):
             raise VerificationError(
                 f"stage {stage_reference.stage_id!r} realized a different "
@@ -839,6 +858,7 @@ def verify_attempt_files(
     attempt: RunAttempt,
     run: RunSpec,
     experiment: ExperimentSpec,
+    stage_specs: Mapping[StageId, BaseSpec],
     *,
     fetcher: StorageFetcher | None = None,
 ) -> tuple[Measurement, ...]:
@@ -878,10 +898,20 @@ def verify_attempt_files(
                 raise VerificationError(
                     "measurement metric is absent from the experiment"
                 )
+            stage_spec = stage_specs.get(measurement.stage_id)
+            if stage_spec is None:
+                raise VerificationError(
+                    "measurement stage has no loaded stage specification"
+                )
+            if (
+                isinstance(stage_spec, EvaluateSpec)
+                and measurement.metric_id not in stage_spec.params.metric_ids
+            ):
+                raise VerificationError(
+                    "evaluation measurement metric is absent from its stage spec"
+                )
             if not (
-                attempt.started_at
-                <= measurement.measured_at
-                <= attempt.completed_at
+                attempt.started_at <= measurement.measured_at <= attempt.completed_at
             ):
                 raise VerificationError(
                     "measurement timestamp falls outside its containing attempt"
@@ -918,6 +948,7 @@ def verify_run_result(
                 attempt,
                 plan.run,
                 plan.experiment,
+                plan.stages,
                 fetcher=fetcher,
             )
         )
@@ -954,8 +985,8 @@ def verify_promoted_artifact(
     """Follow a promoted artifact pointer through its completed producer run."""
     resolved_run_raw = read_resolved_file(pointer.run, fetcher=fetcher)
     try:
-        resolved_run = ResolvedRun.model_validate(yaml.safe_load(resolved_run_raw))
-    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+        resolved_run = ResolvedRun.model_validate(load_yaml_bytes(resolved_run_raw))
+    except (yaml.YAMLError, ValueError) as exc:
         raise VerificationError(
             "artifact pointer run is not a valid ResolvedRun document"
         ) from exc
@@ -983,9 +1014,9 @@ def verify_promoted_artifact(
         )
         try:
             benchmark_result = BenchmarkResult.model_validate(
-                yaml.safe_load(benchmark_result_raw)
+                load_yaml_bytes(benchmark_result_raw)
             )
-        except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+        except (yaml.YAMLError, ValueError) as exc:
             raise VerificationError(
                 "artifact pointer benchmark result is invalid"
             ) from exc
@@ -1000,9 +1031,7 @@ def verify_promoted_artifact(
                 "artifact pointer and benchmark result select different runs"
             )
         if pointer.artifact != verified_plan.run.estimator:
-            raise VerificationError(
-                "benchmark promotion must select the run estimator"
-            )
+            raise VerificationError("benchmark promotion must select the run estimator")
 
     successful_attempt = next(
         attempt
@@ -1053,8 +1082,8 @@ def verify_stored_inputs(
                 fetcher=fetcher,
             )
             try:
-                pointer = ArtifactPointer.model_validate(yaml.safe_load(pointer_raw))
-            except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+                pointer = ArtifactPointer.model_validate(load_yaml_bytes(pointer_raw))
+            except (yaml.YAMLError, ValueError) as exc:
                 raise VerificationError(
                     f"stored input {input_name!r} of stage {stage_id!r} pointer "
                     "is not a valid ArtifactPointer document"
@@ -1201,21 +1230,32 @@ def verify_benchmark_result(
     """Verify benchmark parity and metric criteria across two executions."""
     benchmark_raw = read_resolved_file(result.benchmark, fetcher=fetcher)
     try:
-        benchmark = BenchmarkSpec.model_validate(yaml.safe_load(benchmark_raw))
-    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+        benchmark = BenchmarkSpec.model_validate(load_yaml_bytes(benchmark_raw))
+    except (yaml.YAMLError, ValueError) as exc:
         raise VerificationError(
             "benchmark result does not reference a valid BenchmarkSpec"
         ) from exc
 
     run_raw = read_resolved_file(result.run, fetcher=fetcher)
     try:
-        resolved_run = ResolvedRun.model_validate(yaml.safe_load(run_raw))
-    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+        resolved_run = ResolvedRun.model_validate(load_yaml_bytes(run_raw))
+    except (yaml.YAMLError, ValueError) as exc:
         raise VerificationError(
             "benchmark result does not reference a valid ResolvedRun"
         ) from exc
 
     verified_run = verify_run_result(resolved_run, fetcher=fetcher)
+
+    expected_benchmark_location = GitFileRef(
+        repository=verified_run.plan.run.source.repository,
+        commit=verified_run.plan.run.source.commit,
+        path=f"benchmarks/{benchmark.benchmark_id}.spec.yaml",
+    )
+    if result.benchmark.stored_at != expected_benchmark_location:
+        raise VerificationError(
+            "benchmark result reference does not match the run source snapshot"
+        )
+
     if verified_run.plan.benchmark != benchmark:
         raise VerificationError(
             "benchmark result and run plan select different benchmark specs"
@@ -1227,9 +1267,7 @@ def verify_benchmark_result(
         if attempt.attempt_id == resolved_run.successful_attempt_id
     )
     if result.confirmation.attempt_id == selected_attempt.attempt_id:
-        raise VerificationError(
-            "benchmark confirmation must use a distinct attempt ID"
-        )
+        raise VerificationError("benchmark confirmation must use a distinct attempt ID")
 
     confirmation_stages = verify_attempt_stages(
         result.confirmation,
@@ -1242,16 +1280,17 @@ def verify_benchmark_result(
         result.confirmation,
         verified_run.plan.run,
         verified_run.plan.experiment,
+        verified_run.plan.stages,
         fetcher=fetcher,
     )
 
     estimator_ref = verified_run.plan.run.estimator
-    selected_estimator = verified_run.resolved_stages[
-        estimator_ref.stage_id
-    ].artifacts[estimator_ref.artifact_name]
-    confirmation_estimator = confirmation_stages[
-        estimator_ref.stage_id
-    ].artifacts[estimator_ref.artifact_name]
+    selected_estimator = verified_run.resolved_stages[estimator_ref.stage_id].artifacts[
+        estimator_ref.artifact_name
+    ]
+    confirmation_estimator = confirmation_stages[estimator_ref.stage_id].artifacts[
+        estimator_ref.artifact_name
+    ]
     estimator_parity = selected_estimator == confirmation_estimator
 
     evaluation_stage_ids = [
@@ -1260,13 +1299,11 @@ def verify_benchmark_result(
         if isinstance(stage, EvaluateSpec)
     ]
     if len(evaluation_stage_ids) != 1:
-        raise VerificationError(
-            "benchmark verification requires one evaluation stage"
-        )
+        raise VerificationError("benchmark verification requires one evaluation stage")
     evaluation_stage_id = evaluation_stage_ids[0]
-    selected_predictions = verified_run.resolved_stages[
-        evaluation_stage_id
-    ].artifacts["predictions"]
+    selected_predictions = verified_run.resolved_stages[evaluation_stage_id].artifacts[
+        "predictions"
+    ]
     confirmation_predictions = confirmation_stages[evaluation_stage_id].artifacts[
         "predictions"
     ]
