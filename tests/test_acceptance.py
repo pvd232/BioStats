@@ -1134,6 +1134,23 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(VerificationError, "new stage-result snapshots"):
             verify_benchmark_result(reused_result, fetcher=store.fetch)
 
+    def test_strict_benchmark_rejects_reused_attempt_file_snapshot(self) -> None:
+        result, resolved_run, store = build_benchmark_fixture()
+        reused_confirmation = result.confirmation.model_copy(
+            update={
+                "measurement_files": resolved_run.attempts[-1].measurement_files
+            }
+        )
+
+        with self.assertRaisesRegex(
+            VerificationError,
+            "new measurement and log snapshot",
+        ):
+            verify_benchmark_result(
+                result.model_copy(update={"confirmation": reused_confirmation}),
+                fetcher=store.fetch,
+            )
+
     def test_strict_benchmark_verifies_confirmation_input_lineage(self) -> None:
         result, resolved_run, store = build_benchmark_fixture()
         confirmation_build, confirmation_train, confirmation_evaluate = (

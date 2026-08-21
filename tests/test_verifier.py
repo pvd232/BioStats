@@ -11,6 +11,7 @@ from pydantic import TypeAdapter
 from mantra_provenance.models_v4 import (
     CONTINUATION_STATE,
     MODEL_PARAMETERS,
+    PREDICTIONS,
     ArtifactPointer,
     ArtifactPointerRef,
     BenchmarkSpec,
@@ -893,6 +894,26 @@ class RunPlanRelationshipTests(unittest.TestCase):
             benchmark,
             {"train": train, "evaluate": evaluation},
         )
+
+        wrong_artifact = next(iter(evaluation.artifacts.values())).model_copy(
+            update={
+                "path": (
+                    f"{RUN_ROOT}/artifacts/evaluations/other/"
+                    "predictions.parquet"
+                )
+            }
+        )
+        wrong_artifact_evaluation = evaluation.model_copy(
+            update={"artifacts": {PREDICTIONS: wrong_artifact}}
+        )
+        with self.assertRaisesRegex(VerificationError, "benchmark ID"):
+            verify_run_plan_relationships(
+                run,
+                experiment,
+                variant,
+                benchmark,
+                {"train": train, "evaluate": wrong_artifact_evaluation},
+            )
 
         other_train = train_spec()
         wrong_evaluation_payload = evaluation.model_dump(mode="python")

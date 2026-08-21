@@ -1124,8 +1124,24 @@ def verify_run_result(
     plan = verify_run_plan(resolved_run, fetcher=fetcher)
     all_measurements: list[Measurement] = []
     successful_stages: dict[StageId, ResolvedBaseSpec] = {}
+    attempt_file_snapshots: set[tuple[str, str, str]] = set()
 
     for attempt in resolved_run.attempts:
+        current_attempt_file_snapshots = {
+            (
+                reference.stored_at.repository,
+                reference.stored_at.commit,
+                reference.stored_at.repo_type,
+            )
+            for reference in (*attempt.measurement_files, *attempt.log_files)
+            if isinstance(reference.stored_at, HuggingFaceFileRef)
+        }
+        if attempt_file_snapshots & current_attempt_file_snapshots:
+            raise VerificationError(
+                "run attempts must use distinct measurement and log snapshots"
+            )
+        attempt_file_snapshots.update(current_attempt_file_snapshots)
+
         complete = attempt.status == "succeeded"
         verified_stages = verify_attempt_stages(
             attempt,
@@ -1582,6 +1598,33 @@ def verify_benchmark_result(
     if original_snapshots & confirmation_snapshots:
         raise VerificationError(
             "benchmark confirmation must use new stage-result snapshots"
+        )
+
+    original_attempt_file_snapshots = {
+        (
+            reference.stored_at.repository,
+            reference.stored_at.commit,
+            reference.stored_at.repo_type,
+        )
+        for attempt in resolved_run.attempts
+        for reference in (*attempt.measurement_files, *attempt.log_files)
+        if isinstance(reference.stored_at, HuggingFaceFileRef)
+    }
+    confirmation_attempt_file_snapshots = {
+        (
+            reference.stored_at.repository,
+            reference.stored_at.commit,
+            reference.stored_at.repo_type,
+        )
+        for reference in (
+            *result.confirmation.measurement_files,
+            *result.confirmation.log_files,
+        )
+        if isinstance(reference.stored_at, HuggingFaceFileRef)
+    }
+    if original_attempt_file_snapshots & confirmation_attempt_file_snapshots:
+        raise VerificationError(
+            "benchmark confirmation must use a new measurement and log snapshot"
         )
 
     confirmation_stages = verify_attempt_stages(

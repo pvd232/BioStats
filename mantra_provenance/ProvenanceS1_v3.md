@@ -524,26 +524,9 @@ s_k^{(1)}
 s_k^{(T_k)}.
 $$
 
-The complete training-stage dependency is:
-
-$$
-q
-\longrightarrow
-\boldsymbol{\omega}_q
-\longrightarrow
-\omega_k
-\longrightarrow
-E_{q,k}
-\ni
-e_k
-\longrightarrow
-U_{\alpha,\beta,q,t}
-\left(
-\omega_k,D_q,e_k,s_k^{(t)}
-\right)
-\longrightarrow
-s_k^{(t+1)}.
-$$
+The stage sequence $\boldsymbol{\omega}_q$ is a component of $q$.
+Its $k$th member $\omega_k$ is the fixed stage-specification argument of every
+transition in this training stage.
 
 ## 6. Estimator and strict reproducibility
 
@@ -1454,9 +1437,10 @@ Attempt IDs are unique and strictly increasing. Each attempt's
 `resolved_stages` is an ordered prefix of `RunSpec.stages`. Its stage snapshots
 are unique. Measurement-file storage locations and log-file storage locations
 are unique and disjoint. Every measurement and log file of one attempt belongs
-to one immutable snapshot $D_i$. Attempts do not overlap in time, and no attempt
-follows a successful attempt. `ResolvedRun.completed_at` is at or after every
-attempt's completion time.
+to one immutable snapshot $D_i$. Distinct attempts use distinct $D_i$
+snapshots. Attempts do not overlap in time, and no attempt follows a successful
+attempt. `ResolvedRun.completed_at` is at or after every attempt's completion
+time.
 
 A successful attempt satisfies:
 
@@ -2483,10 +2467,11 @@ ResolvedBenchmarkSpecRef.stored_at.path
 
 The selected run attempt and `BenchmarkResult.confirmation` have distinct
 attempt IDs, `succeeded` status, and every stage declared by the shared
-`RunSpec`. `BenchmarkResult.completed_at` is at or after the completion times of
-the selected `ResolvedRun` and confirmation attempt. Every stored and same-run
-input in the confirmation attempt passes the input-lineage checks in Section
-21 before parity is evaluated.
+`RunSpec`. Their stage-result snapshots and attempt-file snapshots are
+distinct. `BenchmarkResult.completed_at` is at or after the completion times
+of the selected `ResolvedRun` and confirmation attempt. Every stored and
+same-run input in the confirmation attempt passes the input-lineage checks in
+Section 21 before parity is evaluated.
 
 Let their realized runtime states be $e,e'\in E_q$. Estimator parity requires:
 
@@ -2716,9 +2701,9 @@ For a `ResolvedRun`, the verifier:
 For a `BenchmarkResult`, the verifier additionally performs the benchmark-spec,
 confirmation-attempt, estimator-parity, prediction-parity, metric-criterion,
 and promotion relationships defined in Section 20. The confirmation uses a new
-attempt ID and stage-result snapshots disjoint from every attempt in the
-selected run. Its stored and same-run inputs pass the same lineage verification
-applied to the selected run.
+attempt ID, stage-result snapshots, and attempt-file snapshot disjoint from
+every attempt in the selected run. Its stored and same-run inputs pass the same
+lineage verification applied to the selected run.
 
 ## 22. Execution and publication sequence
 
