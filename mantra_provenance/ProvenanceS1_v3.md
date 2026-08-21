@@ -822,3 +822,208 @@ Tα,β,q(e) = θₖ*⁽ᵀₖ*⁾ = θ̂q
                 ▼
           Iα(θ̂q) = ĝq
 ```
+
+## 12. Protocol mapping
+
+The terminal checkpoint of every training stage is represented by two reserved
+artifacts:
+
+```python
+MODEL_PARAMETERS: ArtifactName = "model_parameters"
+CONTINUATION_STATE: ArtifactName = "continuation_state"
+```
+
+The first artifact reconstructs $\theta_k^{(T_k)}$. The second reconstructs:
+
+$$
+\left(
+o_k^{(T_k)},
+r_k^{(T_k)},
+b_k^{(T_k)}
+\right).
+$$
+
+Together they reconstruct the single terminal checkpoint $s_k^{(T_k)}$.
+Additional artifact names identify auxiliary outputs of the same stage.
+
+### Training request
+
+`TrainSpec.artifacts` must contain both reserved names exactly once. A
+`TrainSpec` validator enforces:
+
+```python
+{
+    MODEL_PARAMETERS,
+    CONTINUATION_STATE,
+} <= set(train_spec.artifacts)
+```
+
+Each name maps to one `SingleFileArtifactSpec` or `BundleArtifactSpec`. The
+artifact loaders define how their verified files reconstruct the two checkpoint
+values.
+
+A training stage that continues from an earlier checkpoint declares two
+reserved inputs:
+
+```python
+CHECKPOINT_MODEL_INPUT: InputName = "checkpoint_model_parameters"
+CHECKPOINT_STATE_INPUT: InputName = "checkpoint_continuation_state"
+```
+
+The two inputs must occur together and must have the same input kind. For
+same-run continuation, they satisfy:
+
+```text
+TrainSpec.inputs[checkpoint_model_parameters]
+├── producer_stage_id = producer stage ID
+└── producer_artifact = model_parameters
+
+TrainSpec.inputs[checkpoint_continuation_state]
+├── producer_stage_id = producer stage ID
+└── producer_artifact = continuation_state
+```
+
+Their common `producer_stage_id` identifies the single checkpoint-producing
+stage. A training stage initialized without a prior checkpoint omits both
+reserved inputs.
+
+### Resolved stage result
+
+The `RunStageRef` at position $k$ identifies the exact `TrainSpec` $\omega_k$.
+The corresponding successful stage result satisfies:
+
+```text
+ResolvedStageRef.stage_id
+==
+RunStageRef.stage_id
+
+ResolvedTrainSpec.spec
+==
+TrainSpec loaded through RunStageRef.spec
+```
+
+The successful execution of $\omega_k$ publishes one stage-result snapshot:
+
+```text
+ResolvedStageRef
+├── stage_id
+├── snapshot
+└── resolved_spec
+    └── loads ResolvedTrainSpec
+        └── artifacts
+            ├── model_parameters
+            ├── continuation_state
+            └── auxiliary artifacts, when declared
+```
+
+The resolved artifact names satisfy:
+
+```text
+keys(ResolvedTrainSpec.spec.artifacts)
+==
+keys(ResolvedTrainSpec.artifacts)
+```
+
+`ResolvedStageRef.snapshot` identifies the immutable commit containing the
+resolved stage spec and every file reached through its resolved artifacts. The
+executor adds the stage to `RunAttempt.resolved_stages` after that complete
+snapshot has been published and verified.
+
+### Continuation
+
+For same-run continuation from $\omega_k$ to $\omega_\ell$, the external
+verifier requires $k<\ell$ and:
+
+```text
+ResolvedTrainSpec.inputs[checkpoint_model_parameters].producer
+==
+ResolvedTrainSpec.inputs[checkpoint_continuation_state].producer
+==
+ResolvedStageRef for ωₖ
+```
+
+The verifier retrieves the producer's resolved spec, selects the two reserved
+artifacts, and verifies every file and loader identity. The replay executor
+invokes the loaders. Their returned values satisfy:
+
+$$
+L_{a_\theta}
+\left(
+F_k(a_\theta)
+\right)
+=
+\theta_k^{(T_k)},
+$$
+
+and:
+
+$$
+L_{a_c}
+\left(
+F_k(a_c)
+\right)
+=
+\left(
+o_k^{(T_k)},
+r_k^{(T_k)},
+b_k^{(T_k)}
+\right).
+$$
+
+The executor assembles the initial state of $\omega_\ell$ from those values:
+
+$$
+s_\ell^{(0)}
+=
+s_k^{(T_k)}.
+$$
+
+For stored continuation from an earlier run, both `ArtifactPointer` records
+must select the same resolved run, successful attempt, and producer stage. One
+pointer selects `model_parameters`; the other selects `continuation_state`.
+
+### Estimator selection
+
+`RunSpec.estimator` must select the `model_parameters` artifact of a training
+stage. The verifier loads the selected producer spec, confirms its `train`
+kind, and verifies the artifact files and loader identity. The replay executor
+invokes the loader and obtains:
+
+```text
+RunSpec.estimator.artifact_name
+==
+model_parameters
+
+RunSpec.estimator.stage_id
+==
+producer ResolvedStageRef.stage_id
+```
+
+$$
+\widehat{\theta}_q
+=
+\theta_{k_*}^{(T_{k_*})}.
+$$
+
+The enforcement path is:
+
+```text
+TrainSpec validator
+└── enforces one reserved checkpoint pair
+
+ResolvedTrainSpec validator
+└── enforces equality between declared and resolved artifact names
+
+external verifier
+├── verifies both artifacts belong to one producer snapshot
+├── verifies every referenced file
+├── verifies both artifact-loader identities
+└── verifies the continuation-input and estimator selectors
+
+replay executor
+├── invokes both artifact loaders
+└── reconstructs sₗ⁽⁰⁾ from sₖ⁽ᵀᵏ⁾
+
+parity check
+└── compares the resumed computation and terminal estimator exactly
+```
