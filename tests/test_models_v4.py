@@ -653,6 +653,14 @@ class YAMLLoadingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate YAML key"):
                 load_spec(path)
 
+    def test_unhashable_yaml_keys_are_rejected_as_validation_errors(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "unhashable.yaml"
+            path.write_text("? [kind, train]\n: invalid\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "mapping keys must be scalar"):
+                load_spec(path)
+
 
 if __name__ == "__main__":
     unittest.main()
