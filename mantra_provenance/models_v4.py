@@ -139,7 +139,7 @@ class HuggingFaceFileRef(ProtocolModel):
     """A file stored at an exact Hugging Face repository revision."""
 
     kind: Literal["huggingface"] = "huggingface"
-    repository: str = Field(min_length=1)
+    repository: NonEmptyStr
     commit: GitCommit
     path: RepoRelPath
     repo_type: Literal["model", "dataset", "space"]
@@ -259,12 +259,12 @@ class ArtifactPointer(ProtocolModel):
 
 
 class GCEMachineImageRef(ProtocolModel):
-    project: str = Field(min_length=1)
-    name: str = Field(min_length=1)
+    project: NonEmptyStr
+    name: NonEmptyStr
 
 
 class ResolvedGCEMachineImageRef(GCEMachineImageRef):
-    id: str = Field(min_length=1)
+    id: NonEmptyStr
 
 
 class CPUComputeSpec(ProtocolModel):
@@ -856,10 +856,11 @@ class StoredInputRef(ProtocolModel):
         if (
             len(materialization_parts) < 3
             or materialization_parts[:3] != pointer_scope
-            or self.path == self.pointer.path
+            or repo_file_paths_overlap(self.path, self.pointer.path)
         ):
             raise ValueError(
-                "stored input path must use the pointer's category and entity ID"
+                "stored input path must use the pointer's category and entity ID "
+                "and must not overlap the pointer file"
             )
         return self
 
@@ -930,6 +931,16 @@ class BaseSpec(ProtocolModel):
         if stage_path is None:
             raise ValueError("stage kind has no canonical path contract")
         source_category, operation, artifact_category = stage_path
+
+        checkpoint_artifacts = {MODEL_PARAMETERS, CONTINUATION_STATE}
+        if self.kind != "train" and checkpoint_artifacts & set(self.artifacts):
+            raise ValueError(
+                "model_parameters and continuation_state are reserved for "
+                "training stages"
+            )
+        if self.kind != "evaluate" and PREDICTIONS in self.artifacts:
+            raise ValueError("predictions is reserved for evaluation stages")
+
         script_parts = self.script.split("/")
         if (
             len(script_parts) != 5
@@ -1134,10 +1145,6 @@ class EvaluateSpec(InternalSpec):
 
         if PREDICTIONS not in self.artifacts:
             raise ValueError("evaluation must declare a predictions artifact")
-
-        forbidden_outputs = {MODEL_PARAMETERS, CONTINUATION_STATE} & set(self.artifacts)
-        if forbidden_outputs:
-            raise ValueError("evaluation cannot publish training checkpoint artifacts")
 
         return self
 

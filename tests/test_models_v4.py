@@ -282,6 +282,28 @@ class TrainingCheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "category and entity ID"):
             TrainSpec.model_validate(wrong_artifact_category)
 
+    def test_stored_input_path_cannot_overlap_its_pointer_file(self) -> None:
+        for path in (
+            "inputs/datasets/replogle",
+            "inputs/datasets/replogle/current.pointer.yaml/materialized",
+        ):
+            with self.subTest(path=path):
+                payload = train_payload()
+                payload["inputs"]["training_dataset"]["path"] = path
+
+                with self.assertRaisesRegex(ValidationError, "must not overlap"):
+                    TrainSpec.model_validate(payload)
+
+    def test_reserved_artifact_names_are_stage_specific(self) -> None:
+        payload = train_payload()
+        payload["artifacts"][PREDICTIONS] = artifact(
+            f"{RUN_ROOT}/artifacts/models/strand/predictions.parquet",
+            "predictions",
+        )
+
+        with self.assertRaisesRegex(ValidationError, "reserved for evaluation"):
+            TrainSpec.model_validate(payload)
+
     def test_train_requires_both_terminal_checkpoint_artifacts(self) -> None:
         payload = train_payload()
         del payload["artifacts"][CONTINUATION_STATE]
@@ -414,7 +436,7 @@ class EvaluationTests(unittest.TestCase):
             },
         }
 
-        with self.assertRaisesRegex(ValidationError, "checkpoint artifacts"):
+        with self.assertRaisesRegex(ValidationError, "reserved for training"):
             EvaluateSpec.model_validate(payload)
 
 
