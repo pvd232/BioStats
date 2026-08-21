@@ -188,7 +188,11 @@ def fetch_git_file_bytes(
             ) from exc
 
     with tempfile.TemporaryDirectory(prefix="mantra-provenance-git-") as checkout:
-        run_git("init", "--quiet", checkout)
+        init_arguments = ["init", "--quiet"]
+        if len(location.commit) == 64:
+            init_arguments.append("--object-format=sha256")
+        init_arguments.append(checkout)
+        run_git(*init_arguments)
         run_git("-C", checkout, "remote", "add", "origin", str(location.repository))
         run_git(
             "-C",

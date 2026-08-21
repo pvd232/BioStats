@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
+import tempfile
 import unittest
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -42,6 +45,7 @@ from mantra_provenance.models_v4 import (
 )
 from mantra_provenance.verifier import (
     VerificationError,
+    fetch_git_file_bytes,
     read_resolved_file,
     read_snapshot_file,
     verify_attempt_files,
@@ -306,6 +310,53 @@ def resolved_environment(lock_raw: bytes) -> dict:
 
 
 class FileVerificationTests(unittest.TestCase):
+    def test_git_retrieval_supports_sha256_repositories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "source"
+            subprocess.run(
+                ("git", "init", "--quiet", "--object-format=sha256", repository),
+                check=True,
+            )
+            subprocess.run(
+                ("git", "-C", repository, "config", "user.name", "Test Author"),
+                check=True,
+            )
+            subprocess.run(
+                (
+                    "git",
+                    "-C",
+                    repository,
+                    "config",
+                    "user.email",
+                    "test@example.com",
+                ),
+                check=True,
+            )
+            expected = b"sha256 repository file\n"
+            (repository / "record.txt").write_bytes(expected)
+            subprocess.run(
+                ("git", "-C", repository, "add", "record.txt"),
+                check=True,
+            )
+            subprocess.run(
+                ("git", "-C", repository, "commit", "--quiet", "-m", "record"),
+                check=True,
+            )
+            commit = subprocess.run(
+                ("git", "-C", repository, "rev-parse", "HEAD"),
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            location = GitFileRef.model_construct(
+                kind="git",
+                repository=repository.as_uri(),
+                commit=commit,
+                path="record.txt",
+            )
+
+            self.assertEqual(fetch_git_file_bytes(location), expected)
+
     def test_resolved_file_requires_matching_bytes(self) -> None:
         raw = b"exact bytes"
         reference = ResolvedFileRef(
