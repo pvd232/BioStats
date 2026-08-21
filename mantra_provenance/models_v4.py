@@ -799,13 +799,30 @@ InternalInputRef = Annotated[
 # ---------------------------------------------------------------------------
 
 
-class BaseSpec(ProtocolModel):
-    """
-    Execution request recorded before a stage runs.
+class SingleFileArtifactSpec(ProtocolModel):
+    """Declares one named artifact written as one file."""
 
-    Inputs describe where required files should come from. The output is the
-    repository-relative path where the command must write its one artifact.
-    """
+    kind: Literal["file"] = "file"
+    path: RepoRelPath
+    loader: ArtifactLoaderId
+
+
+class BundleArtifactSpec(ProtocolModel):
+    """Declares one named artifact written beneath one directory root."""
+
+    kind: Literal["bundle"] = "bundle"
+    path: RepoRelPath
+    loader: ArtifactLoaderId
+
+
+ArtifactSpec = Annotated[
+    SingleFileArtifactSpec | BundleArtifactSpec,
+    Field(discriminator="kind"),
+]
+
+
+class BaseSpec(ProtocolModel):
+    """Execution request recorded before a stage runs."""
 
     kind: str
     schema_version: Literal[1] = 1
@@ -815,7 +832,28 @@ class BaseSpec(ProtocolModel):
     environment: GCEEnvironmentSpec
     reproducibility: ReproducibilitySpec
 
-    output: RepoRelPath
+    artifacts: dict[ArtifactName, ArtifactSpec] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_artifact_paths(self) -> BaseSpec:
+        artifact_roots: dict[RepoRelPath, ArtifactName] = {}
+
+        for name, artifact in self.artifacts.items():
+            if repo_file_paths_overlap(artifact.path, self.script):
+                raise ValueError(
+                    f"artifact {name!r} path collides with the stage script"
+                )
+
+            for previous_path, previous_name in artifact_roots.items():
+                if repo_file_paths_overlap(artifact.path, previous_path):
+                    raise ValueError(
+                        f"artifact roots for {previous_name!r} and {name!r} "
+                        f"overlap: {previous_path} and {artifact.path}"
+                    )
+
+            artifact_roots[artifact.path] = name
+
+        return self
 
 
 class DownloadSpec(BaseSpec):
@@ -847,11 +885,12 @@ class InternalSpec(BaseSpec):
             if repo_file_paths_overlap(ref.path, self.script):
                 raise ValueError(f"input {name!r} path collides with the stage script")
 
-            if repo_file_paths_overlap(self.output, ref.path):
-                raise ValueError(f"stage output path collides with input {name!r}")
-
-        if repo_file_paths_overlap(self.output, self.script):
-            raise ValueError("stage output path collides with the stage script")
+            for artifact_name, artifact in self.artifacts.items():
+                if repo_file_paths_overlap(artifact.path, ref.path):
+                    raise ValueError(
+                        f"artifact {artifact_name!r} path collides with input "
+                        f"{name!r}"
+                    )
 
         return self
 
@@ -915,6 +954,34 @@ ResolvedInternalInputRef = Annotated[
 # Resolved execution records
 # ---------------------------------------------------------------------------
 
+
+class ResolvedSingleFileArtifact(ProtocolModel):
+    """Records the exact file representing one artifact."""
+
+    kind: Literal["file"] = "file"
+    file: SnapshotFileRef
+
+
+class ResolvedBundleMember(ProtocolModel):
+    """Records one exact file beneath a bundle artifact's directory root."""
+
+    relative_path: RepoRelPath
+    file: SnapshotFileRef
+
+
+class ResolvedBundleArtifact(ProtocolModel):
+    """Records every exact file representing one bundle artifact."""
+
+    kind: Literal["bundle"] = "bundle"
+    members: tuple[ResolvedBundleMember, ...] = Field(min_length=2)
+
+
+ResolvedArtifact = Annotated[
+    ResolvedSingleFileArtifact | ResolvedBundleArtifact,
+    Field(discriminator="kind"),
+]
+
+
 class ResolvedBaseSpec(ProtocolModel):
     """
     Record written after an execution has produced and hashed its output.
@@ -931,8 +998,7 @@ class ResolvedBaseSpec(ProtocolModel):
 
     command: tuple[str, ...] = Field(min_length=1)
 
-
-    output: ResolvedFileRef
+    artifacts: dict[ArtifactName, ResolvedArtifact] = Field(min_length=1)
     completed_at: AwareDatetime
 
     @model_validator(mode="after")
@@ -945,10 +1011,54 @@ class ResolvedBaseSpec(ProtocolModel):
                 "resolved source entrypoint must match the stage spec script path"
             )
 
-        if self.output.stored_at.path != self.spec.output:
+        if set(self.artifacts) != set(self.spec.artifacts):
             raise ValueError(
-                "resolved output path must match intended spec output path"
+                "resolved artifact names must match declared artifact names"
             )
+
+        for name, resolved_artifact in self.artifacts.items():
+            declared_artifact = self.spec.artifacts[name]
+
+            if resolved_artifact.kind != declared_artifact.kind:
+                raise ValueError(
+                    f"resolved artifact {name!r} kind must match its declaration"
+                )
+
+            if (
+                declared_artifact.kind == "file"
+                and resolved_artifact.kind == "file"
+            ):
+                if resolved_artifact.file.path != declared_artifact.path:
+                    raise ValueError(
+                        f"resolved artifact {name!r} path must match its declaration"
+                    )
+                continue
+
+            if (
+                declared_artifact.kind == "bundle"
+                and resolved_artifact.kind == "bundle"
+            ):
+                relative_paths = tuple(
+                    member.relative_path for member in resolved_artifact.members
+                )
+                if len(set(relative_paths)) != len(relative_paths):
+                    raise ValueError(
+                        f"resolved artifact {name!r} member paths must be unique"
+                    )
+                if relative_paths != tuple(sorted(relative_paths)):
+                    raise ValueError(
+                        f"resolved artifact {name!r} members must use canonical order"
+                    )
+
+                for member in resolved_artifact.members:
+                    expected_path = (
+                        f"{declared_artifact.path}/{member.relative_path}"
+                    )
+                    if member.file.path != expected_path:
+                        raise ValueError(
+                            f"resolved artifact {name!r} member path must equal "
+                            "its declared bundle root plus relative path"
+                        )
 
         resolved_image = self.environment.machine_image
         requested_image = self.spec.environment.machine_image
@@ -989,7 +1099,7 @@ class ResolvedDownloadSpec(ResolvedBaseSpec):
     Download receipt.
 
     The input remains the source URL because no artifact exists before the
-    download. The output is the first verified artifact created from that URL.
+    download. Its artifacts are the first verified values created from that URL.
     """
 
     kind: Literal["download"] = "download"  # pyright: ignore[reportIncompatibleVariableOverride]
