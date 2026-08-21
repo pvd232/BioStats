@@ -1633,7 +1633,158 @@ ResolvedBaseSpec.command == (
 )
 ```
 
-## 16. Protocol mapping
+## 16. Experiment, variant, replicate, and measurement records
+
+### Experiment and replicate declarations
+
+```python
+class FactorSpec(ProtocolModel):
+    factor_id: FactorId
+    levels: tuple[LevelId, ...] = Field(min_length=2)
+
+
+class ReplicateSpec(ProtocolModel):
+    replicate_id: ReplicateId
+    seed: int
+
+
+class ExperimentSpec(ProtocolModel):
+    schema_version: Literal[1] = 1
+    experiment_id: ExperimentId
+    factors: tuple[FactorSpec, ...]
+    variant_ids: tuple[VariantId, ...] = Field(min_length=1)
+    replicates: tuple[ReplicateSpec, ...] = Field(min_length=1)
+    metric_ids: tuple[MetricId, ...]
+```
+
+Factor IDs are unique. Level IDs are unique within each factor. Variant IDs,
+replicate IDs, replicate seeds, and metric IDs are unique within the
+experiment.
+
+The experiment file and its variant files occur at:
+
+```text
+experiments/<experiment_id>/spec.yaml
+experiments/<experiment_id>/variants/<variant_id>.spec.yaml
+```
+
+`RunSpec.source` identifies the exact repository revision containing these
+files.
+
+### Variant declaration
+
+```python
+class BuildVariantStageParams(ProtocolModel):
+    kind: Literal["build"] = "build"
+    stage_id: StageId
+    params: BuildParams
+
+
+class EmbedVariantStageParams(ProtocolModel):
+    kind: Literal["embed"] = "embed"
+    stage_id: StageId
+    params: EmbedParams
+
+
+class TrainVariantStageParams(ProtocolModel):
+    kind: Literal["train"] = "train"
+    stage_id: StageId
+    params: TrainParams
+
+
+VariantStageParams = Annotated[
+    BuildVariantStageParams
+    | EmbedVariantStageParams
+    | TrainVariantStageParams,
+    Field(discriminator="kind"),
+]
+
+
+class VariantSpec(ProtocolModel):
+    schema_version: Literal[1] = 1
+    experiment_id: ExperimentId
+    variant_id: VariantId
+    levels: dict[FactorId, LevelId]
+    stage_params: tuple[VariantStageParams, ...] = Field(min_length=1)
+```
+
+The factor names in `VariantSpec.levels` equal the factor names in the selected
+`ExperimentSpec`. Each selected level belongs to its factor's permitted level
+set. Stage IDs are unique within `VariantSpec.stage_params`.
+
+The verifier requires:
+
+```text
+RunSpec.experiment_id
+== ExperimentSpec.experiment_id
+== VariantSpec.experiment_id
+
+RunSpec.variant_id
+== VariantSpec.variant_id
+
+RunSpec.variant_id
+in ExperimentSpec.variant_ids
+
+set(VariantSpec.stage_params.stage_id)
+== set(stage IDs whose loaded stage specs contain params)
+
+VariantSpec.stage_params[stage_id].params
+== loaded stage spec.params
+```
+
+The selected level IDs state the experimental assignment. The typed parameter
+records state how the selected variant is implemented by its stage specs.
+
+### Seed authority
+
+`RunSpec.replicate_id` selects one `ReplicateSpec`. Its seed is the run's global
+seed:
+
+```text
+RunSpec.seed
+== selected ReplicateSpec.seed
+== ζq
+```
+
+The executor applies this value before every stage. Section 15 defines the
+corresponding `ExecutionContext.randomness` equalities.
+
+### Measurements
+
+```python
+class Measurement(ProtocolModel):
+    run_id: RunId
+    attempt_id: int = Field(ge=1)
+    stage_id: StageId
+    metric_id: MetricId
+    value: float = Field(allow_inf_nan=False)
+    measured_at: AwareDatetime
+    epoch: int | None = Field(default=None, ge=0)
+    step: int | None = Field(default=None, ge=0)
+```
+
+Each file in `RunAttempt.measurement_files` contains `Measurement` rows. For
+every row, the verifier requires:
+
+```text
+Measurement.run_id
+== RunSpec.run_id
+
+Measurement.attempt_id
+== containing RunAttempt.attempt_id
+
+Measurement.stage_id
+in completed stage IDs of that attempt
+
+Measurement.metric_id
+in ExperimentSpec.metric_ids
+
+RunAttempt.started_at
+<= Measurement.measured_at
+<= RunAttempt.completed_at
+```
+
+## 17. Protocol mapping
 
 The terminal checkpoint of every training stage is represented by two reserved
 artifacts:
