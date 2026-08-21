@@ -420,6 +420,12 @@ class FactorSpec(ProtocolModel):
     factor_id: FactorId
     levels: tuple[LevelId, ...] = Field(min_length=2)
 
+    @model_validator(mode="after")
+    def validate_unique_levels(self) -> FactorSpec:
+        if len(set(self.levels)) != len(self.levels):
+            raise ValueError("level IDs must be unique within a factor")
+        return self
+
 
 class ReplicateSpec(ProtocolModel):
     replicate_id: ReplicateId
@@ -448,18 +454,14 @@ class ExperimentSpec(ProtocolModel):
         if len(set(replicate_ids)) != len(replicate_ids):
             raise ValueError("replicate IDs must be unique")
 
+        replicate_seeds = tuple(replicate.seed for replicate in self.replicates)
+        if len(set(replicate_seeds)) != len(replicate_seeds):
+            raise ValueError("replicate seeds must be unique")
+
         if len(set(self.metric_ids)) != len(self.metric_ids):
             raise ValueError("metric IDs must be unique")
 
         return self
-
-
-class VariantSpec(ProtocolModel):
-    schema_version: Literal[1] = 1
-    experiment_id: ExperimentId
-    variant_id: VariantId
-
-    levels: dict[FactorId, LevelId]
 
 
 # ---------------------------------------------------------------------------
@@ -1027,6 +1029,54 @@ class EvaluateSpec(InternalSpec):
                 "evaluation cannot publish training checkpoint artifacts"
             )
 
+        return self
+
+
+class BuildVariantStageParams(ProtocolModel):
+    kind: Literal["build"] = "build"
+    stage_id: StageId
+    params: BuildParams
+
+
+class EmbedVariantStageParams(ProtocolModel):
+    kind: Literal["embed"] = "embed"
+    stage_id: StageId
+    params: EmbedParams
+
+
+class TrainVariantStageParams(ProtocolModel):
+    kind: Literal["train"] = "train"
+    stage_id: StageId
+    params: TrainParams
+
+
+class EvaluateVariantStageParams(ProtocolModel):
+    kind: Literal["evaluate"] = "evaluate"
+    stage_id: StageId
+    params: EvaluateParams
+
+
+VariantStageParams = Annotated[
+    BuildVariantStageParams
+    | EmbedVariantStageParams
+    | TrainVariantStageParams
+    | EvaluateVariantStageParams,
+    Field(discriminator="kind"),
+]
+
+
+class VariantSpec(ProtocolModel):
+    schema_version: Literal[1] = 1
+    experiment_id: ExperimentId
+    variant_id: VariantId
+    levels: dict[FactorId, LevelId]
+    stage_params: tuple[VariantStageParams, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_unique_stage_ids(self) -> VariantSpec:
+        stage_ids = tuple(stage.stage_id for stage in self.stage_params)
+        if len(set(stage_ids)) != len(stage_ids):
+            raise ValueError("variant stage IDs must be unique")
         return self
 
 
