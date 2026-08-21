@@ -1114,6 +1114,59 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(VerificationError, "SHA-256 mismatch"):
             verify_run_result(resolved_run, fetcher=store.fetch)
 
+    def test_run_rejects_stage_snapshot_reused_by_a_retry(self) -> None:
+        resolved_run, store, _ = build_complete_fixture()
+        successful_attempt = resolved_run.attempts[0].model_copy(
+            update={"attempt_id": 2}
+        )
+        failed_attempt = RunAttempt(
+            attempt_id=1,
+            status="failed",
+            started_at=datetime(2026, 8, 20, 19, tzinfo=UTC),
+            completed_at=datetime(2026, 8, 20, 20, tzinfo=UTC),
+            resolved_stages=(successful_attempt.resolved_stages[0],),
+            measurement_files=(),
+            log_files=(),
+            failure_reason="retry required",
+        )
+        retried_run = resolved_run.model_copy(
+            update={
+                "attempts": (failed_attempt, successful_attempt),
+                "successful_attempt_id": 2,
+            }
+        )
+
+        with self.assertRaisesRegex(VerificationError, "stage-result snapshots"):
+            verify_run_result(retried_run, fetcher=store.fetch)
+
+    def test_run_rejects_attempt_file_snapshot_reused_by_a_retry(self) -> None:
+        resolved_run, store, _ = build_complete_fixture()
+        successful_attempt = resolved_run.attempts[0].model_copy(
+            update={"attempt_id": 2}
+        )
+        failed_attempt = RunAttempt(
+            attempt_id=1,
+            status="failed",
+            started_at=datetime(2026, 8, 20, 19, tzinfo=UTC),
+            completed_at=datetime(2026, 8, 20, 20, tzinfo=UTC),
+            resolved_stages=(),
+            measurement_files=successful_attempt.measurement_files,
+            log_files=(),
+            failure_reason="retry required",
+        )
+        retried_run = resolved_run.model_copy(
+            update={
+                "attempts": (failed_attempt, successful_attempt),
+                "successful_attempt_id": 2,
+            }
+        )
+
+        with self.assertRaisesRegex(
+            VerificationError,
+            "measurement and log snapshots",
+        ):
+            verify_run_result(retried_run, fetcher=store.fetch)
+
     def test_strict_benchmark_passes_two_execution_verification(self) -> None:
         result, _, store = build_benchmark_fixture()
 

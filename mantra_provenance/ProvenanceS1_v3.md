@@ -1437,10 +1437,10 @@ Attempt IDs are unique and strictly increasing. Each attempt's
 `resolved_stages` is an ordered prefix of `RunSpec.stages`. Its stage snapshots
 are unique. Measurement-file storage locations and log-file storage locations
 are unique and disjoint. Every measurement and log file of one attempt belongs
-to one immutable snapshot $D_i$. Distinct attempts use distinct $D_i$
-snapshots. Attempts do not overlap in time, and no attempt follows a successful
-attempt. `ResolvedRun.completed_at` is at or after every attempt's completion
-time.
+to one immutable snapshot $D_i$. Distinct attempts use distinct stage-result
+snapshots and distinct $D_i$ snapshots. Attempts do not overlap in time, and no
+attempt follows a successful attempt. `ResolvedRun.completed_at` is at or after
+every attempt's completion time.
 
 A successful attempt satisfies:
 

@@ -1124,9 +1124,24 @@ def verify_run_result(
     plan = verify_run_plan(resolved_run, fetcher=fetcher)
     all_measurements: list[Measurement] = []
     successful_stages: dict[StageId, ResolvedBaseSpec] = {}
+    stage_result_snapshots: set[tuple[str, str, str]] = set()
     attempt_file_snapshots: set[tuple[str, str, str]] = set()
 
     for attempt in resolved_run.attempts:
+        current_stage_result_snapshots = {
+            (
+                stage.snapshot.repository,
+                stage.snapshot.commit,
+                stage.snapshot.repo_type,
+            )
+            for stage in attempt.resolved_stages
+        }
+        if stage_result_snapshots & current_stage_result_snapshots:
+            raise VerificationError(
+                "run attempts must use distinct stage-result snapshots"
+            )
+        stage_result_snapshots.update(current_stage_result_snapshots)
+
         current_attempt_file_snapshots = {
             (
                 reference.stored_at.repository,
@@ -1142,6 +1157,7 @@ def verify_run_result(
             )
         attempt_file_snapshots.update(current_attempt_file_snapshots)
 
+    for attempt in resolved_run.attempts:
         complete = attempt.status == "succeeded"
         verified_stages = verify_attempt_stages(
             attempt,
