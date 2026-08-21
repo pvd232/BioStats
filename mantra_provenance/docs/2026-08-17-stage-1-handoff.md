@@ -1,5 +1,11 @@
 # MANTRA Provenance Stage 1 Handoff — 2026-08-17
 
+> Historical handoff: this document records the implementation state on
+> 2026-08-17. The active contract is
+> [ProvenanceS1_v3.md](../ProvenanceS1_v3.md), and the active package interface
+> is documented in the [package README](../README.md). The manifest-based steps
+> below belong to the earlier contract recorded here.
+
 ## Current position
 
 Stage 1 external verification is complete through Step 15.5. The next task is
