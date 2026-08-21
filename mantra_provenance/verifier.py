@@ -9,6 +9,7 @@ import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 import yaml
 from huggingface_hub import hf_hub_download
@@ -17,6 +18,7 @@ from pydantic import TypeAdapter, ValidationError
 from .ids import InputName, StageId
 from .models_v4 import (
     ArtifactPointer,
+    ArtifactSpec,
     BaseSpec,
     BenchmarkSpec,
     EvaluateSpec,
@@ -263,6 +265,54 @@ def verify_snapshot_artifact(
         for reference in references
     )
     return VerifiedArtifact(artifact=artifact, files=files)
+
+
+def load_verified_artifact(
+    run: RunSpec,
+    declaration: ArtifactSpec,
+    artifact: VerifiedArtifact,
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> object:
+    """Materialize verified files and reconstruct one artifact with its loader."""
+    retrieve = fetch_storage_bytes if fetcher is None else fetcher
+    loader_location = GitFileRef(
+        repository=run.source.repository,
+        commit=run.source.commit,
+        path=f"src/mantra/artifact_loaders/{declaration.loader}.py",
+    )
+    loader_raw = retrieve(loader_location)
+
+    module = ModuleType(f"mantra_artifact_loader_{declaration.loader}")
+    module.__file__ = str(loader_location.path)
+    try:
+        exec(compile(loader_raw, module.__file__, "exec"), module.__dict__)
+    except Exception as exc:
+        raise VerificationError(
+            f"artifact loader {declaration.loader!r} could not be loaded"
+        ) from exc
+
+    load = getattr(module, "load", None)
+    if not callable(load):
+        raise VerificationError(
+            f"artifact loader {declaration.loader!r} does not define load(path)"
+        )
+
+    with tempfile.TemporaryDirectory(prefix="mantra-artifact-") as directory:
+        root = Path(directory)
+        for verified_file in artifact.files:
+            materialized = root / verified_file.reference.path
+            materialized.parent.mkdir(parents=True, exist_ok=True)
+            materialized.write_bytes(verified_file.content)
+
+        artifact_path = root / declaration.path
+        try:
+            return load(artifact_path)
+        except Exception as exc:
+            raise VerificationError(
+                f"artifact loader {declaration.loader!r} could not reconstruct "
+                "the verified artifact"
+            ) from exc
 
 
 def verify_resolved_run_file(
@@ -724,10 +774,16 @@ def verify_resolved_stages(
                 "the run plan"
             )
 
-        for artifact in resolved_spec.artifacts.values():
-            verify_snapshot_artifact(
+        for artifact_name, artifact in resolved_spec.artifacts.items():
+            verified_artifact = verify_snapshot_artifact(
                 stage_reference,
                 artifact,
+                fetcher=fetcher,
+            )
+            load_verified_artifact(
+                run,
+                stage_spec.artifacts[artifact_name],
+                verified_artifact,
                 fetcher=fetcher,
             )
 

@@ -373,6 +373,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
         lock_raw = b"lockfile"
         model_raw = b"model parameters"
         continuation_raw = b"optimizer rng sampler"
+        loader_raw = b"def load(path):\n    return path.read_bytes()\n"
 
         resolved = ResolvedTrainSpec(
             spec=spec,
@@ -446,6 +447,8 @@ class RunAndStageVerificationTests(unittest.TestCase):
             "uv.lock": lock_raw,
             "artifacts/train/model_parameters.safetensors": model_raw,
             "artifacts/train/continuation_state.pt": continuation_raw,
+            "src/mantra/artifact_loaders/model_parameters.py": loader_raw,
+            "src/mantra/artifact_loaders/continuation_state.py": loader_raw,
         }
 
         verified = verify_resolved_stages(
