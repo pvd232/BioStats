@@ -2543,3 +2543,109 @@ For a `ResolvedRun`, the verifier:
 For a `BenchmarkResult`, the verifier additionally performs the benchmark-spec,
 confirmation-attempt, estimator-parity, prediction-parity, metric-criterion,
 and promotion relationships defined in Section 20.
+
+## 22. Execution and publication sequence
+
+The protocol publishes immutable snapshots in dependency order:
+
+| Snapshot | Repository | Contents |
+|---|---|---|
+| A | Git | Source, experiment records, benchmark specs, loaders, lockfile, and existing promotion pointers. |
+| B | Git | One `RunSpec` and every stage-spec file identified by it. |
+| $C_{i,j}$ | Artifact repository | The resolved spec and every artifact file for stage $j$ of attempt $i$. |
+| $D_i$ | Artifact repository | Closed measurement and log files for attempt $i$. |
+| E | Artifact repository | The terminal `ResolvedRun`. |
+| F | Artifact repository | The optional `BenchmarkResult`. |
+| G | Git | Optional promotion pointers. |
+
+### Freeze the run plan
+
+1. Publish source snapshot A.
+2. Select the experiment, variant, replicate, optional benchmark, shared
+   environment, reproducibility controls, and ordered stage specs.
+3. Set `RunSpec.source` to snapshot A.
+4. Validate and serialize every stage spec.
+5. Calculate each stage-spec file's SHA-256 and byte count.
+6. Construct and validate `RunSpec` with its ordered `RunStageRef` records.
+7. Publish `RunSpec` and every stage-spec file together as snapshot B.
+8. Retrieve and verify every file in snapshot B.
+
+Snapshot B fixes $q$.
+
+### Execute one attempt
+
+For attempt $i$:
+
+1. Allocate its `attempt_id` and record `started_at`.
+2. Retrieve and verify snapshots A and B.
+3. Materialize every stored input.
+4. Execute stages in `RunSpec.stages` order.
+5. Resolve each same-run input through an earlier `ResolvedStageRef`.
+6. Apply `RunSpec.seed`, `RunSpec.reproducibility`, and the selected stage
+   environment.
+7. Construct and record the canonical command.
+8. Execute the stage script.
+9. Resolve every declared artifact and construct the resolved stage spec.
+10. Publish the resolved stage spec and every artifact file together as
+    snapshot $C_{i,j}$.
+11. Retrieve and verify the complete snapshot.
+12. Construct `ResolvedStageRef` from the returned snapshot commit and resolved
+    stage-spec file identity.
+13. Append the verified stage result to the current attempt.
+
+After the attempt reaches a terminal status:
+
+1. Record `completed_at`, status, and failure reason.
+2. Close its measurement and log files.
+3. Publish those files as snapshot $D_i$.
+4. Retrieve and verify every published file.
+5. Construct the complete `RunAttempt`.
+
+```text
+stage execution
+        │
+        ▼
+snapshot C_i,j
+├── resolved stage spec
+└── every file in every named artifact
+        │
+        ▼
+ResolvedStageRef
+├── snapshot → repository + commit C_i,j
+└── resolved_spec → path + SHA-256 + bytes
+```
+
+### Finalize the run
+
+1. Determine the terminal run status and `successful_attempt_id`.
+2. Construct `ResolvedRun` with the reference to snapshot B and every completed
+   `RunAttempt`.
+3. Publish `ResolvedRun` as snapshot E.
+4. Retrieve and verify the terminal record and its complete provenance graph.
+
+### Confirm a benchmark
+
+For a benchmark run:
+
+1. Execute one additional successful confirmation attempt against the same
+   snapshot B.
+2. Publish and verify its stage-result snapshots $C_{i,j}$ and attempt files
+   $D_i$.
+3. Compare estimator and prediction artifacts with the successful attempt in
+   snapshot E.
+4. Check every benchmark metric criterion.
+5. Construct and publish `BenchmarkResult` as snapshot F.
+6. Retrieve and verify the benchmark result.
+
+### Promote an artifact
+
+Promotion constructs an `ArtifactPointer` selecting:
+
+```text
+ResolvedRun at snapshot E
++ StageArtifactRef
++ passed BenchmarkResult at snapshot F, when benchmark approval is required
+```
+
+The pointer is published under `inputs/` in snapshot G. A later source snapshot
+may select that pointer through a `StoredInputRef`.
