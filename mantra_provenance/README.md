@@ -14,8 +14,7 @@ benchmark confirmation.
 | [YAML loading](yaml_io.py) | Parses stage records and rejects duplicate mapping keys | `load_spec()`, `load_resolved_spec()` |
 | [examples](examples/provenance/) | Supplies loadable v4 stage and resolved-stage records | Download and build examples |
 | [identifiers](ids.py) | Defines run and human-readable identifier types | `RunId`, `HumanId` |
-| [serialization](serialization.py) | Produces deterministic JSON bytes and their SHA-256 | `canonical_json_bytes()`, `resolved_spec_sha256()` |
-| [package exports](__init__.py) | Exposes package modules and serialization helpers | `models_v4`, `canonical_json_bytes()` |
+| [package exports](__init__.py) | Exposes the active identifier and model modules | `ids`, `models_v4` |
 | [supporting documents](docs/) | Contains execution and GPU-residency explanations used by the project | Markdown documents and figures |
 | [archive](archive/) | Retains prior model drafts and protocol documents | Reference material |
 | [v1 protocol](ProvenanceS1.md)<br>[v2 protocol](ProvenanceS1_v2.md) | Retains earlier protocol specifications | Reference material |
