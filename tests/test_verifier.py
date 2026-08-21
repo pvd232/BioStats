@@ -35,6 +35,7 @@ from mantra_provenance.models_v4 import (
     RunStageRef,
     SnapshotFileRef,
     StageResultSnapshotRef,
+    StoredInputRef,
     TrainSpec,
     VariantSpec,
 )
@@ -425,6 +426,24 @@ class RunAndStageVerificationTests(unittest.TestCase):
                 fetcher=lambda location: documents[location.path],
             )
 
+    def test_distinct_stage_snapshots_may_reuse_artifact_paths(self) -> None:
+        first = train_spec()
+        second = train_spec()
+        run, documents = run_spec([("train", first), ("train_02", second)])
+        run_reference = ResolvedRunSpecRef(
+            sha256="f" * 64,
+            bytes=1,
+            stored_at=git_file(f"{RUN_ROOT}/spec.yaml"),
+        )
+
+        loaded = verify_stage_plan(
+            run,
+            run_reference,
+            fetcher=lambda location: documents[location.path],
+        )
+
+        self.assertEqual(set(loaded), {"train", "train_02"})
+
     def test_resolved_stage_checks_run_controls_and_snapshot_files(self) -> None:
         spec = train_spec()
         run, _ = run_spec([("train", spec)])
@@ -605,6 +624,71 @@ class RunAndStageVerificationTests(unittest.TestCase):
         self.assertEqual(len(measurements), 1)
         self.assertEqual(measurements[0].value, 0.1)
 
+        split_snapshot = attempt.model_copy(
+            update={
+                "log_files": (
+                    attempt.log_files[0].model_copy(
+                        update={
+                            "stored_at": attempt.log_files[0].stored_at.model_copy(
+                                update={"commit": "d" * 40}
+                            )
+                        }
+                    ),
+                )
+            }
+        )
+        with self.assertRaisesRegex(VerificationError, "one immutable snapshot"):
+            verify_attempt_files(
+                split_snapshot,
+                run,
+                experiment,
+                {"train": spec},
+                fetcher=lambda location: documents[location.path],
+            )
+
+    def test_failed_attempt_may_retain_log_for_interrupted_stage(self) -> None:
+        spec = train_spec()
+        run, _ = run_spec([("train", spec)])
+        log_raw = b"training failed\n"
+        attempt = RunAttempt(
+            attempt_id=1,
+            status="failed",
+            started_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+            completed_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
+            resolved_stages=(),
+            measurement_files=(),
+            log_files=(
+                ResolvedFileRef(
+                    sha256=sha256(log_raw),
+                    bytes=len(log_raw),
+                    stored_at=HuggingFaceFileRef(
+                        repository=HF_REPOSITORY,
+                        commit=SNAPSHOT_COMMIT,
+                        path=f"{RUN_ROOT}/logs/1.train.stderr.log",
+                        repo_type="dataset",
+                    ),
+                ),
+            ),
+            failure_reason="training process exited with status 1",
+        )
+        experiment = ExperimentSpec(
+            experiment_id="e001_strand",
+            factors=(),
+            variant_ids=("baseline",),
+            replicates=({"replicate_id": "replicate_01", "seed": 42},),
+            metric_ids=("training_loss",),
+        )
+
+        measurements = verify_attempt_files(
+            attempt,
+            run,
+            experiment,
+            {"train": spec},
+            fetcher=lambda _: log_raw,
+        )
+
+        self.assertEqual(measurements, ())
+
 
 class RunPlanRelationshipTests(unittest.TestCase):
     def test_variant_parameters_match_the_loaded_training_stage(self) -> None:
@@ -656,6 +740,65 @@ class RunPlanRelationshipTests(unittest.TestCase):
                 mismatched_variant,
                 None,
                 {"train": train},
+            )
+
+    def test_plan_files_belong_to_the_source_snapshot(self) -> None:
+        train = train_spec()
+        run, _ = run_spec([("train", train)])
+        experiment = ExperimentSpec(
+            experiment_id="e001_strand",
+            factors=(),
+            variant_ids=("baseline",),
+            replicates=({"replicate_id": "replicate_01", "seed": 42},),
+            metric_ids=("pearson_correlation",),
+        )
+        variant = VariantSpec(
+            experiment_id="e001_strand",
+            variant_id="baseline",
+            levels={},
+            stage_params=(
+                {"kind": "train", "stage_id": "train", "params": train.params},
+            ),
+        )
+
+        wrong_lockfile = run.model_copy(
+            update={
+                "environment": run.environment.model_copy(
+                    update={
+                        "lockfile": run.environment.lockfile.model_copy(
+                            update={"commit": "d" * 40}
+                        )
+                    }
+                )
+            }
+        )
+        with self.assertRaisesRegex(VerificationError, "source snapshot"):
+            verify_run_plan_relationships(
+                wrong_lockfile,
+                experiment,
+                variant,
+                None,
+                {"train": train},
+            )
+
+        input_ref = train.inputs["training_dataset"]
+        if not isinstance(input_ref, StoredInputRef):
+            self.fail("training_dataset must be a stored input")
+        wrong_input = input_ref.model_copy(
+            update={
+                "pointer": input_ref.pointer.model_copy(update={"commit": "d" * 40})
+            }
+        )
+        wrong_train = train.model_copy(
+            update={"inputs": {"training_dataset": wrong_input}}
+        )
+        with self.assertRaisesRegex(VerificationError, "source snapshot"):
+            verify_run_plan_relationships(
+                run,
+                experiment,
+                variant,
+                None,
+                {"train": wrong_train},
             )
 
     def test_benchmark_matches_evaluation_inputs_splits_and_metrics(self) -> None:
@@ -750,6 +893,43 @@ class RunPlanRelationshipTests(unittest.TestCase):
             benchmark,
             {"train": train, "evaluate": evaluation},
         )
+
+        other_train = train_spec()
+        wrong_evaluation_payload = evaluation.model_dump(mode="python")
+        wrong_evaluation_payload["inputs"]["model_parameters"][
+            "producer_stage_id"
+        ] = "other_train"
+        wrong_evaluation = EvaluateSpec.model_validate(wrong_evaluation_payload)
+        wrong_run, _ = run_spec(
+            [
+                ("train", train),
+                ("other_train", other_train),
+                ("evaluate", wrong_evaluation),
+            ]
+        )
+        wrong_run = wrong_run.model_copy(update={"benchmark_id": "replogle_strict"})
+        wrong_variant_payload = variant.model_dump(mode="python")
+        wrong_variant_payload["stage_params"] = (
+            *wrong_variant_payload["stage_params"],
+            {
+                "kind": "train",
+                "stage_id": "other_train",
+                "params": other_train.params,
+            },
+        )
+        wrong_variant = VariantSpec.model_validate(wrong_variant_payload)
+        with self.assertRaisesRegex(VerificationError, "run estimator"):
+            verify_run_plan_relationships(
+                wrong_run,
+                experiment,
+                wrong_variant,
+                benchmark,
+                {
+                    "train": train,
+                    "other_train": other_train,
+                    "evaluate": wrong_evaluation,
+                },
+            )
 
 
 class StoredInputSelectionTests(unittest.TestCase):

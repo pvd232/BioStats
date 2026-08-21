@@ -40,6 +40,8 @@ def validate_repo_rel_path(value: str) -> str:
         raise ValueError("expected nonempty repository-relative path")
     if "\\" in value:
         raise ValueError("expected POSIX repository-relative path")
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError("repository-relative path contains a control character")
     if value.startswith("/") or re.match(r"^[A-Za-z]:", value):
         raise ValueError("expected repository-relative path")
     if any(part in {"", ".", ".."} for part in value.split("/")):
@@ -158,11 +160,6 @@ StorageModel = GitFileRef | HuggingFaceFileRef
 
 StorageRef = Annotated[
     StorageModel,
-    Field(discriminator="kind"),
-]
-
-FileRef = Annotated[
-    RemoteFileRef | StorageModel,
     Field(discriminator="kind"),
 ]
 
@@ -394,51 +391,8 @@ class BenchmarkSpec(ProtocolModel):
 
 
 # ---------------------------------------------------------------------------
-# Experiment Specs
+# Experiment specs
 # ---------------------------------------------------------------------------
-
-"""
-Factors and levels
-→ describe the available experimental dimensions
-
-Variants
-→ explicitly select the combinations we actually want to test
-
-E.g., imagine the following ->
-
-factors:
-  - factor_id: aggregation
-    levels:
-      - dense
-      - low_rank
-      - attention
-
-  - factor_id: rank
-    levels:
-      - not_applicable
-      - rank_32
-      - rank_64
-
-  - factor_id: optimizer
-    levels:
-      - adamw
-      - lion
-
-  - factor_id: dropout
-    levels:
-      - dropout_0
-      - dropout_01
-
-The cartesian product would be 3 x 3 x 2 x 2 = 36 combinations. The plan
-declares four meaningful variants:
-
-variants:
-  - baseline
-  - low_rank_32
-  - low_rank_64
-  - attention_adamw
-
-"""
 
 
 class FactorSpec(ProtocolModel):
@@ -857,10 +811,11 @@ class StoredInputRef(ProtocolModel):
             len(materialization_parts) < 3
             or materialization_parts[:3] != pointer_scope
             or repo_file_paths_overlap(self.path, self.pointer.path)
+            or materialization_parts[-1].endswith(".pointer.yaml")
         ):
             raise ValueError(
                 "stored input path must use the pointer's category and entity ID "
-                "and must not overlap the pointer file"
+                "and must not use or overlap a pointer-file path"
             )
         return self
 
@@ -969,6 +924,11 @@ class BaseSpec(ProtocolModel):
                 raise ValueError(
                     f"artifact {name!r} path must use a run artifact category "
                     "and entity ID"
+                )
+
+            if self.kind != "evaluate" and parts[7] != script_parts[3]:
+                raise ValueError(
+                    f"artifact {name!r} entity ID must match the stage script"
                 )
 
             if repo_file_paths_overlap(artifact.path, self.script):
@@ -1089,6 +1049,13 @@ class TrainSpec(InternalSpec):
         if model_input.kind != state_input.kind:
             raise ValueError("checkpoint inputs must use the same input kind")
 
+        if model_input.kind == "stored" and state_input.kind == "stored":
+            if any(
+                input_ref.pointer.path.split("/")[1] != "models"
+                for input_ref in (model_input, state_input)
+            ):
+                raise ValueError("stored checkpoint inputs must use inputs/models")
+
         if model_input.kind == "future" and state_input.kind == "future":
             if model_input.producer_stage_id != state_input.producer_stage_id:
                 raise ValueError(
@@ -1121,6 +1088,8 @@ class EvaluateSpec(InternalSpec):
             raise ValueError("evaluation requires an evaluation_dataset input")
         if dataset_input.kind != "stored":
             raise ValueError("evaluation_dataset must be a stored input")
+        if dataset_input.pointer.path.split("/")[1] != "datasets":
+            raise ValueError("evaluation_dataset must use inputs/datasets")
 
         reserved_inputs = {EVALUATION_MODEL_INPUT, EVALUATION_DATASET_INPUT}
         if reserved_inputs & set(self.params.split_inputs):
@@ -1134,14 +1103,22 @@ class EvaluateSpec(InternalSpec):
             raise ValueError(f"evaluation split inputs are undeclared: {missing}")
 
         for split_name in self.params.split_inputs:
-            if self.inputs[split_name].kind != "stored":
+            split_input = self.inputs[split_name]
+            if split_input.kind != "stored":
                 raise ValueError(
                     f"evaluation split input {split_name!r} must be stored"
+                )
+            if split_input.pointer.path.split("/")[1] != "benchmarks":
+                raise ValueError(
+                    f"evaluation split input {split_name!r} must use "
+                    "inputs/benchmarks"
                 )
 
         if model_input.kind == "future":
             if model_input.producer_artifact != MODEL_PARAMETERS:
                 raise ValueError("same-run evaluation must consume model_parameters")
+        elif model_input.pointer.path.split("/")[1] != "models":
+            raise ValueError("stored evaluation model must use inputs/models")
 
         if PREDICTIONS not in self.artifacts:
             raise ValueError("evaluation must declare a predictions artifact")

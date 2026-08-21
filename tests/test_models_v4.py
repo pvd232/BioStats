@@ -245,6 +245,13 @@ class RuntimeInvariantTests(unittest.TestCase):
 
 
 class TrainingCheckpointTests(unittest.TestCase):
+    def test_repository_paths_reject_control_characters(self) -> None:
+        payload = train_payload()
+        payload["script"] = "src/mantra/models/strand/train.py\nother"
+
+        with self.assertRaisesRegex(ValidationError, "control character"):
+            TrainSpec.model_validate(payload)
+
     def test_stage_paths_use_protocol_roots(self) -> None:
         invalid_script = train_payload()
         invalid_script["script"] = "scripts/train.py"
@@ -286,13 +293,23 @@ class TrainingCheckpointTests(unittest.TestCase):
         for path in (
             "inputs/datasets/replogle",
             "inputs/datasets/replogle/current.pointer.yaml/materialized",
+            "inputs/datasets/replogle/other.pointer.yaml",
         ):
             with self.subTest(path=path):
                 payload = train_payload()
                 payload["inputs"]["training_dataset"]["path"] = path
 
-                with self.assertRaisesRegex(ValidationError, "must not overlap"):
+                with self.assertRaisesRegex(ValidationError, "must not"):
                     TrainSpec.model_validate(payload)
+
+    def test_artifact_entity_matches_stage_script_entity(self) -> None:
+        payload = train_payload()
+        payload["artifacts"][MODEL_PARAMETERS]["path"] = (
+            f"{RUN_ROOT}/artifacts/models/other/model_parameters.safetensors"
+        )
+
+        with self.assertRaisesRegex(ValidationError, "must match the stage script"):
+            TrainSpec.model_validate(payload)
 
     def test_reserved_artifact_names_are_stage_specific(self) -> None:
         payload = train_payload()
@@ -365,6 +382,24 @@ class TrainingCheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "one checkpoint-producing"):
             TrainSpec.model_validate(payload)
 
+    def test_stored_checkpoint_inputs_use_model_paths(self) -> None:
+        payload = train_payload()
+        payload["inputs"].update(
+            {
+                "checkpoint_model_parameters": stored_input(
+                    "inputs/priors/strand/model_parameters.safetensors",
+                    "inputs/priors/strand/model_parameters.pointer.yaml",
+                ),
+                "checkpoint_continuation_state": stored_input(
+                    "inputs/priors/strand/continuation_state.pt",
+                    "inputs/priors/strand/continuation_state.pointer.yaml",
+                ),
+            }
+        )
+
+        with self.assertRaisesRegex(ValidationError, "inputs/models"):
+            TrainSpec.model_validate(payload)
+
 
 class EvaluationTests(unittest.TestCase):
     def test_evaluation_requires_fixed_inputs_metrics_and_predictions(self) -> None:
@@ -401,6 +436,61 @@ class EvaluationTests(unittest.TestCase):
         )
 
         self.assertIn(PREDICTIONS, spec.artifacts)
+
+    def test_evaluation_inputs_use_role_specific_paths(self) -> None:
+        payload = {
+            "kind": "evaluate",
+            "script": "src/mantra/models/strand/evaluate.py",
+            "inputs": {
+                "model_parameters": stored_input(
+                    "inputs/priors/strand/model_parameters.safetensors",
+                    "inputs/priors/strand/current.pointer.yaml",
+                ),
+                "evaluation_dataset": stored_input(
+                    "inputs/datasets/replogle_test/dataset.h5ad",
+                    "inputs/datasets/replogle_test/current.pointer.yaml",
+                ),
+                "split": stored_input(
+                    "inputs/benchmarks/replogle/split.json",
+                    "inputs/benchmarks/replogle/split.pointer.yaml",
+                ),
+            },
+            "params": {
+                "metric_ids": ["pearson_correlation"],
+                "split_inputs": ["split"],
+            },
+            "artifacts": {
+                PREDICTIONS: artifact(
+                    f"{RUN_ROOT}/artifacts/evaluations/strand/predictions.parquet",
+                    "predictions",
+                )
+            },
+        }
+
+        with self.assertRaisesRegex(ValidationError, "inputs/models"):
+            EvaluateSpec.model_validate(payload)
+
+        payload["inputs"]["model_parameters"] = stored_input(
+            "inputs/models/strand/model_parameters.safetensors",
+            "inputs/models/strand/current.pointer.yaml",
+        )
+        payload["inputs"]["evaluation_dataset"] = stored_input(
+            "inputs/priors/replogle_test/dataset.h5ad",
+            "inputs/priors/replogle_test/current.pointer.yaml",
+        )
+        with self.assertRaisesRegex(ValidationError, "inputs/datasets"):
+            EvaluateSpec.model_validate(payload)
+
+        payload["inputs"]["evaluation_dataset"] = stored_input(
+            "inputs/datasets/replogle_test/dataset.h5ad",
+            "inputs/datasets/replogle_test/current.pointer.yaml",
+        )
+        payload["inputs"]["split"] = stored_input(
+            "inputs/datasets/replogle/split.json",
+            "inputs/datasets/replogle/split.pointer.yaml",
+        )
+        with self.assertRaisesRegex(ValidationError, "inputs/benchmarks"):
+            EvaluateSpec.model_validate(payload)
 
     def test_evaluation_rejects_training_checkpoint_outputs(self) -> None:
         payload = {

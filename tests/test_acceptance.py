@@ -638,7 +638,7 @@ def build_complete_fixture(
         artifact={"stage_id": "download", "artifact_name": "split"},
     )
     dataset_pointer_path = "inputs/datasets/toy/current.pointer.yaml"
-    split_pointer_path = "inputs/datasets/toy/test_split.pointer.yaml"
+    split_pointer_path = "inputs/benchmarks/toy/test_split.pointer.yaml"
     resolved_dataset_pointer = resolved_pointer(
         store,
         MAIN_SOURCE_COMMIT,
@@ -711,7 +711,7 @@ def build_complete_fixture(
             "test_split": {
                 "kind": "stored",
                 "pointer": resolved_split_pointer.stored_at,
-                "path": "inputs/datasets/toy/test_split.json",
+                "path": "inputs/benchmarks/toy/test_split.json",
             },
         },
         params={

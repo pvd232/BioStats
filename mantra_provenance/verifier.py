@@ -510,6 +510,29 @@ def verify_run_plan_relationships(
     stages: Mapping[StageId, BaseSpec],
 ) -> None:
     """Verify plan relationships spanning experiment, variant, and stages."""
+    def require_source_snapshot(location: GitFileRef, label: str) -> None:
+        if (
+            location.repository != run.source.repository
+            or location.commit != run.source.commit
+        ):
+            raise VerificationError(f"{label} must belong to the run source snapshot")
+
+    require_source_snapshot(run.environment.lockfile, "shared lockfile")
+
+    for stage_id, stage in stages.items():
+        if stage.environment is not None:
+            require_source_snapshot(
+                stage.environment.lockfile,
+                f"environment lockfile of stage {stage_id!r}",
+            )
+        if isinstance(stage, InternalSpec):
+            for input_name, input_ref in stage.inputs.items():
+                if isinstance(input_ref, StoredInputRef):
+                    require_source_snapshot(
+                        input_ref.pointer,
+                        f"stored input {input_name!r} of stage {stage_id!r}",
+                    )
+
     parameterized_stages = {
         stage_id: stage
         for stage_id, stage in stages.items()
@@ -552,6 +575,25 @@ def verify_run_plan_relationships(
         raise VerificationError("benchmark runs require exactly one evaluation stage")
 
     evaluation = evaluation_stages[0]
+    model_input = evaluation.inputs[EVALUATION_MODEL_INPUT]
+    if not isinstance(model_input, FutureInputRef):
+        raise VerificationError(
+            "benchmark evaluation model must select the run estimator"
+        )
+    if (
+        model_input.producer_stage_id != run.estimator.stage_id
+        or model_input.producer_artifact != run.estimator.artifact_name
+    ):
+        raise VerificationError(
+            "benchmark evaluation model must select the run estimator"
+        )
+
+    for artifact in evaluation.artifacts.values():
+        if artifact.path.split("/")[7] != benchmark.benchmark_id:
+            raise VerificationError(
+                "benchmark evaluation artifact entity must match the benchmark ID"
+            )
+
     dataset_input = evaluation.inputs["evaluation_dataset"]
     if not isinstance(dataset_input, StoredInputRef):
         raise VerificationError("benchmark evaluation dataset must be stored")
@@ -639,19 +681,6 @@ def verify_stage_plan(
                         f"stored input {input_name!r} of stage "
                         f"{stage.stage_id!r} is outside inputs"
                     )
-
-        for previous_stage_id, previous_spec in loaded_stages.items():
-            for artifact_name, artifact in spec.artifacts.items():
-                for previous_name, previous_artifact in previous_spec.artifacts.items():
-                    if repo_file_paths_overlap(
-                        artifact.path,
-                        previous_artifact.path,
-                    ):
-                        raise VerificationError(
-                            f"artifact paths for {previous_stage_id!r}/"
-                            f"{previous_name!r} and {stage.stage_id!r}/"
-                            f"{artifact_name!r} collide"
-                        )
 
         if isinstance(spec, InternalSpec):
             stored_inputs = tuple(
@@ -816,7 +845,7 @@ def verify_attempt_stages(
         ):
             raise VerificationError(
                 f"stage {stage_reference.stage_id!r} completion time falls outside "
-                "the successful attempt"
+                "its containing attempt"
             )
 
         if isinstance(resolved_spec, ResolvedDownloadSpec) and not (
@@ -956,7 +985,27 @@ def verify_attempt_files(
     fetcher: StorageFetcher | None = None,
 ) -> tuple[Measurement, ...]:
     """Verify an attempt's measurements and logs against their file identities."""
+    attempt_file_snapshots = {
+        (
+            reference.stored_at.repository,
+            reference.stored_at.commit,
+            reference.stored_at.repo_type,
+        )
+        for reference in (*attempt.measurement_files, *attempt.log_files)
+        if isinstance(reference.stored_at, HuggingFaceFileRef)
+    }
+    if len(attempt_file_snapshots) > 1:
+        raise VerificationError(
+            "attempt measurement and log files must use one immutable snapshot"
+        )
+
     completed_stage_ids = {stage.stage_id for stage in attempt.resolved_stages}
+    planned_stage_ids = tuple(stage.stage_id for stage in run.stages)
+    permitted_log_stage_ids = set(completed_stage_ids)
+    if attempt.status != "succeeded" and len(completed_stage_ids) < len(
+        planned_stage_ids
+    ):
+        permitted_log_stage_ids.add(planned_stage_ids[len(completed_stage_ids)])
     permitted_metrics = set(experiment.metric_ids)
     measurements: list[Measurement] = []
     root = run_root(run)
@@ -1057,7 +1106,7 @@ def verify_attempt_files(
             r"([a-z][a-z0-9_]*)\.(stdout|stderr)\.log$"
         )
         match = log_pattern.fullmatch(str(reference.stored_at.path))
-        if match is None or match.group(1) not in completed_stage_ids:
+        if match is None or match.group(1) not in permitted_log_stage_ids:
             raise VerificationError(
                 "log file path does not match its attempt and stage"
             )

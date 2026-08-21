@@ -47,6 +47,14 @@ The run plan $q$ fixes:
 - The estimator specification $\beta$.
 - The dataset selection $D_q$.
 
+The selected dataset is a member of the estimator's dataset space:
+
+$$
+D_q
+\in
+\mathcal{D}.
+$$
+
 The exact dataset artifacts selected by the stage inputs, together with the
 stage scripts and typed parameters that select samples, features, quality
 controls, and transformations, determine $D_q$.
@@ -365,7 +373,9 @@ s_k^{(0)}
 o_k^{(0)},
 r_k^{(0)},
 b_k^{(0)}
-\right).
+\right)
+\in
+\mathcal{S}_{k,0}.
 $$
 
 Here, $\theta_k^{(t)}$ contains every parameter and persistent model buffer
@@ -942,7 +952,7 @@ The records below use these shared types:
 | Type | Accepted value |
 |---|---|
 | `HumanId` | A lowercase identifier matching `^[a-z][a-z0-9_]*$`. |
-| `RepoRelPath` | A normalized POSIX path relative to the repository root. |
+| `RepoRelPath` | A normalized POSIX path relative to the repository root that contains no empty or dot segments, parent traversal, backslashes, or control characters. |
 | `SHA256` | A 64-character lowercase hexadecimal digest. |
 | `GitCommit` | A 40- or 64-character lowercase hexadecimal commit ID. |
 | `NonEmptyStr` | A string containing at least one character. |
@@ -1060,7 +1070,10 @@ experiments/<experiment_id>/runs/<variant_id>/<run_id>/artifacts/
 The artifact category is `datasets` for a download stage, `priors` for a build
 stage, `models` for an embed or train stage, and `evaluations` for an evaluate
 stage. A single-file artifact includes a filename after `<entity_id>`. A bundle
-root may equal the identity directory or a directory beneath it.
+root may equal the identity directory or a directory beneath it. For download,
+build, embed, and train stages, the artifact entity ID equals the entity ID in
+the stage entrypoint path. A benchmark evaluation uses its benchmark ID as the
+artifact entity ID.
 
 The stage entrypoints are:
 
@@ -1171,7 +1184,9 @@ BundleArtifactSpec.path / ResolvedBundleMember.relative_path
 
 Bundle-member paths are unique, pairwise non-overlapping, remain beneath the
 bundle root, and appear in canonical `relative_path` order. Artifact roots
-within one stage are pairwise non-overlapping.
+within one stage are pairwise non-overlapping. Artifact paths may recur in
+distinct stage-result snapshots because each snapshot has its own immutable
+commit.
 
 The verifier verifies every file in $F_j(a)$, materializes the file or
 directory, invokes the loader named by the corresponding `ArtifactSpec`, and
@@ -1284,6 +1299,8 @@ experiments/<experiment_id>/runs/<variant_id>/<run_id>/stages/<stage_id>/spec.ya
 
 The `RunSpec` file and the stage-spec files it identifies constitute $q$.
 The run-plan snapshot and `RunSpec.source` belong to one Git repository.
+The shared lockfile, each stage-override lockfile, and every stored-input
+pointer belong to the repository and commit identified by `RunSpec.source`.
 
 ### Artifact selection and promotion
 
@@ -1370,7 +1387,7 @@ StoredInputRef.pointer
 `StoredInputRef.path` identifies the local file path or bundle root supplied to
 the consuming stage. Its category and entity ID equal those in
 `StoredInputRef.pointer.path`. The materialization path and pointer-file path
-do not overlap.
+do not overlap, and the materialization path does not end in `.pointer.yaml`.
 
 A same-run input selects one artifact from an earlier stage:
 
@@ -1436,9 +1453,10 @@ class ResolvedRun(ProtocolModel):
 Attempt IDs are unique and strictly increasing. Each attempt's
 `resolved_stages` is an ordered prefix of `RunSpec.stages`. Its stage snapshots
 are unique. Measurement-file storage locations and log-file storage locations
-are unique and disjoint. Attempts do not overlap in time, and no attempt follows
-a successful attempt. `ResolvedRun.completed_at` is at or after every attempt's
-completion time.
+are unique and disjoint. Every measurement and log file of one attempt belongs
+to one immutable snapshot $D_i$. Attempts do not overlap in time, and no attempt
+follows a successful attempt. `ResolvedRun.completed_at` is at or after every
+attempt's completion time.
 
 A successful attempt satisfies:
 
@@ -1448,6 +1466,9 @@ A successful attempt satisfies:
 3. Every `ResolvedStageRef` identifies a verified stage-result snapshot.
 
 A failed, preempted, or cancelled attempt records a nonempty `failure_reason`.
+Its log files may identify completed stages and the next declared stage whose
+execution failed, was preempted, or was cancelled before producing a
+`ResolvedStageRef`. A successful attempt's logs identify its completed stages.
 
 A successful `ResolvedRun` identifies exactly one successful attempt through
 `successful_attempt_id`. A failed or cancelled `ResolvedRun` has no successful
@@ -2135,8 +2156,8 @@ TrainSpec.inputs[checkpoint_continuation_state]
 ```
 
 Their common `producer_stage_id` identifies the single checkpoint-producing
-stage. A training stage initialized without a prior checkpoint omits both
-reserved inputs.
+stage. Stored checkpoint inputs use `inputs/models`. A training stage
+initialized without a prior checkpoint omits both reserved inputs.
 
 ### Resolved stage result
 
@@ -2312,7 +2333,8 @@ in EvaluateSpec.artifacts
 
 The split-input names are unique and differ from `model_parameters` and
 `evaluation_dataset`. The evaluation dataset and every split input are
-`StoredInputRef` records.
+`StoredInputRef` records. The model, dataset, and split pointer paths use
+`inputs/models`, `inputs/datasets`, and `inputs/benchmarks`, respectively.
 
 The `model_parameters` input is a `FutureInputRef` or `StoredInputRef`. A
 same-run model input selects:
@@ -2399,6 +2421,12 @@ exactly one loaded stage spec has kind evaluate
 EvaluateSpec.inputs[evaluation_dataset].pointer
 == BenchmarkSpec.evaluation_dataset
 
+EvaluateSpec.inputs[model_parameters].producer_stage_id
+== RunSpec.estimator.stage_id
+
+EvaluateSpec.inputs[model_parameters].producer_artifact
+== RunSpec.estimator.artifact_name
+
 set(EvaluateSpec.params.split_inputs)
 == set(BenchmarkSpec.splits)
 
@@ -2407,6 +2435,9 @@ EvaluateSpec.inputs[split_name].pointer
 
 set(EvaluateSpec.params.metric_ids)
 == set(BenchmarkSpec.metrics.metric_id)
+
+every EvaluateSpec artifact entity ID
+== BenchmarkSpec.benchmark_id
 ```
 
 The benchmark executor completes one successful `ResolvedRun` and one separate
@@ -2545,13 +2576,15 @@ Starting from a `ResolvedRunSpecRef`, the verifier:
    metric, and benchmark equalities in Sections 16 and 20.
 5. Retrieves every stage-spec file identified by `RunSpec.stages` and checks
    its SHA-256 and byte count.
-6. Requires each stage spec, script, artifact root, and stored-input path to use
-   the canonical repository location defined in Section 23.
+6. Requires every lockfile and stored-input pointer to belong to
+   `RunSpec.source`, and requires each stage spec, script, artifact root, and
+   stored-input path to use the canonical repository location defined in
+   Section 23.
 7. Parses each file through the `Spec` union.
 8. Checks that every `FutureInputRef` selects an earlier stage and a declared
    producer artifact.
-9. Checks input, script, and artifact-path disjointness after resolving every
-   input path.
+9. Checks input, script, and within-stage artifact-path disjointness after
+   resolving every input path.
 10. Checks that `RunSpec.estimator` selects `model_parameters` from a training
    stage.
 
@@ -2634,6 +2667,11 @@ For a same-run input, the verifier:
 2. Loads its resolved stage spec.
 3. Selects `producer_artifact` from its artifact mapping.
 4. Verifies and materializes the complete artifact.
+
+For each attempt, the verifier also requires every measurement and log file to
+belong to one immutable snapshot $D_i$. Measurement rows identify completed
+stages. Log paths identify completed stages or the next interrupted stage of a
+non-successful attempt.
 
 ### Training-continuation verification
 
