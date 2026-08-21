@@ -12,7 +12,10 @@ from mantra_provenance.models_v4 import (
     CONTINUATION_STATE,
     MODEL_PARAMETERS,
     ArtifactPointerRef,
+    BenchmarkSpec,
     BuildSpec,
+    EvaluateSpec,
+    ExperimentSpec,
     GitFileRef,
     GitSource,
     HuggingFaceFileRef,
@@ -31,6 +34,7 @@ from mantra_provenance.models_v4 import (
     SnapshotFileRef,
     StageResultSnapshotRef,
     TrainSpec,
+    VariantSpec,
 )
 from mantra_provenance.verifier import (
     VerificationError,
@@ -39,6 +43,7 @@ from mantra_provenance.verifier import (
     verify_future_inputs,
     verify_resolved_run_file,
     verify_resolved_stages,
+    verify_run_plan_relationships,
     verify_stage_plan,
 )
 
@@ -451,6 +456,149 @@ class RunAndStageVerificationTests(unittest.TestCase):
         )
 
         self.assertEqual(verified["train"], resolved)
+
+
+class RunPlanRelationshipTests(unittest.TestCase):
+    def test_variant_parameters_match_the_loaded_training_stage(self) -> None:
+        train = train_spec()
+        run, _ = run_spec([("train", train)])
+        experiment = ExperimentSpec(
+            experiment_id="e001_strand",
+            factors=(),
+            variant_ids=("baseline",),
+            replicates=({"replicate_id": "replicate_01", "seed": 42},),
+            metric_ids=("pearson_correlation",),
+        )
+        variant = VariantSpec(
+            experiment_id="e001_strand",
+            variant_id="baseline",
+            levels={},
+            stage_params=(
+                {
+                    "kind": "train",
+                    "stage_id": "train",
+                    "params": train.params,
+                },
+            ),
+        )
+
+        verify_run_plan_relationships(
+            run,
+            experiment,
+            variant,
+            None,
+            {"train": train},
+        )
+
+        mismatched_variant = variant.model_copy(
+            update={
+                "stage_params": (
+                    variant.stage_params[0].model_copy(
+                        update={
+                            "params": train.params.model_copy(update={"epochs": 11})
+                        }
+                    ),
+                )
+            }
+        )
+        with self.assertRaisesRegex(VerificationError, "parameters do not match"):
+            verify_run_plan_relationships(
+                run,
+                experiment,
+                mismatched_variant,
+                None,
+                {"train": train},
+            )
+
+    def test_benchmark_matches_evaluation_inputs_splits_and_metrics(self) -> None:
+        train = train_spec()
+        evaluation = EvaluateSpec(
+            script="src/mantra/models/strand/evaluate.py",
+            inputs={
+                "model_parameters": {
+                    "kind": "future",
+                    "producer_stage_id": "train",
+                    "producer_artifact": MODEL_PARAMETERS,
+                },
+                "evaluation_dataset": {
+                    "kind": "stored",
+                    "pointer": artifact_pointer(
+                        "inputs/datasets/replogle_test.pointer.yaml"
+                    ),
+                    "path": "inputs/datasets/replogle_test.h5ad",
+                },
+                "perturbation_split": {
+                    "kind": "stored",
+                    "pointer": artifact_pointer(
+                        "inputs/benchmarks/replogle_split.pointer.yaml"
+                    ),
+                    "path": "inputs/benchmarks/replogle_split.json",
+                },
+            },
+            params={
+                "metric_ids": ["pearson_correlation"],
+                "split_inputs": ["perturbation_split"],
+            },
+            artifacts={
+                "predictions": {
+                    "kind": "file",
+                    "path": "artifacts/evaluate/predictions.parquet",
+                    "loader": "predictions",
+                }
+            },
+        )
+        run, _ = run_spec([("train", train), ("evaluate", evaluation)])
+        run = run.model_copy(update={"benchmark_id": "replogle_strict"})
+        experiment = ExperimentSpec(
+            experiment_id="e001_strand",
+            factors=(),
+            variant_ids=("baseline",),
+            replicates=({"replicate_id": "replicate_01", "seed": 42},),
+            metric_ids=("pearson_correlation",),
+        )
+        variant = VariantSpec(
+            experiment_id="e001_strand",
+            variant_id="baseline",
+            levels={},
+            stage_params=(
+                {
+                    "kind": "train",
+                    "stage_id": "train",
+                    "params": train.params,
+                },
+                {
+                    "kind": "evaluate",
+                    "stage_id": "evaluate",
+                    "params": evaluation.params,
+                },
+            ),
+        )
+        benchmark = BenchmarkSpec(
+            benchmark_id="replogle_strict",
+            evaluation_dataset=artifact_pointer(
+                "inputs/datasets/replogle_test.pointer.yaml"
+            ),
+            splits={
+                "perturbation_split": artifact_pointer(
+                    "inputs/benchmarks/replogle_split.pointer.yaml"
+                )
+            },
+            metrics=(
+                {
+                    "metric_id": "pearson_correlation",
+                    "comparison": "ge",
+                    "threshold": 0.8,
+                },
+            ),
+        )
+
+        verify_run_plan_relationships(
+            run,
+            experiment,
+            variant,
+            benchmark,
+            {"train": train, "evaluate": evaluation},
+        )
 
 
 class FutureInputVerificationTests(unittest.TestCase):

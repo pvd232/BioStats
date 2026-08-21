@@ -18,6 +18,8 @@ from .ids import InputName, StageId
 from .models_v4 import (
     ArtifactPointer,
     BaseSpec,
+    BenchmarkSpec,
+    EvaluateSpec,
     ExperimentSpec,
     FutureInputRef,
     GitFileRef,
@@ -42,6 +44,7 @@ from .models_v4 import (
     StageResultSnapshotRef,
     StorageModel,
     StoredInputRef,
+    TrainSpec,
     VariantSpec,
     repo_file_paths_overlap,
 )
@@ -78,6 +81,17 @@ class VerifiedInput:
     path: RepoRelPath
     artifact: ResolvedArtifact
     files: tuple[VerifiedSnapshotFile, ...]
+
+
+@dataclass(frozen=True)
+class VerifiedRunPlan:
+    """The connected records constituting one verified run plan."""
+
+    run: RunSpec
+    experiment: ExperimentSpec
+    variant: VariantSpec
+    benchmark: BenchmarkSpec | None
+    stages: dict[StageId, BaseSpec]
 
 
 def fetch_git_file_bytes(
@@ -338,6 +352,113 @@ def verify_experiment_and_variant(
     return experiment, variant
 
 
+def verify_benchmark_spec(
+    run: RunSpec,
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> BenchmarkSpec | None:
+    """Load the benchmark selected by a run, when one is selected."""
+    if run.benchmark_id is None:
+        return None
+
+    retrieve = fetch_storage_bytes if fetcher is None else fetcher
+    location = GitFileRef(
+        repository=run.source.repository,
+        commit=run.source.commit,
+        path=f"benchmarks/{run.benchmark_id}.spec.yaml",
+    )
+    try:
+        benchmark = BenchmarkSpec.model_validate(yaml.safe_load(retrieve(location)))
+    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+        raise VerificationError(
+            "benchmark file is not a valid BenchmarkSpec document"
+        ) from exc
+
+    if benchmark.benchmark_id != run.benchmark_id:
+        raise VerificationError("run and benchmark IDs do not match")
+    return benchmark
+
+
+def verify_run_plan_relationships(
+    run: RunSpec,
+    experiment: ExperimentSpec,
+    variant: VariantSpec,
+    benchmark: BenchmarkSpec | None,
+    stages: Mapping[StageId, BaseSpec],
+) -> None:
+    """Verify plan relationships spanning experiment, variant, and stages."""
+    parameterized_stages = {
+        stage_id: stage
+        for stage_id, stage in stages.items()
+        if hasattr(stage, "params")
+    }
+    variant_params = {stage.stage_id: stage for stage in variant.stage_params}
+
+    if set(variant_params) != set(parameterized_stages):
+        raise VerificationError(
+            "variant stage parameters must match all parameterized run stages"
+        )
+
+    for stage_id, stage in parameterized_stages.items():
+        selected = variant_params[stage_id]
+        if selected.kind != stage.kind or selected.params != stage.params:
+            raise VerificationError(
+                f"variant parameters do not match stage {stage_id!r}"
+            )
+
+    estimator_stage = stages.get(run.estimator.stage_id)
+    if not isinstance(estimator_stage, TrainSpec):
+        raise VerificationError("run estimator must select a training stage")
+
+    experiment_metrics = set(experiment.metric_ids)
+    for stage_id, stage in stages.items():
+        if not isinstance(stage, EvaluateSpec):
+            continue
+        if not set(stage.params.metric_ids) <= experiment_metrics:
+            raise VerificationError(
+                f"evaluation stage {stage_id!r} selects undeclared metrics"
+            )
+
+    if benchmark is None:
+        return
+
+    evaluation_stages = [
+        stage for stage in stages.values() if isinstance(stage, EvaluateSpec)
+    ]
+    if len(evaluation_stages) != 1:
+        raise VerificationError(
+            "benchmark runs require exactly one evaluation stage"
+        )
+
+    evaluation = evaluation_stages[0]
+    dataset_input = evaluation.inputs["evaluation_dataset"]
+    if not isinstance(dataset_input, StoredInputRef):
+        raise VerificationError("benchmark evaluation dataset must be stored")
+    if dataset_input.pointer != benchmark.evaluation_dataset:
+        raise VerificationError(
+            "evaluation dataset does not match the benchmark specification"
+        )
+
+    if set(evaluation.params.split_inputs) != set(benchmark.splits):
+        raise VerificationError(
+            "evaluation split names do not match the benchmark specification"
+        )
+    for split_name, pointer in benchmark.splits.items():
+        split_input = evaluation.inputs[split_name]
+        if not isinstance(split_input, StoredInputRef):
+            raise VerificationError(f"benchmark split {split_name!r} must be stored")
+        if split_input.pointer != pointer:
+            raise VerificationError(
+                f"evaluation split {split_name!r} does not match the benchmark"
+            )
+
+    benchmark_metric_ids = {criterion.metric_id for criterion in benchmark.metrics}
+    if set(evaluation.params.metric_ids) != benchmark_metric_ids:
+        raise VerificationError(
+            "evaluation metrics do not match the benchmark specification"
+        )
+
+
 def verify_stage_plan(
     run: RunSpec,
     run_file: ResolvedRunSpecRef,
@@ -438,6 +559,32 @@ def verify_stage_plan(
         loaded_stages[stage.stage_id] = spec
 
     return loaded_stages
+
+
+def verify_run_plan(
+    resolved_run: ResolvedRun,
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> VerifiedRunPlan:
+    """Retrieve and verify every record constituting a frozen run plan."""
+    run = verify_resolved_run_file(resolved_run, fetcher=fetcher)
+    experiment, variant = verify_experiment_and_variant(run, fetcher=fetcher)
+    benchmark = verify_benchmark_spec(run, fetcher=fetcher)
+    stages = verify_stage_plan(run, resolved_run.spec, fetcher=fetcher)
+    verify_run_plan_relationships(
+        run,
+        experiment,
+        variant,
+        benchmark,
+        stages,
+    )
+    return VerifiedRunPlan(
+        run=run,
+        experiment=experiment,
+        variant=variant,
+        benchmark=benchmark,
+        stages=stages,
+    )
 
 
 def verify_resolved_stages(
@@ -603,12 +750,11 @@ def verify_promoted_artifact(
             "artifact pointer run is not a valid ResolvedRun document"
         ) from exc
 
-    run = verify_resolved_run_file(resolved_run, fetcher=fetcher)
-    stage_specs = verify_stage_plan(run, resolved_run.spec, fetcher=fetcher)
+    verified_plan = verify_run_plan(resolved_run, fetcher=fetcher)
     resolved_stages = verify_resolved_stages(
         resolved_run,
-        run,
-        stage_specs,
+        verified_plan.run,
+        verified_plan.stages,
         fetcher=fetcher,
     )
 
