@@ -1692,10 +1692,17 @@ class TrainVariantStageParams(ProtocolModel):
     params: TrainParams
 
 
+class EvaluateVariantStageParams(ProtocolModel):
+    kind: Literal["evaluate"] = "evaluate"
+    stage_id: StageId
+    params: EvaluateParams
+
+
 VariantStageParams = Annotated[
     BuildVariantStageParams
     | EmbedVariantStageParams
-    | TrainVariantStageParams,
+    | TrainVariantStageParams
+    | EvaluateVariantStageParams,
     Field(discriminator="kind"),
 ]
 
@@ -1831,8 +1838,18 @@ class TrainSpec(InternalSpec):
     params: TrainParams
 
 
+class EvaluateParams(ProtocolModel):
+    metric_ids: tuple[MetricId, ...] = Field(min_length=1)
+    split_inputs: tuple[InputName, ...] = Field(min_length=1)
+
+
+class EvaluateSpec(InternalSpec):
+    kind: Literal["evaluate"] = "evaluate"
+    params: EvaluateParams
+
+
 Spec = Annotated[
-    DownloadSpec | BuildSpec | EmbedSpec | TrainSpec,
+    DownloadSpec | BuildSpec | EmbedSpec | TrainSpec | EvaluateSpec,
     Field(discriminator="kind"),
 ]
 ```
@@ -1897,11 +1914,17 @@ class ResolvedTrainSpec(ResolvedInternalSpec):
     spec: TrainSpec
 
 
+class ResolvedEvaluateSpec(ResolvedInternalSpec):
+    kind: Literal["evaluate"] = "evaluate"
+    spec: EvaluateSpec
+
+
 ResolvedSpec = Annotated[
     ResolvedDownloadSpec
     | ResolvedBuildSpec
     | ResolvedEmbedSpec
-    | ResolvedTrainSpec,
+    | ResolvedTrainSpec
+    | ResolvedEvaluateSpec,
     Field(discriminator="kind"),
 ]
 ```
@@ -1932,7 +1955,7 @@ keys(ResolvedBaseSpec.spec.artifacts)
 == keys(ResolvedBaseSpec.artifacts)
 ```
 
-## 18. Protocol mapping
+## 18. Training checkpoint mapping
 
 The terminal checkpoint of every training stage is represented by two reserved
 artifacts:
@@ -2136,3 +2159,84 @@ replay executor
 parity check
 └── compares the resumed computation and terminal estimator exactly
 ```
+
+## 19. Evaluation stage
+
+Evaluation applies a fitted prediction function to fixed evaluation inputs. It
+uses the same stage, input, artifact, snapshot, measurement, and runtime records
+defined above.
+
+The reserved names are:
+
+```python
+EVALUATION_MODEL_INPUT: InputName = "model_parameters"
+EVALUATION_DATASET_INPUT: InputName = "evaluation_dataset"
+PREDICTIONS: ArtifactName = "predictions"
+```
+
+An `EvaluateSpec` satisfies:
+
+```text
+model_parameters
+in EvaluateSpec.inputs
+
+evaluation_dataset
+in EvaluateSpec.inputs
+
+set(EvaluateSpec.params.split_inputs)
+is a subset of
+set(EvaluateSpec.inputs)
+
+predictions
+in EvaluateSpec.artifacts
+```
+
+The split-input names are unique and differ from `model_parameters` and
+`evaluation_dataset`. The evaluation dataset and every split input are
+`StoredInputRef` records.
+
+The `model_parameters` input is a `FutureInputRef` or `StoredInputRef`. A
+same-run model input selects:
+
+```text
+FutureInputRef.producer_artifact
+== model_parameters
+```
+
+A stored model input resolves through its `ArtifactPointer` to a
+`model_parameters` artifact. The evaluation dataset and every declared split
+are stored inputs selected before execution.
+
+The executor materializes every evaluation input as read-only. `EvaluateSpec`
+does not declare `model_parameters` or `continuation_state` as outputs. Its
+artifact mapping contains `predictions` and may contain additional evaluation
+outputs.
+
+```text
+model_parameters artifact
++ evaluation_dataset artifact
++ split artifacts
+        │
+        ▼
+    EvaluateSpec
+        │
+        ├── predictions artifact
+        └── Measurement rows
+```
+
+`EvaluateSpec.params.metric_ids` contains unique metric IDs and satisfies:
+
+```text
+set(EvaluateSpec.params.metric_ids)
+is a subset of
+set(ExperimentSpec.metric_ids)
+```
+
+Every measurement produced by the evaluation stage uses one of those metric
+IDs. `predictions` is verified through its resolved artifact and stage-result
+snapshot. Metric values remain `Measurement` records.
+
+The resolved record is `ResolvedEvaluateSpec`. It embeds the exact
+`EvaluateSpec`, resolves every input, records the selected environment and
+runtime state, and records the `predictions` artifact in the same snapshot as
+the resolved spec.
