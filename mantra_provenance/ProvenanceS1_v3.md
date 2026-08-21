@@ -2651,7 +2651,8 @@ For a stored input, the verifier:
    graph, including every completed stage input.
 3. Selects its successful attempt.
 4. Selects the producer `ResolvedStageRef` and named artifact.
-5. Verifies and materializes the complete artifact.
+5. Verifies the complete artifact, materializes it at `StoredInputRef.path`,
+   and invokes its loader at that path.
 6. For checkpoint inputs, requires both pointers to select one resolved run,
    one producer stage, `model_parameters`, and `continuation_state`.
 7. For a stored evaluation model, requires the pointer to select

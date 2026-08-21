@@ -32,6 +32,7 @@ from mantra_provenance.models_v4 import (
     ResolvedRun,
     ResolvedRunRef,
     ResolvedRunSpecRef,
+    ResolvedSingleFileArtifact,
     ResolvedStageRef,
     ResolvedTrainSpec,
     RunAttempt,
@@ -45,7 +46,10 @@ from mantra_provenance.models_v4 import (
 )
 from mantra_provenance.verifier import (
     VerificationError,
+    VerifiedArtifact,
+    VerifiedSnapshotFile,
     fetch_git_file_bytes,
+    load_verified_artifact,
     read_resolved_file,
     read_snapshot_file,
     verify_attempt_files,
@@ -310,6 +314,45 @@ def resolved_environment(lock_raw: bytes) -> dict:
 
 
 class FileVerificationTests(unittest.TestCase):
+    def test_artifact_loader_uses_the_consumer_materialization_path(self) -> None:
+        spec = train_spec()
+        run, _ = run_spec([("train", spec)])
+        declaration = spec.artifacts[MODEL_PARAMETERS]
+        content = b"model parameters"
+        resolved = ResolvedSingleFileArtifact(
+            file=SnapshotFileRef(
+                path=str(declaration.path),
+                sha256=sha256(content),
+                bytes=len(content),
+            )
+        )
+        verified = VerifiedArtifact(
+            artifact=resolved,
+            files=(
+                VerifiedSnapshotFile(
+                    reference=resolved.file,
+                    content=content,
+                ),
+            ),
+        )
+        consumer_path = "inputs/models/strand/selected.bin"
+        loader_raw = (
+            b"def load(path):\n"
+            b"    assert path.as_posix().endswith("
+            b"'/inputs/models/strand/selected.bin')\n"
+            b"    return path.read_bytes()\n"
+        )
+
+        loaded = load_verified_artifact(
+            run,
+            declaration,
+            verified,
+            materialization_path=consumer_path,
+            fetcher=lambda _: loader_raw,
+        )
+
+        self.assertEqual(loaded, content)
+
     def test_git_retrieval_supports_sha256_repositories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory) / "source"

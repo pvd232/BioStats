@@ -337,6 +337,7 @@ def load_verified_artifact(
     declaration: ArtifactSpec,
     artifact: VerifiedArtifact,
     *,
+    materialization_path: RepoRelPath | None = None,
     fetcher: StorageFetcher | None = None,
 ) -> object:
     """Materialize verified files and reconstruct one artifact with its loader."""
@@ -365,12 +366,33 @@ def load_verified_artifact(
 
     with tempfile.TemporaryDirectory(prefix="mantra-artifact-") as directory:
         root = Path(directory)
-        for verified_file in artifact.files:
-            materialized = root / verified_file.reference.path
+        target_path = (
+            declaration.path
+            if materialization_path is None
+            else materialization_path
+        )
+        if isinstance(artifact.artifact, ResolvedSingleFileArtifact):
+            materialized_files = ((target_path, artifact.files[0]),)
+        elif isinstance(artifact.artifact, ResolvedBundleArtifact):
+            materialized_files = tuple(
+                (f"{target_path}/{member.relative_path}", verified_file)
+                for member, verified_file in zip(
+                    artifact.artifact.members,
+                    artifact.files,
+                    strict=True,
+                )
+            )
+        else:
+            raise TypeError(
+                f"unsupported resolved artifact: {type(artifact.artifact).__name__}"
+            )
+
+        for path, verified_file in materialized_files:
+            materialized = root / path
             materialized.parent.mkdir(parents=True, exist_ok=True)
             materialized.write_bytes(verified_file.content)
 
-        artifact_path = root / declaration.path
+        artifact_path = root / target_path
         try:
             return load(artifact_path)
         except Exception as exc:
@@ -1239,6 +1261,7 @@ def verify_run_result(
 def verify_promoted_artifact(
     pointer: ArtifactPointer,
     *,
+    materialization_path: RepoRelPath | None = None,
     fetcher: StorageFetcher | None = None,
 ) -> VerifiedArtifact:
     """Follow a promoted artifact pointer through its completed producer run."""
@@ -1317,7 +1340,21 @@ def verify_promoted_artifact(
         for stage in successful_attempt.resolved_stages
         if stage.stage_id == pointer.artifact.stage_id
     )
-    return verify_snapshot_artifact(producer_stage, artifact, fetcher=fetcher)
+    verified_artifact = verify_snapshot_artifact(
+        producer_stage,
+        artifact,
+        fetcher=fetcher,
+    )
+    if materialization_path is not None:
+        declaration = producer_spec.spec.artifacts[pointer.artifact.artifact_name]
+        load_verified_artifact(
+            verified_run.plan.run,
+            declaration,
+            verified_artifact,
+            materialization_path=materialization_path,
+            fetcher=fetcher,
+        )
+    return verified_artifact
 
 
 def verify_stored_input_selections(
@@ -1416,7 +1453,11 @@ def verify_stored_inputs(
 
             parsed_pointers[input_name] = pointer
 
-            verified_artifact = verify_promoted_artifact(pointer, fetcher=fetcher)
+            verified_artifact = verify_promoted_artifact(
+                pointer,
+                materialization_path=spec_input.path,
+                fetcher=fetcher,
+            )
             stage_inputs[input_name] = VerifiedInput(
                 path=spec_input.path,
                 artifact=verified_artifact.artifact,
