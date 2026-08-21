@@ -2910,14 +2910,400 @@ A single-file artifact occupies its declared file path. A bundle artifact
 occupies its declared directory root, and its loader defines the required
 member filenames beneath that root.
 
-## Appendix A. DataLoader iteration and RNG state
+## Appendix A. Complete training-state transition
 
-This appendix fixes the DataLoader behavior used by the protocol. A training
-stage supplies one explicit `torch.Generator` to a map-style DataLoader with
-shuffled sampling and automatic batching. The same generator supplies the
-DataLoader base seed and the `RandomSampler` permutation. `BatchSampler` groups
-indices without consuming randomness. The diagrams assume
-`persistent_workers=False`.
+This appendix expands the transition $U_{\alpha,\beta,q,t}$ defined in
+Section 5 into batch selection, gradient computation, one optimizer update,
+and state reassembly. The induction applies to single-process loading with one
+selected batch per optimizer update. The final subsection states the changes
+required for gradient accumulation and multiprocess prefetching.
+
+### A.1 Initial state
+
+Initialization produces:
+
+$$
+\begin{aligned}
+s_k^{(0)}
+&=
+I_{\alpha,\beta,q}^{\mathrm{init}}
+\left(
+\omega_k,
+D_q,
+\zeta_q,
+e_k
+\right) \\
+&=
+\left(
+\theta_k^{(0)},
+o_k^{(0)},
+r_k^{(0)},
+b_k^{(0)}
+\right).
+\end{aligned}
+$$
+
+At this boundary:
+
+1. $\theta_k^{(0)}$ contains the initialized model parameters and persistent
+   buffers.
+2. $o_k^{(0)}$ contains the initial optimization state.
+3. $r_k^{(0)}$ contains every generator state after initialization.
+4. The DataLoader configuration exists.
+5. $b_k^{(0)}$ records the initial sampler position.
+6. No DataLoader iterator exists, and no batch has been selected.
+
+```text
+global seed
+    │
+    ▼
+initialize generators
+    │
+    ▼
+initialize model state
+    │
+    ▼
+initialize optimization state
+    │
+    ▼
+construct DataLoader
+    │
+    ▼
+sₖ⁽⁰⁾ = (θₖ⁽⁰⁾, oₖ⁽⁰⁾, rₖ⁽⁰⁾, bₖ⁽⁰⁾)
+```
+
+### A.2 Batch selection
+
+Fix:
+
+$$
+t
+\in
+\left\{
+0,\ldots,N_k-1
+\right\}.
+$$
+
+Let $d_k^{(t+1)}$ be the transformed and collated batch consumed by update
+$t+1$. Define batch selection by:
+
+$$
+\begin{aligned}
+&
+\left(
+d_k^{(t+1)},
+r_{k,\mathrm{batch}}^{(t+1)},
+b_{k,\mathrm{batch}}^{(t+1)}
+\right)
+\\
+&\qquad =
+B_{\alpha,\beta,q,t}
+\left(
+\omega_k,
+D_q,
+e_k,
+r_k^{(t)},
+b_k^{(t)}
+\right).
+\end{aligned}
+$$
+
+The operation $B_{\alpha,\beta,q,t}$:
+
+1. creates a DataLoader iterator when no iterator exists;
+2. obtains the next index batch and retrieves the selected observations;
+3. applies the configured transformations and collation;
+4. advances each generator consumed by iterator creation, sampling, and the
+   configured transformations; and
+5. records the resulting sampler and DataLoader position.
+
+For the first batch of a DataLoader pass:
+
+```python
+iterator = iter(loader)
+batch = next(iterator)
+```
+
+For each later batch in the same pass:
+
+```python
+batch = next(iterator)
+```
+
+The value $r_{k,\mathrm{batch}}^{(t+1)}$ contains the generator states after
+the batch has been materialized. The value
+$b_{k,\mathrm{batch}}^{(t+1)}$ contains the sampler and DataLoader position
+after that batch.
+
+### A.3 Gradient computation
+
+Using $d_k^{(t+1)}$, the training procedure clears the stored gradients,
+performs the forward computation, computes the loss, and performs
+backpropagation. Define:
+
+$$
+\begin{aligned}
+&
+\left(
+\ell_k^{(t+1)},
+g_k^{(t+1)},
+\theta_{k,\mathrm{forward}}^{(t+1)},
+r_k^{(t+1)}
+\right)
+\\
+&\qquad =
+G_{\alpha,\beta,q,t}
+\left(
+\omega_k,
+e_k,
+\theta_k^{(t)},
+d_k^{(t+1)},
+r_{k,\mathrm{batch}}^{(t+1)}
+\right).
+\end{aligned}
+$$
+
+Here:
+
+1. $\ell_k^{(t+1)}$ is the loss computed for update $t+1$.
+2. $g_k^{(t+1)}$ contains the resulting parameter gradients.
+3. $\theta_{k,\mathrm{forward}}^{(t+1)}$ contains the model parameters and
+   persistent buffers after the forward computation.
+4. $r_k^{(t+1)}$ contains the generator states after stochastic model
+   operations used to compute the gradients.
+
+If the forward computation changes no persistent model buffers, then:
+
+$$
+\theta_{k,\mathrm{forward}}^{(t+1)}
+=
+\theta_k^{(t)}.
+$$
+
+### A.4 Optimizer update
+
+Update the optimization state:
+
+$$
+o_k^{(t+1)}
+=
+A_{\beta,q,t}
+\left(
+\omega_k,
+e_k,
+o_k^{(t)},
+g_k^{(t+1)}
+\right).
+$$
+
+Update the model parameters:
+
+$$
+\theta_k^{(t+1)}
+=
+P_{\beta,q,t}
+\left(
+\omega_k,
+e_k,
+\theta_{k,\mathrm{forward}}^{(t+1)},
+o_k^{(t+1)}
+\right).
+$$
+
+These equations separate the two state changes performed by one optimizer
+update: the update to $o_k^{(t)}$ and the update to $\theta_k^{(t)}$. PyTorch
+performs both inside [`Adam.step()`](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/optim/adam.py#L215-L264).
+
+The completed-update boundary retains the data-selection state produced during
+batch selection:
+
+$$
+b_k^{(t+1)}
+=
+b_{k,\mathrm{batch}}^{(t+1)}.
+$$
+
+### A.5 Reassembly
+
+The completed update produces:
+
+$$
+s_k^{(t+1)}
+=
+\left(
+\theta_k^{(t+1)},
+o_k^{(t+1)},
+r_k^{(t+1)},
+b_k^{(t+1)}
+\right).
+$$
+
+The complete transition is:
+
+$$
+\begin{aligned}
+s_k^{(t)}
+&\longmapsto
+\left(
+d_k^{(t+1)},
+r_{k,\mathrm{batch}}^{(t+1)},
+b_{k,\mathrm{batch}}^{(t+1)}
+\right)
+\\
+&\longmapsto
+\left(
+\ell_k^{(t+1)},
+g_k^{(t+1)},
+\theta_{k,\mathrm{forward}}^{(t+1)},
+r_k^{(t+1)}
+\right)
+\\
+&\longmapsto
+\left(
+\theta_k^{(t+1)},
+o_k^{(t+1)}
+\right)
+\\
+&\longmapsto
+s_k^{(t+1)}.
+\end{aligned}
+$$
+
+This composition is the operation
+$U_{\alpha,\beta,q,t}\left(\omega_k,D_q,e_k,s_k^{(t)}\right)$ defined in
+Section 5.
+
+### A.6 Boundary invariant
+
+For every:
+
+$$
+t
+\in
+\left\{
+0,\ldots,N_k
+\right\},
+$$
+
+$s_k^{(t)}$ contains the training state after exactly $t$ completed optimizer
+updates and before any data are selected for update $t+1$. When $t=N_k$, the
+stage terminates without selecting another batch.
+
+**Base case.** Initialization produces $s_k^{(0)}$ before the first DataLoader
+iterator is created and before the first batch is selected. The invariant holds
+for $t=0$.
+
+**Inductive step.** Assume the invariant holds for $t<N_k$. Starting from
+$s_k^{(t)}$, the transition:
+
+1. selects and materializes $d_k^{(t+1)}$;
+2. computes $\ell_k^{(t+1)}$ and $g_k^{(t+1)}$;
+3. applies one optimizer update; and
+4. reassembles $s_k^{(t+1)}$ before selecting another batch.
+
+The resulting state contains the training state after exactly $t+1$ completed
+optimizer updates and before any data are selected for update $t+2$. The
+invariant therefore holds for $t+1$.
+
+By induction, the invariant holds from $s_k^{(0)}$ through
+$s_k^{(N_k)}$.
+
+### A.7 Epoch indexing
+
+Let $H_k\in\mathbb{N}_{>0}$ be the number of epochs in training stage $k$.
+For each epoch index $h\in\{0,\ldots,H_k-1\}$, let
+$M_{k,h}\in\mathbb{N}_{>0}$ be the number of optimizer updates completed in
+that epoch. Under the one-batch-per-update scope of this appendix, $M_{k,h}$ is
+also the number of batches consumed in epoch $h$.
+
+Define the cumulative update index at each epoch boundary by:
+
+$$
+\begin{aligned}
+\tau_{k,0}
+&= 0, \\
+\tau_{k,h+1}
+&= \tau_{k,h} + M_{k,h}.
+\end{aligned}
+$$
+
+Epoch $h$ contains the transitions whose starting indices satisfy:
+
+$$
+t
+\in
+\left\{
+\tau_{k,h},
+\ldots,
+\tau_{k,h+1}-1
+\right\}.
+$$
+
+It begins at $s_k^{(\tau_{k,h})}$ and ends at
+$s_k^{(\tau_{k,h+1})}$. Consequently:
+
+$$
+N_k
+=
+\tau_{k,H_k}
+=
+\sum_{h=0}^{H_k-1} M_{k,h}.
+$$
+
+If every epoch contains $M_k$ optimizer updates, then:
+
+$$
+N_k
+=
+H_k M_k.
+$$
+
+### A.8 Scope extensions
+
+#### Gradient accumulation
+
+The derivation above uses one selected batch and one optimizer update in each
+transition. If $\beta$ uses gradient accumulation, batch selection and gradient
+computation repeat several times before the optimizer update. The index $t$
+continues to count completed optimizer updates:
+
+$$
+s_k^{(t)}
+\longmapsto
+s_k^{(t+1)}.
+$$
+
+#### Multiprocess prefetching
+
+With `num_workers > 0`, Appendix B shows that the DataLoader can select and
+prepare later batches before the current optimizer update completes. The
+single-process clause "before any data are selected for update $t+1$" therefore
+does not describe a multiprocess boundary.
+
+For multiprocess loading, $s_k^{(t)}$ contains the training state after exactly
+$t$ completed optimizer updates and every DataLoader action completed by that
+boundary. Consequently:
+
+1. $r_k^{(t)}$ contains the main-process and worker generator states.
+2. $b_k^{(t)}$ contains the sampler permutation and position, dispatched index
+   batches, prepared batches, and delivery order.
+
+Exact continuation reconstructs both values before the next optimizer update.
+
+
+## Appendix B. DataLoader iteration and RNG state
+
+This appendix expands the batch-selection operation
+$B_{\alpha,\beta,q,t}$ from Appendix A.2. A training stage supplies one
+explicit `torch.Generator` to a map-style DataLoader with shuffled sampling and
+automatic batching. The same generator supplies the DataLoader base seed and
+the `RandomSampler` permutation. `BatchSampler` groups indices without
+consuming randomness. The diagrams assume `persistent_workers=False`.
+
+The generator states shown below are components of
+$r_{k,\mathrm{batch}}^{(t+1)}$. The shuffled index sequence, its unread
+position, and any prefetched work are components of
+$b_{k,\mathrm{batch}}^{(t+1)}$.
 
 ### Single-process loading
 
