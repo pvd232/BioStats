@@ -200,6 +200,20 @@ class ResolvedRunRef(ResolvedFileRef):
     stored_at: HuggingFaceFileRef  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
+class ResolvedBenchmarkSpecRef(ResolvedFileRef):
+    """Identifies the exact benchmark specification applied to a run."""
+
+    kind: Literal["benchmark_spec"] = "benchmark_spec"
+    stored_at: GitFileRef  # pyright: ignore[reportIncompatibleVariableOverride]
+
+
+class ResolvedBenchmarkResultRef(ResolvedFileRef):
+    """Identifies one completed benchmark result."""
+
+    kind: Literal["benchmark_result"] = "benchmark_result"
+    stored_at: HuggingFaceFileRef  # pyright: ignore[reportIncompatibleVariableOverride]
+
+
 class StageArtifactRef(ProtocolModel):
     """Selects one named artifact produced by one stage."""
 
@@ -213,6 +227,7 @@ class ArtifactPointer(ProtocolModel):
     schema_version: Literal[1] = 1
     run: ResolvedRunRef
     artifact: StageArtifactRef
+    benchmark_result: ResolvedBenchmarkResultRef | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +345,28 @@ class Measurement(ProtocolModel):
 
     epoch: int | None = Field(default=None, ge=0)
     step: int | None = Field(default=None, ge=0)
+
+
+class MetricCriterion(ProtocolModel):
+    metric_id: MetricId
+    comparison: Literal["ge", "le"]
+    threshold: float = Field(allow_inf_nan=False)
+
+
+class BenchmarkSpec(ProtocolModel):
+    schema_version: Literal[1] = 1
+    benchmark_id: BenchmarkId
+    evaluation_dataset: ArtifactPointerRef
+    splits: dict[InputName, ArtifactPointerRef] = Field(min_length=1)
+    metrics: tuple[MetricCriterion, ...] = Field(min_length=1)
+    confirmation_count: Literal[2] = 2
+
+    @model_validator(mode="after")
+    def validate_unique_metrics(self) -> BenchmarkSpec:
+        metric_ids = tuple(criterion.metric_id for criterion in self.metrics)
+        if len(set(metric_ids)) != len(metric_ids):
+            raise ValueError("benchmark metric IDs must be unique")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +534,7 @@ class RunSpec(ProtocolModel):
     experiment_id: ExperimentId
     variant_id: VariantId
     replicate_id: ReplicateId
+    benchmark_id: BenchmarkId | None = None
 
     seed: int
     source: GitSource
@@ -592,6 +630,25 @@ class ResolvedRun(ProtocolModel):
                     "successful_attempt_id must be null without a successful attempt"
                 )
 
+        return self
+
+
+class BenchmarkResult(ProtocolModel):
+    schema_version: Literal[1] = 1
+    benchmark: ResolvedBenchmarkSpecRef
+    run: ResolvedRunRef
+    confirmation: RunAttempt
+    status: Literal["passed", "failed"]
+    completed_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_confirmation(self) -> BenchmarkResult:
+        if self.confirmation.status != "succeeded":
+            raise ValueError("benchmark confirmation attempt must succeed")
+        if self.completed_at < self.confirmation.completed_at:
+            raise ValueError(
+                "benchmark completion cannot precede confirmation completion"
+            )
         return self
 
 
