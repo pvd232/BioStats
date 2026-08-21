@@ -688,6 +688,7 @@ def verify_stage_plan(
                 for input_ref in spec.inputs.values()
                 if isinstance(input_ref, StoredInputRef)
             )
+            future_materialization_paths: dict[RepoRelPath, InputName] = {}
 
             for input_name, input_ref in spec.inputs.items():
                 if not isinstance(input_ref, FutureInputRef):
@@ -712,6 +713,16 @@ def verify_stage_plan(
                     )
 
                 producer_path = producer_artifact.path
+
+                for previous_path, previous_name in (
+                    future_materialization_paths.items()
+                ):
+                    if repo_file_paths_overlap(producer_path, previous_path):
+                        raise VerificationError(
+                            f"future input paths for {previous_name!r} and "
+                            f"{input_name!r} of stage {stage.stage_id!r} collide"
+                        )
+                future_materialization_paths[producer_path] = input_name
 
                 if repo_file_paths_overlap(producer_path, spec.script):
                     raise VerificationError(

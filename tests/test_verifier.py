@@ -445,6 +445,39 @@ class RunAndStageVerificationTests(unittest.TestCase):
 
         self.assertEqual(set(loaded), {"train", "train_02"})
 
+    def test_consumer_rejects_colliding_same_run_input_paths(self) -> None:
+        first = train_spec()
+        second = train_spec()
+        consumer_payload = build_spec().model_dump(mode="python")
+        consumer_payload["inputs"] = {
+            "first_model": {
+                "kind": "future",
+                "producer_stage_id": "train",
+                "producer_artifact": MODEL_PARAMETERS,
+            },
+            "second_model": {
+                "kind": "future",
+                "producer_stage_id": "train_02",
+                "producer_artifact": MODEL_PARAMETERS,
+            },
+        }
+        consumer = BuildSpec.model_validate(consumer_payload)
+        run, documents = run_spec(
+            [("train", first), ("train_02", second), ("build", consumer)]
+        )
+        run_reference = ResolvedRunSpecRef(
+            sha256="f" * 64,
+            bytes=1,
+            stored_at=git_file(f"{RUN_ROOT}/spec.yaml"),
+        )
+
+        with self.assertRaisesRegex(VerificationError, "future input paths"):
+            verify_stage_plan(
+                run,
+                run_reference,
+                fetcher=lambda location: documents[location.path],
+            )
+
     def test_resolved_stage_checks_run_controls_and_snapshot_files(self) -> None:
         spec = train_spec()
         run, _ = run_spec([("train", spec)])

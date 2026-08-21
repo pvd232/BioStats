@@ -1992,7 +1992,8 @@ Within one stage spec:
 7. `predictions` occurs only as an evaluation-stage artifact.
 
 After resolving same-run inputs, the external verifier applies the same path
-checks to their materialized paths.
+checks to their materialized paths. Same-run inputs consumed by one stage are
+pairwise non-overlapping.
 
 ### Resolved stage inputs
 
