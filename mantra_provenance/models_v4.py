@@ -68,6 +68,11 @@ ArtifactLoaderId = HumanId
 BenchmarkId = HumanId
 SelectionName = HumanId
 
+MODEL_PARAMETERS: ArtifactName = "model_parameters"
+CONTINUATION_STATE: ArtifactName = "continuation_state"
+CHECKPOINT_MODEL_INPUT: InputName = "checkpoint_model_parameters"
+CHECKPOINT_STATE_INPUT: InputName = "checkpoint_continuation_state"
+
 
 class ProtocolModel(BaseModel):
     """Closed, frozen protocol object."""
@@ -510,6 +515,9 @@ class RunSpec(ProtocolModel):
         if self.estimator.stage_id not in set(stage_ids):
             raise ValueError("estimator must select a declared run stage")
 
+        if self.estimator.artifact_name != MODEL_PARAMETERS:
+            raise ValueError("estimator must select the model_parameters artifact")
+
         return self
 
 
@@ -855,6 +863,44 @@ class EmbedSpec(InternalSpec):
 class TrainSpec(InternalSpec):
     kind: Literal["train"] = "train"  # pyright: ignore[reportIncompatibleVariableOverride]
     params: TrainParams
+
+    @model_validator(mode="after")
+    def validate_terminal_checkpoint(self) -> TrainSpec:
+        required_artifacts = {MODEL_PARAMETERS, CONTINUATION_STATE}
+        missing_artifacts = required_artifacts - set(self.artifacts)
+        if missing_artifacts:
+            missing = ", ".join(sorted(missing_artifacts))
+            raise ValueError(
+                f"training stages must declare terminal checkpoint artifacts: {missing}"
+            )
+
+        model_input = self.inputs.get(CHECKPOINT_MODEL_INPUT)
+        state_input = self.inputs.get(CHECKPOINT_STATE_INPUT)
+
+        if (model_input is None) != (state_input is None):
+            raise ValueError("checkpoint inputs must be declared together")
+
+        if model_input is None or state_input is None:
+            return self
+
+        if model_input.kind != state_input.kind:
+            raise ValueError("checkpoint inputs must use the same input kind")
+
+        if model_input.kind == "future" and state_input.kind == "future":
+            if model_input.producer_stage_id != state_input.producer_stage_id:
+                raise ValueError(
+                    "checkpoint inputs must select one checkpoint-producing stage"
+                )
+            if model_input.producer_artifact != MODEL_PARAMETERS:
+                raise ValueError(
+                    "checkpoint_model_parameters must select model_parameters"
+                )
+            if state_input.producer_artifact != CONTINUATION_STATE:
+                raise ValueError(
+                    "checkpoint_continuation_state must select continuation_state"
+                )
+
+        return self
 
 
 Spec = Annotated[
