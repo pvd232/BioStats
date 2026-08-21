@@ -90,7 +90,8 @@ Define:
 - $\mathcal{M}$ as the set of possible run-metadata records.
 - $\mathcal{C}$ as the set of possible reproducibility specifications.
 - $\mathcal{H}$ as the set of possible shared-environment specifications.
-- $\Omega^+$ as the set of nonempty ordered stage-specification sequences.
+- $\Omega$ as the set of valid stage specifications.
+- $\Omega^+$ as the set of nonempty ordered sequences with members in $\Omega$.
 
 The run-plan space is:
 
@@ -255,33 +256,40 @@ one execution realizes e ∈ E_q
 
 ## 4. Initial training state
 
-Fix a training stage:
+The index $j\in\{1,\ldots,m\}$ continues to identify a stage position. Let
+$\Omega_{\mathrm{train}}\subseteq\Omega$ be the set of valid training-stage
+specifications. Fix one position $k$ such that:
 
 $$
-\omega_j
+\omega_k
 \in
-\Omega_{\mathrm{train}},
+\Omega_{\mathrm{train}}.
 $$
 
-where $\Omega_{\mathrm{train}}$ is the set of valid training-stage specifications.
+The stage $\omega_k$ is therefore a training stage. Let
+$T_k\in\mathbb{N}_{>0}$ be its number of optimizer updates. The index
+$t\in\{0,\ldots,T_k\}$ identifies a training state within $\omega_k$.
+For each $t$, let $\mathcal{S}_{k,t}$ be the set of possible training states
+after $t$ updates in $\omega_k$.
 
 Its realized runtime state is:
 
 $$
-e_j
+e_k
 \in
-E_{q,j}.
+E_{q,k}.
 $$
 
-Initialization produces the initial model parameters:
+When $\omega_k$ begins from initialization, the stage specification and
+runtime state produce its initial model parameters:
 
 $$
-\theta^{(0)}
+\theta_k^{(0)}
 =
 I^\theta_{\alpha,\beta,q}
 \left(
-\omega_j,
-e_j
+\omega_k,
+e_k
 \right).
 $$
 
@@ -289,109 +297,112 @@ The global seed $\zeta_q$ and the realized runtime state initialize the
 random-number-generator state:
 
 $$
-r^{(0)}
+r_k^{(0)}
 =
 I^r
 \left(
 \zeta_q,
-e_j
+e_k
 \right).
 $$
 
 The stage specification and initial parameters initialize the optimizer state:
 
 $$
-o^{(0)}
+o_k^{(0)}
 =
 I^o_{\beta,q}
 \left(
-\omega_j,
-\theta^{(0)}
+\omega_k,
+\theta_k^{(0)}
 \right).
 $$
 
 The stage specification, dataset, and random-number-generator state initialize the batch state:
 
 $$
-b^{(0)}
+b_k^{(0)}
 =
 I^b_q
 \left(
-\omega_j,
+\omega_k,
 D_q,
-r^{(0)}
+r_k^{(0)}
 \right).
 $$
 
 The initial training state is:
 
 $$
-s^{(0)}
+s_k^{(0)}
 =
 \left(
-\theta^{(0)},
-o^{(0)},
-r^{(0)},
-b^{(0)}
+\theta_k^{(0)},
+o_k^{(0)},
+r_k^{(0)},
+b_k^{(0)}
 \right).
 $$
 
 ```text
-ωⱼ + eⱼ ───────────────→ θ⁽⁰⁾
+ωₖ + eₖ ───────────────→ θₖ⁽⁰⁾
                              │
                              ▼
-                            o⁽⁰⁾
+                            oₖ⁽⁰⁾
 
-ζq + eⱼ ──────────────→ r⁽⁰⁾
+ζq + eₖ ──────────────→ rₖ⁽⁰⁾
                              │
-                  ωⱼ + Dq ──┴──→ b⁽⁰⁾
+                  ωₖ + Dq ──┴──→ bₖ⁽⁰⁾
 
-s⁽⁰⁾ = (θ⁽⁰⁾, o⁽⁰⁾, r⁽⁰⁾, b⁽⁰⁾)
+sₖ⁽⁰⁾ = (θₖ⁽⁰⁾, oₖ⁽⁰⁾, rₖ⁽⁰⁾, bₖ⁽⁰⁾)
 ```
+
+When $\omega_k$ continues from an earlier checkpoint, Section 7 defines
+$s_k^{(0)}$ as the state reconstructed from that checkpoint.
 
 ## 5. Training-state transition
 
 At update $t+1$, compute the gradient:
 
 $$
-g^{(t+1)}
+g_k^{(t+1)}
 =
 G_{\alpha,\beta,q,t}
 \left(
-\omega_j,
+\omega_k,
 D_q,
-e_j,
-\theta^{(t)},
-r^{(t)},
-b^{(t)}
+e_k,
+\theta_k^{(t)},
+r_k^{(t)},
+b_k^{(t)}
 \right).
 $$
 
 Update the optimizer state:
 
 $$
-o^{(t+1)}
+o_k^{(t+1)}
 =
 A_{\beta,q,t}
 \left(
-\omega_j,
-e_j,
-o^{(t)},
-g^{(t+1)}
+\omega_k,
+e_k,
+o_k^{(t)},
+g_k^{(t+1)}
 \right).
 $$
 
 Update the model parameters:
 
 $$
-\theta^{(t+1)}
+\theta_k^{(t+1)}
 =
 P_{\beta,q,t}
 \left(
-\omega_j,
-e_j,
-\theta^{(t)},
-o^{(t+1)}
+\omega_k,
+e_k,
+\theta_k^{(t)},
+o_k^{(t+1)}
 \right).
 $$
 
@@ -399,94 +410,104 @@ Advance the random-number-generator and batch states:
 
 $$
 \left(
-r^{(t+1)},
-b^{(t+1)}
+r_k^{(t+1)},
+b_k^{(t+1)}
 \right)
 =
 C_{\alpha,\beta,q,t}
 \left(
-\omega_j,
+\omega_k,
 D_q,
-e_j,
-s^{(t)}
+e_k,
+s_k^{(t)}
 \right).
 $$
 
 Reassemble the next training state:
 
 $$
-s^{(t+1)}
+s_k^{(t+1)}
 =
 \left(
-\theta^{(t+1)},
-o^{(t+1)},
-r^{(t+1)},
-b^{(t+1)}
+\theta_k^{(t+1)},
+o_k^{(t+1)},
+r_k^{(t+1)},
+b_k^{(t+1)}
 \right).
 $$
 
-These component updates define:
+For the fixed training stage $\omega_k$, these component updates define:
 
 $$
 U_{\alpha,\beta,q,t}
+\left(
+\omega_k,
+\cdot,
+\cdot,
+\cdot
+\right)
 :
-\Omega_{\mathrm{train}}
-\times
 \mathcal{D}
 \times
-E_{q,j}
+E_{q,k}
 \times
-\mathcal{S}_t
+\mathcal{S}_{k,t}
 \longrightarrow
-\mathcal{S}_{t+1},
+\mathcal{S}_{k,t+1},
 $$
 
 with:
 
 $$
-s^{(t+1)}
+s_k^{(t+1)}
 =
 U_{\alpha,\beta,q,t}
 \left(
-\omega_j,
+\omega_k,
 D_q,
-e_j,
-s^{(t)}
+e_k,
+s_k^{(t)}
 \right).
 $$
 
-If $\omega_j$ governs updates $i_{j-1}$ through $i_j-1$, repeated application produces:
+Repeated application for $t=0,\ldots,T_k-1$ produces the training-state
+sequence:
 
 $$
-s^{(i_{j-1})}
+s_k^{(0)}
 \longmapsto
-s^{(i_j)}.
+s_k^{(1)}
+\longmapsto
+\cdots
+\longmapsto
+s_k^{(T_k)}.
 $$
 
-The complete stage dependency is:
+The complete training-stage dependency is:
 
 $$
 q
 \longrightarrow
 \boldsymbol{\omega}_q
 \longrightarrow
-\omega_j
+\omega_k
 \longrightarrow
-E_{q,j}
+E_{q,k}
 \ni
-e_j
+e_k
 \longrightarrow
 U_{\alpha,\beta,q,t}
 \left(
-\omega_j,D_q,e_j,s^{(t)}
+\omega_k,D_q,e_k,s_k^{(t)}
 \right)
 \longrightarrow
-s^{(t+1)}.
+s_k^{(t+1)}.
 $$
 
 ## 6. Estimator and strict reproducibility
 
-The run estimator is:
+Let $k_*$ be the position of the training stage whose `model_parameters`
+artifact is selected as the estimator output by $q$. The run estimator is:
 
 $$
 T_{\alpha,\beta,q}
@@ -496,12 +517,13 @@ E_q
 \Theta_\alpha.
 $$
 
-It initializes $s^{(0)}$, applies the transitions fixed by $q$, and returns the model-parameter component of the terminal training state:
+It applies the stages fixed by $q$ and returns the terminal model-parameter
+value produced by $\omega_{k_*}$:
 
 $$
 T_{\alpha,\beta,q}(e)
 =
-\theta^{(T)}.
+\theta_{k_*}^{(T_{k_*})}.
 $$
 
 The plan provides strict parameter reproducibility exactly when:
@@ -546,89 +568,117 @@ I_\alpha
 \widehat{g}_q.
 $$
 
-## 7. Replay states and stage boundaries
+## 7. Stage outputs and terminal training checkpoints
 
-A stage boundary identifies a training state from which the contract permits replay.
-
-If stage $\omega_j$ ends at update $i$, its replay state is:
-
-$$
-s^{(i)}
-=
-\left(
-\theta^{(i)},
-o^{(i)},
-r^{(i)},
-b^{(i)}
-\right).
-$$
-
-Exact continuation from that boundary begins from $s^{(i)}$ and applies the remaining transitions fixed by $q$.
+The ordered sequence $\boldsymbol{\omega}_q$ defines the stages of the run. For
+each $j\in\{1,\ldots,m\}$, let $y_j$ denote the declared output state produced
+by $\omega_j$. A later stage may consume one or more artifacts from $y_j$.
 
 ```text
-Dq + e
-   │
-   ▼
-s⁽⁰⁾
-   │
-   ├── stage ω₁ ──→ s⁽ⁱ¹⁾
-   │                  └── replay may begin here
-   ├── stage ω₂ ──→ s⁽ⁱ²⁾
-   │                  └── replay may begin here
-   └── stage ωₘ ──→ s⁽ᵀ⁾
-                      └── contains θ̂q
+stages of the run
+
+ω₁ ──→ y₁
+ω₂ ──→ y₂
+⋮
+ωₘ ──→ yₘ
 ```
 
-The ordered stage specifications in $q$ therefore fix the replay positions represented by the protocol.
+MANTRA permits replay from a training state when a later stage or attempt may
+consume that state as its initial state. A training stage is the maximal
+contiguous sequence of updates ending at the next permitted replay state.
 
-## 8. Artifact partition of a replay state
+The training stage $\omega_k$ therefore has the sequence:
 
-An artifact is one named value that a required use can load independently.
+```text
+training stage ωₖ
 
-For a training checkpoint supporting evaluation and exact continuation, let
+sₖ⁽⁰⁾ → sₖ⁽¹⁾ → ··· → sₖ⁽ᵀᵏ⁾
+```
+
+Its single checkpoint is its terminal state:
+
+$$
+s_k^{(T_k)}.
+$$
+
+The artifacts representing $s_k^{(T_k)}$ belong to the declared stage output
+$y_k$. A later training stage $\omega_\ell$ that continues from this checkpoint
+begins from the reconstructed state:
+
+$$
+s_\ell^{(0)}
+=
+s_k^{(T_k)}.
+$$
+
+If $q$ permits replay from $s_k^{(i)}$ for some $0<i<T_k$, that state terminates
+$\omega_k$ and the remaining updates belong to another training stage. Each
+run plan contains finitely many stages, while the run-plan space places no fixed
+upper bound on $m$.
+
+```text
+training stage ωₖ
+├── begins at sₖ⁽⁰⁾
+├── applies Tₖ updates
+└── ends at checkpoint sₖ⁽ᵀᵏ⁾
+    └── represented by artifacts in yₖ
+```
+
+For a training stage, the stage boundary and terminal checkpoint identify the
+same replay boundary.
+
+## 8. Artifact partition of a training checkpoint
+
+An artifact is one named value that a required use can load independently. Let
+$A(y_j)$ be the set of artifact names in stage output $y_j$. Each
+$a\in A(y_j)$ identifies one value $v_a^{(j)}$.
+
+For the checkpoint of training stage $\omega_k$, let
 $a_\theta$ denote the `model_parameters` artifact and let $a_c$ denote the
 `continuation_state` artifact. Then:
 
 $$
 A
 \left(
-s^{(i)}
+s_k^{(T_k)}
 \right)
 =
 \left\{
 a_\theta,
 a_c
-\right\}.
+\right\}
+\subseteq
+A(y_k).
 $$
 
 Their values are:
 
 $$
-v_{a_\theta}^{(i)}
+v_{a_\theta}^{(k)}
 =
-\theta^{(i)},
+\theta_k^{(T_k)},
 $$
 
 and:
 
 $$
-v_{a_c}^{(i)}
+v_{a_c}^{(k)}
 =
 \left(
-o^{(i)},
-r^{(i)},
-b^{(i)}
+o_k^{(T_k)},
+r_k^{(T_k)},
+b_k^{(T_k)}
 \right).
 $$
 
 ```text
-s⁽ⁱ⁾
+sₖ⁽ᵀᵏ⁾
 ├── model_parameters
-│   └── θ⁽ⁱ⁾
+│   └── θₖ⁽ᵀᵏ⁾
 │       └── sufficient for evaluation
 │
 └── continuation_state
-    └── (o⁽ⁱ⁾, r⁽ⁱ⁾, b⁽ⁱ⁾)
+    └── (oₖ⁽ᵀᵏ⁾, rₖ⁽ᵀᵏ⁾, bₖ⁽ᵀᵏ⁾)
         └── combined with model_parameters for exact continuation
 ```
 
@@ -639,10 +689,10 @@ This is the coarsest artifact partition satisfying the two required uses:
 
 ## 9. File representation of an artifact
 
-For artifact $a$ at replay position $i$, let:
+For artifact $a\in A(y_j)$, let:
 
 $$
-F_i(a)
+F_j(a)
 =
 \left\{
 f_1,\ldots,f_n
@@ -658,18 +708,18 @@ Let $L_a$ be the artifact’s loader. The files must reconstruct the artifact va
 $$
 L_a
 \left(
-F_i(a)
+F_j(a)
 \right)
 =
-v_a^{(i)}.
+v_a^{(j)}.
 $$
 
-Every member of $F_i(a)$ is required. Removing any member either prevents loading or changes the reconstructed value.
+Every member of $F_j(a)$ is required. Removing any member either prevents loading or changes the reconstructed value.
 
 The cardinality determines the physical form:
 
 $$
-\left|F_i(a)\right|
+\left|F_j(a)\right|
 =
 1
 \quad\Longrightarrow\quad
@@ -679,7 +729,7 @@ $$
 and:
 
 $$
-\left|F_i(a)\right|
+\left|F_j(a)\right|
 \geq
 2
 \quad\Longrightarrow\quad
@@ -688,28 +738,38 @@ $$
 
 ```text
 artifact name a
-└── artifact value v_a⁽ⁱ⁾
+└── artifact value v_a⁽ʲ⁾
     ▲
     │ loader L_a
     │
-    └── files F_i(a)
+    └── files F_j(a)
         ├── one file: single-file artifact
         └── two or more files: bundle artifact
 ```
 
 ## 10. Boundary rules
 
-The three protocol boundaries follow the same completeness-and-parsimony rule:
+The protocol applies completeness and parsimony at three nested boundaries:
 
-1. A stage boundary exists for every intermediate state from which the contract permits replay.
-2. A separate artifact exists for every value that a required use loads independently.
-3. A file belongs to an artifact exactly when its loader requires that file to reconstruct the artifact value.
+1. Every state from which $q$ permits replay creates a stage boundary. A
+   training stage ends at its single terminal checkpoint $s_k^{(T_k)}$.
+2. A separate artifact exists for every value that a required use loads
+   independently.
+3. A file belongs to an artifact exactly when its loader requires that file to
+   reconstruct the artifact value.
 
-Therefore:
+These rules supply direct parsimony tests:
 
-- The stage sequence contains the fewest boundaries supporting the required replay starts.
-- $A(s^{(i)})$ contains the fewest independently loadable artifacts supporting the required uses.
-- $F_i(a)$ contains the files required by $L_a$ to reconstruct $v_a^{(i)}$.
+- Two adjacent training stages can be merged exactly when their shared state is
+  not a permitted replay state.
+- Two artifacts can be merged exactly when no required use loads either value
+  independently.
+- A file can be removed from $F_j(a)$ exactly when $L_a$ still reconstructs
+  $v_a^{(j)}$ from the remaining files.
+
+With the permitted replay states and required uses fixed, the resulting stage
+sequence, artifact partition, and file sets are the coarsest complete
+representation.
 
 ## 11. Complete dependency chain
 
@@ -731,23 +791,34 @@ permitted runtime states E_q
 one execution realizes e = (e₁, …, eₘ) ∈ E_q
                 │
                 ▼
-U(ωⱼ, Dq, eⱼ, s⁽ᵗ⁾) = s⁽ᵗ⁺¹⁾
+           stage ωⱼ ∈ Ω
+                │
+        produces output yⱼ
                 │
                 ▼
-declared replay state s⁽ⁱ⁾
+     artifact partition A(yⱼ)
                 │
                 ▼
-artifact partition A(s⁽ⁱ⁾)
+    file representation F_j(a)
+
+If ωⱼ = ωₖ ∈ Ω_train:
+
+       training stage ωₖ
+                │
+     sₖ⁽⁰⁾ → ··· → sₖ⁽ᵀᵏ⁾
                 │
                 ▼
-file representation F_i(a)
+ terminal checkpoint sₖ⁽ᵀᵏ⁾
                 │
                 ▼
-loader reconstructs v_a⁽ⁱ⁾
+artifact partition A(sₖ⁽ᵀᵏ⁾)
                 │
                 ▼
-Tα,β,q(e) = θ⁽ᵀ⁾ = θ̂q
+  file representation F_k(a)
                 │
                 ▼
-Iα(θ̂q) = ĝq
+Tα,β,q(e) = θₖ*⁽ᵀₖ*⁾ = θ̂q
+                │
+                ▼
+          Iα(θ̂q) = ĝq
 ```
