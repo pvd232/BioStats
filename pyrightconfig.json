@@ -1,8 +1,15 @@
 {
+    "include": [
+        "mantra_provenance"
+    ],
+    "exclude": [
+        "mantra_provenance/archive"
+    ],
     "venvPath": "/Users/machina/miniconda3/envs",
     "venv": "mantra",
+    "pythonVersion": "3.11",
+    "typeCheckingMode": "standard",
     "extraPaths": [
         "/Users/machina/miniconda3/envs/mantra/lib/python3.14/site-packages"
-    ],
-    // "reportIncompatibleVariableOverride": false
+    ]
 }

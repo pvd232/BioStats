@@ -23,6 +23,8 @@ from .models_v4 import (
     BaseSpec,
     BenchmarkResult,
     BenchmarkSpec,
+    BuildSpec,
+    EmbedSpec,
     EvaluateSpec,
     ExperimentSpec,
     FutureInputRef,
@@ -463,7 +465,7 @@ def verify_run_plan_relationships(
     parameterized_stages = {
         stage_id: stage
         for stage_id, stage in stages.items()
-        if hasattr(stage, "params")
+        if isinstance(stage, (BuildSpec, EmbedSpec, TrainSpec, EvaluateSpec))
     }
     variant_params = {stage.stage_id: stage for stage in variant.stage_params}
 

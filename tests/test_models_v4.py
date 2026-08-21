@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
+import yaml
 from pydantic import ValidationError
 
 from mantra_provenance.models_v4 import (
@@ -14,6 +17,7 @@ from mantra_provenance.models_v4 import (
     TrainSpec,
     VariantSpec,
 )
+from mantra_provenance.yaml_io import load_spec
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64
@@ -363,6 +367,25 @@ class ArtifactAndVariantTests(unittest.TestCase):
                     ],
                 }
             )
+
+
+class YAMLLoadingTests(unittest.TestCase):
+    def test_stage_spec_loads_through_the_v4_union(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "train.spec.yaml"
+            path.write_text(yaml.safe_dump(train_payload()), encoding="utf-8")
+
+            loaded = load_spec(path)
+
+        self.assertIsInstance(loaded, TrainSpec)
+
+    def test_duplicate_yaml_keys_are_rejected(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "duplicate.yaml"
+            path.write_text("kind: train\nkind: evaluate\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "duplicate YAML key"):
+                load_spec(path)
 
 
 if __name__ == "__main__":

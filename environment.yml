@@ -2,6 +2,7 @@ name: mantra
 channels:
   - defaults
 dependencies:
+  - pip
   - pydantic
   - pyyaml
   - validators
@@ -10,4 +11,6 @@ dependencies:
   - huggingface_hub
   - numpy
   - pytorch
+  - pip:
+      - pyright>=1.1.400,<2
 prefix: /Users/machina/miniconda3/envs/mantra

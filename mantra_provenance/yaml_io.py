@@ -7,8 +7,10 @@ from typing import Any
 
 import yaml
 from pydantic import TypeAdapter
+from yaml.nodes import MappingNode
+from yaml.resolver import BaseResolver
 
-from .models import ResolvedSpec, Spec
+from .models_v4 import ResolvedSpec, Spec
 
 
 class UniqueKeySafeLoader(yaml.SafeLoader):
@@ -17,7 +19,7 @@ class UniqueKeySafeLoader(yaml.SafeLoader):
 
 def _construct_unique_mapping(
     loader: UniqueKeySafeLoader,
-    node: yaml.MappingNode,
+    node: MappingNode,
     deep: bool = False,
 ) -> dict[Any, Any]:
     loader.flatten_mapping(node)
@@ -31,7 +33,7 @@ def _construct_unique_mapping(
 
 
 UniqueKeySafeLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    BaseResolver.DEFAULT_MAPPING_TAG,
     _construct_unique_mapping,
 )
 
@@ -44,11 +46,11 @@ def _load_yaml(path: Path) -> Any:
         return yaml.load(stream, Loader=UniqueKeySafeLoader)
 
 
-def load_spec(path: str | Path):
+def load_spec(path: str | Path) -> Spec:
     """Load and validate a MANTRA stage spec."""
     return _SPEC_ADAPTER.validate_python(_load_yaml(Path(path)))
 
 
-def load_resolved_spec(path: str | Path):
+def load_resolved_spec(path: str | Path) -> ResolvedSpec:
     """Load and validate an immutable MANTRA resolved spec."""
     return _RESOLVED_SPEC_ADAPTER.validate_python(_load_yaml(Path(path)))
