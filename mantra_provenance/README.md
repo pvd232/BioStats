@@ -1,33 +1,100 @@
-# Provenance Protocol
+# MANTRA provenance
 
-## 📝 Purpose
-Pydantic classes encforcing traceability of model inputs and outputs
+`mantra_provenance/` defines the records and cross-file verifier for frozen
+MANTRA run plans, realized stage results, artifact lineage, evaluation, and
+benchmark confirmation.
 
-## 🔄 Integration
-1. Pydantic classes
+## Directory map
 
-2. Experiment-variant-run-git structural layout and lifecyle
+| File or directory | Role | Principal interface |
+|---|---|---|
+| [v3 protocol](ProvenanceS1_v3.md) | Defines the active formal and record contract | Sections 2–22 |
+| [models](models_v4.py) | Validates protocol records and their internal invariants | `RunSpec`, `ResolvedRun`, `Spec`, `ResolvedSpec`, `BenchmarkSpec` |
+| [verifier](verifier.py) | Retrieves referenced files and checks cross-record relationships | `verify_run_result()`, `verify_benchmark_result()` |
+| [YAML loading](yaml_io.py) | Parses stage records and rejects duplicate mapping keys | `load_spec()`, `load_resolved_spec()` |
+| [identifiers](ids.py) | Defines run and human-readable identifier types | `RunId`, `HumanId` |
+| [serialization](serialization.py) | Produces deterministic JSON bytes and their SHA-256 | `canonical_json_bytes()`, `resolved_spec_sha256()` |
+| [package exports](__init__.py) | Exposes package modules and serialization helpers | `models_v4`, `canonical_json_bytes()` |
+| [supporting documents](docs/) | Contains execution and GPU-residency explanations used by the project | Markdown documents and figures |
+| [archive](archive/) | Retains prior model drafts and protocol documents | Reference material |
+| [v1 protocol](ProvenanceS1.md)<br>[v2 protocol](ProvenanceS1_v2.md) | Retains earlier protocol specifications | Reference material |
 
-3. Local-Remote-artifact stuff
+The focused model, verifier, and acceptance checks live in the
+[repository test directory](../tests/).
 
-4. Promotion updates /src and /inputs
+## Record and verification flow
 
+The [models](models_v4.py) divide requested state from realized state. A
+`RunSpec` and its ordered stage specs form the frozen run plan. Each completed
+stage publishes one `ResolvedStageRef` containing a resolved stage spec and all
+declared artifact files at one immutable snapshot.
 
-Explain how this folder connects to the root project. 
-* **Inputs:** What does it consume from other folders?
-* **Outputs:** What does it expose to the rest of the app?
-
-## 📂 Key Architecture
-* `📁 /subfolder-a` - Description of its specific role.
-* `📄 file-b.js` - Description of this core file's function.
-
-## 🚀 Local Usage
-Commands specific to this directory (run from the project root or by `cd`ing here):
-```bash
-# Example: Run tests just for this folder
-npm run test:local-dir
+```text
+RunSpec + ordered stage specs
+              │
+              ▼
+        permitted run state
+              │
+              ▼
+RunAttempt.resolved_stages[]
+              │
+              ▼
+ResolvedStageRef.snapshot
+├── resolved stage spec
+└── exact files for every named artifact
+              │
+              ▼
+          ResolvedRun
+              │
+              ▼
+      verify_run_result()
 ```
 
-## ⚠️ Local Constraints
-* List any specific design patterns to follow here.
-* Note any strict dependencies unique to this folder.
+The [verifier](verifier.py) starts from `ResolvedRun.spec`, verifies the exact
+RunSpec bytes, loads experiment and variant records, retrieves every stage
+spec, and checks the realized environment, command, inputs, artifacts,
+measurements, logs, and terminal estimator. Artifact loaders are selected by
+`ArtifactSpec.loader` from the exact Git commit recorded by `RunSpec.source`.
+
+`verify_benchmark_result()` verifies a second successful attempt, estimator and
+prediction file parity, metric criteria, and promotion relationships.
+
+## Public operations
+
+- `load_spec(path)` parses a `DownloadSpec`, `BuildSpec`, `EmbedSpec`,
+  `TrainSpec`, or `EvaluateSpec` through the discriminated `Spec` union.
+- `load_resolved_spec(path)` parses the corresponding realized record through
+  `ResolvedSpec`.
+- `verify_run_result(resolved_run, fetcher=...)` verifies one terminal run and
+  returns its connected run plan, successful resolved stages, and measurements.
+- `verify_benchmark_result(result, fetcher=...)` verifies the benchmark record,
+  selected run, confirmation attempt, parity, and metric thresholds.
+- A custom `fetcher` receives a `GitFileRef` or `HuggingFaceFileRef` and returns
+  bytes. Omitting it uses the package Git and Hugging Face retrieval functions.
+
+## Validation
+
+Run these commands from the repository root after activating the `mantra`
+Conda environment:
+
+```bash
+ruff check mantra_provenance tests
+pyright
+python -m pytest -q
+```
+
+Ruff checks active Python source, Pyright checks the v4 model and verifier type
+contracts, and Pytest exercises model invariants, cross-file relationships,
+the complete provenance fixture, and tampered-byte rejection.
+
+## Current boundaries
+
+- `GCEEnvironmentSpec` is the implemented environment type.
+- `BuildParams` and `EmbedParams` currently admit no fields. New scientific
+  parameters require explicit typed fields before those stages can record them.
+- Artifact loaders execute Python from the Git commit named by `RunSpec.source`.
+  Verification therefore accepts only run sources trusted to execute in the
+  verifier process.
+- The verifier validates recorded executions and artifact reconstruction. The
+  executor that provisions environments and runs stage scripts is outside this
+  package.

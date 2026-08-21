@@ -1,4 +1,4 @@
-"""Deterministic serialization and identities for resolved specs."""
+"""Deterministic JSON serialization for protocol models."""
 
 from __future__ import annotations
 
@@ -21,5 +21,5 @@ def canonical_json_bytes(model: BaseModel) -> bytes:
 
 
 def resolved_spec_sha256(model: BaseModel) -> str:
-    """Return the semantic content identity of a resolved spec."""
+    """Hash a resolved spec's deterministic JSON representation."""
     return hashlib.sha256(canonical_json_bytes(model)).hexdigest()

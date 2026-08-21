@@ -1,6 +1,6 @@
-"""Fourth draft of the Pydantic models for the MANTRA provenance protocol.
+"""Pydantic models for the active MANTRA provenance protocol.
 
-This version separates execution requests, verified data artifacts,
+The model graph separates execution requests, resolved data artifacts,
 the exact Git source tree, requested environments, observed execution
 conditions, and immutable stage-result snapshots.
 """

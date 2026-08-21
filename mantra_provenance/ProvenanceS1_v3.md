@@ -1128,9 +1128,9 @@ Bundle-member paths are unique, remain beneath the bundle root, and appear in
 canonical `relative_path` order. Artifact roots within one stage are pairwise
 non-overlapping.
 
-The executor verifies every file in $F_j(a)$, materializes the file or
+The verifier verifies every file in $F_j(a)$, materializes the file or
 directory, invokes the loader named by the corresponding `ArtifactSpec`, and
-requires:
+requires the loader to return successfully:
 
 $$
 L_a
@@ -1364,7 +1364,9 @@ class ResolvedRun(ProtocolModel):
 ```
 
 Attempt IDs are unique and strictly increasing. Each attempt's
-`resolved_stages` is an ordered prefix of `RunSpec.stages`.
+`resolved_stages` is an ordered prefix of `RunSpec.stages`. Its stage snapshots,
+measurement-file references, and log-file references are unique. Measurement
+and log references are disjoint.
 
 A successful attempt satisfies:
 
@@ -2399,7 +2401,7 @@ checks relationships that cross file boundaries.
 
 ```text
 Pydantic
-└── proves each loaded record is internally valid
+└── establishes that each loaded record satisfies its model
 
 external verifier
 ├── proves each reference identifies the recorded bytes
@@ -2415,7 +2417,8 @@ Pydantic enforces:
 2. Identifier, path, SHA-256, commit, timestamp, and finite-number syntax.
 3. Required fields, nonempty mappings, and discriminated unions.
 4. Unique stage, artifact, factor, level, variant, replicate, seed, metric, and
-   bundle-member identities within their containing records.
+   bundle-member identities within their containing records, plus unique stage
+   snapshots, measurement files, and log files within an attempt.
 5. Single-file cardinality of one and bundle cardinality of at least two.
 6. Matching declared and resolved artifact-name sets inside one resolved stage
    spec.
@@ -2429,18 +2432,21 @@ Pydantic enforces:
 Starting from a `ResolvedRunSpecRef`, the verifier:
 
 1. Retrieves the `RunSpec` bytes and checks SHA-256 and byte count.
-2. Loads `ExperimentSpec`, `VariantSpec`, and the optional `BenchmarkSpec` from
+2. Rejects duplicate YAML keys and requires the canonical run-spec path.
+3. Loads `ExperimentSpec`, `VariantSpec`, and the optional `BenchmarkSpec` from
    `RunSpec.source`.
-3. Checks the experiment, variant, replicate, global-seed, typed-parameter,
+4. Checks the experiment, variant, replicate, global-seed, typed-parameter,
    metric, and benchmark equalities in Sections 16 and 20.
-4. Retrieves every stage-spec file identified by `RunSpec.stages` and checks
+5. Retrieves every stage-spec file identified by `RunSpec.stages` and checks
    its SHA-256 and byte count.
-5. Parses each file through the `Spec` union.
-6. Checks that every `FutureInputRef` selects an earlier stage and a declared
+6. Requires each stage spec, script, artifact root, and stored-input path to use
+   the canonical repository location defined in Section 23.
+7. Parses each file through the `Spec` union.
+8. Checks that every `FutureInputRef` selects an earlier stage and a declared
    producer artifact.
-7. Checks input, script, and artifact-path disjointness after resolving every
+9. Checks input, script, and artifact-path disjointness after resolving every
    input path.
-8. Checks that `RunSpec.estimator` selects `model_parameters` from a training
+10. Checks that `RunSpec.estimator` selects `model_parameters` from a training
    stage.
 
 These checks reconstruct the complete frozen $q$ from its root record and exact
@@ -2452,7 +2458,8 @@ For each `ResolvedStageRef`, the verifier:
 
 1. Retrieves `ResolvedStageRef.resolved_spec` from
    `ResolvedStageRef.snapshot`.
-2. Checks the resolved-spec SHA-256 and byte count.
+2. Requires its canonical resolved-stage path and checks its SHA-256 and byte
+   count.
 3. Parses the file through the `ResolvedSpec` union.
 4. Requires its embedded stage spec to equal the stage spec selected by the
    corresponding `RunStageRef`.
@@ -2463,7 +2470,10 @@ For each `ResolvedStageRef`, the verifier:
    in Section 15.
 7. Checks the canonical command.
 8. Checks the resolved input names and kinds against the planned inputs.
-9. Checks that `completed_at` lies within the containing attempt.
+9. Checks that `completed_at` lies within the containing attempt and does not
+   precede the prior completed stage.
+10. For a download stage, checks that `retrieved_at` lies between attempt start
+    and stage completion.
 
 These checks establish that the recorded runtime state satisfies:
 
@@ -2485,7 +2495,6 @@ For every artifact name in the loaded resolved stage spec, the verifier:
 5. Checks every file's SHA-256 and byte count.
 6. Retrieves the loader from `RunSpec.source` using `ArtifactSpec.loader`.
 7. Materializes the verified file or directory and invokes `load(path)`.
-8. Supplies the reconstructed value to replay or to the consuming stage.
 
 This traversal establishes:
 
@@ -2507,6 +2516,10 @@ For a stored input, the verifier:
 3. Selects its successful attempt.
 4. Selects the producer `ResolvedStageRef` and named artifact.
 5. Verifies and materializes the complete artifact.
+6. For checkpoint inputs, requires both pointers to select one resolved run,
+   one producer stage, `model_parameters`, and `continuation_state`.
+7. For a stored evaluation model, requires the pointer to select
+   `model_parameters`.
 
 For a same-run input, the verifier:
 
@@ -2548,9 +2561,10 @@ For a `ResolvedRun`, the verifier:
 3. Requires the successful attempt to contain every stage exactly once and in
    order.
 4. Verifies every measurement and log file.
-5. Checks every measurement against the run, attempt, stage, experiment, and
-   metric identities.
-6. Loads the estimator artifact selected by `RunSpec.estimator`.
+5. Requires canonical measurement and log paths.
+6. Checks every measurement against the run, attempt, stage, experiment, and
+   stage-specific metric identities.
+7. Loads the estimator artifact selected by `RunSpec.estimator`.
 
 For a `BenchmarkResult`, the verifier additionally performs the benchmark-spec,
 confirmation-attempt, estimator-parity, prediction-parity, metric-criterion,

@@ -1,4 +1,4 @@
-"""YAML loading for stage specs and resolved-spec fixtures."""
+"""Duplicate-key-safe YAML loading for stage and resolved-stage specs."""
 
 from __future__ import annotations
 
