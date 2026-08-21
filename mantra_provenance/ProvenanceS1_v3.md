@@ -823,7 +823,76 @@ Tα,β,q(e) = θₖ*⁽ᵀₖ*⁾ = θ̂q
           Iα(θ̂q) = ĝq
 ```
 
-## 12. Protocol mapping
+## 12. Protocol record roles
+
+Protocol files contain records validated by Pydantic models. Their names state
+their roles:
+
+| Form | Role |
+|---|---|
+| `*Spec` | Declares requested state. |
+| `Resolved*` | Records realized state. |
+| `*Ref` | Identifies another protocol object. |
+| `ArtifactPointer` | Selects one promoted artifact. |
+| `ResolvedArtifact` | Records the files representing one named artifact. |
+| `Measurement` | Records one metric value. |
+| `RunAttempt` | Records one execution attempt. |
+| `ResolvedRun` | Records the terminal run result. |
+
+```text
+Spec
+└── declares requested state and contributes to q
+        │
+        ▼
+q induces E_q
+
+Resolved
+└── records one realized e ∈ E_q
+
+Verifier
+├── checks e ∈ E_q
+└── verifies every referenced file against its recorded identity
+```
+
+The protocol identifies exact files in two forms:
+
+```text
+standalone file
+└── ResolvedFileRef
+    ├── stored_at
+    ├── sha256
+    └── bytes
+
+file in a stage-result snapshot
+├── StageResultSnapshotRef
+│   └── repository + commit
+└── SnapshotFileRef
+    ├── path
+    ├── sha256
+    └── bytes
+```
+
+A role-specific file reference states the record type expected from the
+retrieved bytes. For example, `ResolvedRunRef` identifies a standalone file
+that parses as `ResolvedRun`.
+
+`ArtifactPointer`, `ArtifactPointerRef`, and `ResolvedArtifactPointerRef` have
+separate roles:
+
+```text
+ArtifactPointer
+└── selects one artifact from one successful run
+
+ArtifactPointerRef
+└── identifies the Git file containing that ArtifactPointer
+
+ResolvedArtifactPointerRef
+├── stored_at: ArtifactPointerRef
+├── sha256
+└── bytes
+```
+
+## 13. Protocol mapping
 
 The terminal checkpoint of every training stage is represented by two reserved
 artifacts:
