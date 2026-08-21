@@ -1114,6 +1114,30 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(VerificationError, "SHA-256 mismatch"):
             verify_run_result(resolved_run, fetcher=store.fetch)
 
+    def test_measurement_cannot_follow_its_named_stage(self) -> None:
+        resolved_run, store, _ = build_complete_fixture()
+        attempt = resolved_run.attempts[0]
+        measurement_raw = (
+            b'{"run_id":"01ARZ3NDEKTSV4RRFFQ69G5FAB",'
+            b'"attempt_id":1,"stage_id":"evaluate",'
+            b'"metric_id":"pearson_correlation","value":0.91,'
+            b'"measured_at":"2026-08-20T21:44:00Z"}\n'
+        )
+        reference = attempt.measurement_files[0].model_copy(
+            update={
+                "sha256": sha256(measurement_raw),
+                "bytes": len(measurement_raw),
+            }
+        )
+        store.put(reference.stored_at, measurement_raw)
+        invalid_attempt = attempt.model_copy(
+            update={"measurement_files": (reference,)}
+        )
+        invalid_run = resolved_run.model_copy(update={"attempts": (invalid_attempt,)})
+
+        with self.assertRaisesRegex(VerificationError, "stage completion"):
+            verify_run_result(invalid_run, fetcher=store.fetch)
+
     def test_run_rejects_stage_snapshot_reused_by_a_retry(self) -> None:
         resolved_run, store, _ = build_complete_fixture()
         successful_attempt = resolved_run.attempts[0].model_copy(

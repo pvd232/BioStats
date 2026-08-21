@@ -1130,6 +1130,23 @@ def verify_attempt_files(
     return tuple(measurements)
 
 
+def verify_measurement_stage_times(
+    resolved_stages: Mapping[StageId, ResolvedBaseSpec],
+    measurements: tuple[Measurement, ...],
+) -> None:
+    """Require each measurement to occur by its named stage's completion."""
+    for measurement in measurements:
+        resolved_stage = resolved_stages.get(measurement.stage_id)
+        if resolved_stage is None:
+            raise VerificationError(
+                "measurement stage has no resolved stage result"
+            )
+        if measurement.measured_at > resolved_stage.completed_at:
+            raise VerificationError(
+                "measurement timestamp follows its named stage completion"
+            )
+
+
 def verify_run_result(
     resolved_run: ResolvedRun,
     *,
@@ -1193,15 +1210,15 @@ def verify_run_result(
             verified_stages,
             fetcher=fetcher,
         )
-        all_measurements.extend(
-            verify_attempt_files(
-                attempt,
-                plan.run,
-                plan.experiment,
-                plan.stages,
-                fetcher=fetcher,
-            )
+        attempt_measurements = verify_attempt_files(
+            attempt,
+            plan.run,
+            plan.experiment,
+            plan.stages,
+            fetcher=fetcher,
         )
+        verify_measurement_stage_times(verified_stages, attempt_measurements)
+        all_measurements.extend(attempt_measurements)
         if attempt.attempt_id == resolved_run.successful_attempt_id:
             successful_stages = verified_stages
 
@@ -1688,6 +1705,10 @@ def verify_benchmark_result(
         verified_run.plan.experiment,
         verified_run.plan.stages,
         fetcher=fetcher,
+    )
+    verify_measurement_stage_times(
+        confirmation_stages,
+        confirmation_measurements,
     )
 
     estimator_ref = verified_run.plan.run.estimator

@@ -1436,12 +1436,12 @@ class ResolvedRun(ProtocolModel):
 Attempt IDs are unique and strictly increasing. Each attempt's
 `resolved_stages` is an ordered prefix of `RunSpec.stages`. Its stage snapshots
 are unique. Measurement-file storage locations and log-file storage locations
-are unique and disjoint. Every measurement and log file of one attempt belongs
-to one immutable snapshot $D_i$. Distinct attempts use distinct stage-result
-snapshots and distinct $D_i$ snapshots. Every $D_i$ is distinct from every
-stage-result snapshot. Attempts do not overlap in time, and no attempt follows
-a successful attempt. `ResolvedRun.completed_at` is at or after every attempt's
-completion time.
+are unique and disjoint. When an attempt records measurement or log files,
+they belong to one immutable snapshot $D_i$. Distinct attempts use distinct
+stage-result snapshots and distinct populated $D_i$ snapshots. Every populated
+$D_i$ is distinct from every stage-result snapshot. Attempts do not overlap in
+time, and no attempt follows a successful attempt. `ResolvedRun.completed_at`
+is at or after every attempt's completion time.
 
 A successful attempt satisfies:
 
@@ -1894,6 +1894,9 @@ in ExperimentSpec.metric_ids
 RunAttempt.started_at
 <= Measurement.measured_at
 <= RunAttempt.completed_at
+
+Measurement.measured_at
+<= named ResolvedBaseSpec.completed_at
 ```
 
 Measurement JSON objects have unique field names. A successful evaluation stage
@@ -2657,11 +2660,12 @@ For a same-run input, the verifier:
 3. Selects `producer_artifact` from its artifact mapping.
 4. Verifies and materializes the complete artifact.
 
-For each attempt, the verifier also requires every measurement and log file to
-belong to one immutable snapshot $D_i$. Distinct attempts use disjoint
-stage-result and $D_i$ snapshots, and no $D_i$ equals a stage-result snapshot.
-Measurement rows identify completed stages. Log paths identify completed
-stages or the next interrupted stage of a non-successful attempt.
+For each attempt that records measurement or log files, the verifier requires
+every such file to belong to one immutable snapshot $D_i$. Distinct attempts
+use disjoint stage-result and populated $D_i$ snapshots, and no populated
+$D_i$ equals a stage-result snapshot. Measurement rows identify completed
+stages. Log paths identify completed stages or the next interrupted stage of a
+non-successful attempt.
 
 ### Training-continuation verification
 
@@ -2702,7 +2706,8 @@ For a `ResolvedRun`, the verifier:
 6. Verifies every measurement and log file.
 7. Requires canonical measurement and log paths.
 8. Checks every measurement against the run, attempt, stage, experiment, and
-   stage-specific metric identities.
+   stage-specific metric identities and requires its timestamp not to follow
+   the named stage's completion.
 9. Loads the estimator artifact selected by `RunSpec.estimator`.
 
 For a `BenchmarkResult`, the verifier additionally performs the benchmark-spec,
@@ -2766,8 +2771,9 @@ After the attempt reaches a terminal status:
 
 1. Record `completed_at`, status, and failure reason.
 2. Close its measurement and log files.
-3. Publish those files as snapshot $D_i$.
-4. Retrieve and verify every published file.
+3. When either file collection is nonempty, publish the files as snapshot
+   $D_i$.
+4. Retrieve and verify each published file.
 5. Construct the complete `RunAttempt`.
 
 ```text
