@@ -236,6 +236,11 @@ E_{q,1}
 E_{q,m}.
 $$
 
+The stage specifications in $q$ fix the computation. The selected environments
+and $c_q$ define $E_q$, the runtime variation permitted while executing that
+fixed computation. Section 6 requires $T_{\alpha,\beta,q}$ to have the same
+value for every member of $E_q$.
+
 One execution realizes:
 
 $$
