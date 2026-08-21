@@ -23,6 +23,7 @@ from pydantic import (
 from .ids import (
     ExperimentId,
     FactorId,
+    HumanId,
     InputName,
     LevelId,
     MetricId,
@@ -62,6 +63,10 @@ GitCommit = Annotated[
     str,
     Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"),
 ]
+ArtifactName = HumanId
+ArtifactLoaderId = HumanId
+BenchmarkId = HumanId
+SelectionName = HumanId
 
 
 class ProtocolModel(BaseModel):
@@ -95,7 +100,7 @@ class GitFileRef(GitSource):
 
 
 class ArtifactPointerRef(GitFileRef):
-    """A Git reference to the pointer selecting a promoted artifact manifest."""
+    """A Git reference to the pointer selecting a promoted artifact."""
 
 
 class HuggingFaceFileRef(ProtocolModel):
@@ -105,6 +110,15 @@ class HuggingFaceFileRef(ProtocolModel):
     repository: str = Field(min_length=1)
     commit: GitCommit
     path: RepoRelPath
+    repo_type: Literal["model", "dataset", "space"]
+
+
+class StageResultSnapshotRef(ProtocolModel):
+    """The immutable repository revision containing one completed stage."""
+
+    kind: Literal["huggingface"] = "huggingface"
+    repository: NonEmptyStr
+    commit: GitCommit
     repo_type: Literal["model", "dataset", "space"]
 
 
@@ -137,6 +151,14 @@ class ResolvedFileRef(ProtocolModel):
     sha256: SHA256
     bytes: int = Field(ge=0)
     stored_at: StorageRef
+
+
+class SnapshotFileRef(ProtocolModel):
+    """One exact file within a stage-result snapshot."""
+
+    path: RepoRelPath
+    sha256: SHA256
+    bytes: int = Field(ge=0)
 
 
 class ResolvedGitFileRef(ResolvedFileRef):
