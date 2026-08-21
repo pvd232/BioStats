@@ -14,7 +14,7 @@ Stage 1 records and verifies one model-building run from its fixed inputs to its
 fitted estimator. It defines:
 
 1. A run plan.
-2. The runtime states permitted by that plan.
+2. The runtime states induced by that plan.
 3. The condition under which the plan provides strict parameter
    reproducibility.
 4. The ordered stage partition declared by the plan.
@@ -26,19 +26,86 @@ fitted estimator. It defines:
 Benchmark definitions, benchmark reproducibility, diagnostics, evaluation
 records, promotion gates, and SOTA selection belong to the next protocol stage.
 
+### How to read schema names
+
+Protocol files contain records validated by Pydantic models. The following
+naming rules identify each record's role.
+
+| Form | Role |
+|---|---|
+| `*Spec` | Declares requested state. |
+| `Resolved*` | Records realized state. |
+| `*Ref` | Identifies another object. |
+| `ArtifactPointer` | Selects one promoted artifact. |
+| `ResolvedArtifact` | Records the physical files representing one named artifact. |
+| `Measurement` | Records one metric value. |
+| `RunAttempt` | Records one execution attempt. |
+| `ResolvedRun` | Records the terminal run result. |
+
+```text
+RunSpec + ordered stage specs
+→ form q
+→ q declares requested state and induces E_q
+
+Resolved records
+→ record realized state e
+
+Verifier
+→ checks e ∈ E_q
+```
+
+The protocol identifies exact files in two forms:
+
+```text
+Standalone file
+└── ResolvedFileRef
+    ├── stored_at
+    ├── sha256
+    └── bytes
+
+File in a stage-result snapshot
+├── StageResultSnapshotRef
+│   └── repository + commit
+└── SnapshotFileRef
+    ├── path
+    ├── sha256
+    └── bytes
+```
+
+Role-specific file references state the expected contents of the referenced
+file. For example, `ResolvedRunRef` identifies a file that parses as
+`ResolvedRun`.
+
+An artifact pointer illustrates the distinction between a stored object and
+references to its file:
+
+```text
+ArtifactPointerRef
+└── Git repository + commit + path of the pointer file
+
+ResolvedArtifactPointerRef
+├── sha256 + bytes of the pointer file
+└── stored_at: ArtifactPointerRef
+
+retrieved pointer-file bytes
+└── parse as ArtifactPointer
+    ├── run: ResolvedRunRef
+    └── artifact: StageArtifactRef
+```
+
 ---
 
 ## 2. Fitted estimator under runtime variation
 
-Let ${\alpha}$ identify a parameterized prediction-function family. It fixes a
-parameter space ${\Theta_{\alpha}}$.
+Let $\alpha$ identify a parameterized prediction-function family. It fixes a
+parameter space $\Theta_{\alpha}$.
 
-Let ${\beta \in \mathcal{B}_\alpha}$ identify the chosen estimator.
+Let $\beta\in\mathcal{B}_\alpha$ identify the chosen estimator.
 
-Let ${D \in \mathcal{D}}$ be an arbitrary dataset. 
+Let $D\in\mathcal{D}$ be an arbitrary dataset.
 
-Let ${e \in E}$ be a runtime state, defined as a particular assignment of execution parameters that can
-vary between two executions.
+Let $e\in E$ be a runtime state: one assignment of the execution parameters
+that may vary between executions.
 
 The runtime-indexed estimator is:
 
@@ -50,17 +117,49 @@ $$
 \Theta_{\alpha}.
 $$
 
-It defines the map from the chosen runtime state and dataset to the fitted parameter.
+It maps a dataset and runtime state to a fitted parameter value.
 
 ---
 
-## 3. Run plan and strict parameter reproducibility
+## 3. Run plan, strict parameter reproducibility, and induced partitions
 
-Let $q$ be a run plan. The plan fixes $\alpha$, $\beta$, and
-$D_q\in\mathcal D$, and induces a nonempty set of permitted runtime states
-$E_q\subseteq E$.
+### Run plan
 
-Define the estimator restricted by $q$ as:
+A `RunSpec` and its ordered stage specs form one run plan. Let $r$ denote the
+`RunSpec`, and let $\omega_1,\ldots,\omega_m$ denote its stage specs in
+`RunSpec.stages` order, where $m\geq 1$. Then:
+
+$$
+q
+=
+\left(
+r,
+\omega_1,
+\ldots,
+\omega_m
+\right).
+$$
+
+Each `RunStageRef` in $r$ identifies its corresponding $\omega_i$ by stage ID,
+path, SHA-256, and byte count.
+
+### Strict parameter reproducibility
+
+The plan $q$ selects an exact root dataset $D_0$ and declares a deterministic
+data-selection map $S_q$. The dataset supplied to the estimator is:
+
+$$
+D_q = S_q(D_0).
+$$
+
+$S_q$ contains every operation that determines which observations and features
+enter estimation, including dataset selection, quality-control filtering,
+perturbation selection, and highly variable gene selection.
+
+The plan $q$ fixes $\alpha$, $\beta$, and $D_q\in\mathcal D$, and induces a
+nonempty set of permitted runtime states $E_q\subseteq E$.
+
+Define:
 
 $$
 T_{\alpha,\beta,q}:E_q\rightarrow\Theta_\alpha,
@@ -84,8 +183,8 @@ T_{\alpha,\beta,q}(e)
 T_{\alpha,\beta,q}(e').
 $$
 
-Because $E_q$ is nonempty, this common value exists. Denote it by
-$\widehat\theta_q$. Therefore:
+Because $E_q$ is nonempty, the shared result is one value
+$\widehat\theta_q\in\Theta_\alpha$:
 
 $$
 \forall e\in E_q,
@@ -95,9 +194,133 @@ T_{\alpha,\beta,q}(e)
 \widehat\theta_q.
 $$
 
+### Stage partition
+
+The ordered stage specs form the stage partition induced by $q$:
+
+$$
+\Pi(q)
+=
+\left\langle
+\omega_1,
+\ldots,
+\omega_m
+\right\rangle.
+$$
+
+Each member of $\Pi(q)$ is the exact stage spec identified by the corresponding
+`RunStageRef`. Before execution, the verifier establishes:
+
+1. Every `RunStageRef.stage_id` is unique.
+2. Every `RunStageRef.spec` path is unique.
+3. Every `FutureInputRef.producer_stage_id` names an earlier stage.
+
+For the successful attempt, the verifier establishes:
+
+4. Every successfully completed stage records all artifacts declared by its
+   stage spec.
+5. The successful attempt completes every stage in the declared order.
+
+### Artifact and physical-file partitions
+
+Let $s\in\Pi(q)$ be a stage spec whose execution completed successfully. Let
+$N_s$ be the finite, nonempty set of artifact names in its
+`BaseSpec.artifacts` mapping.
+
+The stage's `ResolvedBaseSpec` records the same artifact names:
+
+```text
+keys(ResolvedBaseSpec.spec.artifacts)
+==
+keys(ResolvedBaseSpec.artifacts)
+==
+N_s
+```
+
+For each $a\in N_s$, let $F_s(a)$ be the set of physical files identified by
+`ResolvedBaseSpec.artifacts[a]`:
+
+```text
+ResolvedBaseSpec.artifacts[a]
+├── ResolvedSingleFileArtifact.file
+│   └── F_s(a) contains one file
+└── ResolvedBundleArtifact.members[].file
+    └── F_s(a) contains two or more files
+```
+
+Each artifact $a$ has a loading function $L_a$ fixed by its `ArtifactSpec`.
+The function receives the materialized files in $F_s(a)$ and reconstructs the
+value represented by $a$.
+
+Completeness requires:
+
+$$
+L_a\left(F_s(a)\right) = a.
+$$
+
+Minimality requires that $L_a$ cannot reconstruct $a$ from any proper subset of
+$F_s(a)$:
+
+$$
+\forall G \subsetneq F_s(a),
+\qquad
+L_a(G)\ \text{is undefined}.
+$$
+
+The artifact partition is:
+
+$$
+A(s)
+=
+\left\{
+F_s(a)
+\mid
+a\in N_s
+\right\}.
+$$
+
+The complete set of physical artifact files produced by the execution requested
+by $s$ is:
+
+$$
+O_s
+=
+\bigcup_{a\in N_s}F_s(a).
+$$
+
+The artifact file sets are pairwise disjoint. For distinct $a,b\in N_s$:
+
+$$
+F_s(a)\cap F_s(b)=\varnothing.
+$$
+
+The induced structure is:
+
+$$
+q
+\longrightarrow
+\Pi(q)
+\longrightarrow
+A(s)
+\longrightarrow
+F_s(a)
+\longrightarrow
+O_s.
+$$
+
+### Validity and parsimony
+
+```text
+selected Π(q), A(s), and F_s(a)
+├── plan design and protocol review
+│   └── compare valid alternatives and select the minimum representation
+└── Pydantic, verifier, and replay
+    └── establish that the selected representation satisfies its contract
+```
+
 ---
 
-## 4. Protocol hierarchy
+## 4. Protocol overview
 
 The protocol follows the execution of one experiment.
 
@@ -195,146 +418,53 @@ ArtifactPointer
 
 ### Verify the provenance chain
 
-Pydantic models validate each loaded record. The external verifier retrieves
-referenced files, verifies their bytes, and checks the relationships among the
-experiment, run, stages, inputs, artifacts, measurements, source, environment,
-and runtime controls.
+The enforcement stack establishes a byte-verified derivation from the fitted
+estimator back to the run plan and every persisted input.
+
+Pydantic validates each record before the verifier uses it:
+
+```text
+stored record bytes
+→ parse as the declared Pydantic model
+→ enforce field types, discriminated unions, cardinality, uniqueness,
+  and equalities visible within that record
+→ typed record
+```
+
+The external verifier begins with `ResolvedRun` and follows every reference
+needed to reconstruct the producing execution:
+
+```text
+ResolvedRun
+├── spec
+│   └── verify bytes → load RunSpec
+│       ├── load ExperimentSpec and VariantSpec
+│       └── verify every ordered stage-spec file
+└── successful RunAttempt
+    ├── ResolvedStageRef
+    │   └── verify stage-result snapshot
+    │       ├── load ResolvedBaseSpec
+    │       │   ├── compare its embedded stage spec with the run-plan stage spec
+    │       │   ├── verify source, environment, command, and execution context
+    │       │   └── follow each resolved input
+    │       │       ├── stored input → ArtifactPointer → producing ResolvedRun
+    │       │       └── future input → earlier ResolvedStageRef
+    │       └── verify every file in each named artifact
+    ├── verify measurement files
+    └── verify log files
+```
+
+Each file-reference traversal retrieves the target bytes and compares their
+SHA-256 and byte count with the reference. The verifier parses the expected
+model and checks the cross-record equality that connects it to the preceding
+record. Successful traversal binds the estimator files to the successful stage
+execution, the stage execution to its requested stage spec and runtime
+controls, and every stored or same-run input to the verified artifact that
+supplied its bytes.
 
 ---
 
-## 5. Stage partition
-
-The run plan declares the finite ordered stage sequence:
-
-$$
-\Pi(q)
-=
-\left\langle
-s_1,
-\ldots,
-s_m
-\right\rangle,
-\qquad
-m\geq 1.
-$$
-
-`RunSpec.stages` records this order. Each stage spec records one execution
-request. A valid stage sequence satisfies:
-
-1. Every `stage_id` is unique.
-2. Every stage-spec path is unique.
-3. Every `FutureInputRef` names an earlier stage.
-4. Every successfully completed stage records all artifact outputs declared by
-   its stage spec.
-5. The successful attempt completes every stage in the declared order.
-
-Stage 1 accepts `Pi(q)` as declared by the run plan.
-
----
-
-## 6. Artifact and physical-file partitions
-
-Let `s` be a successfully completed stage.
-
-The stage spec inside `q` declares the artifact names and output paths for `s`.
-Execution realizes those declarations as physical files. The following
-definitions connect the declared outputs to their resolved representations.
-
-Let `O_s` be the finite, nonempty set of physical files declared as artifact
-outputs of `s`.
-
-Let `N_s` be the finite, nonempty set of artifact names declared by `s`.
-
-For every artifact name `a` in `N_s`, let:
-
-$$
-F_s(a)\subseteq O_s
-$$
-
-be the minimal complete set of physical files required to reconstruct artifact
-`a` under its declared loading contract.
-
-The artifact partition of stage `s` is:
-
-$$
-A(s)
-=
-\left\{
-F_s(a)
-:
-a\in N_s
-\right\}.
-$$
-
-### Partition invariants
-
-The partition satisfies:
-
-$$
-\lvert A(s)\rvert\geq 1,
-$$
-
-$$
-\lvert F_s(a)\rvert\geq 1
-\quad
-\text{for every }a\in N_s,
-$$
-
-$$
-\bigcup_{a\in N_s}F_s(a)=O_s,
-$$
-
-and, for distinct artifact names `a` and `b`,
-
-$$
-F_s(a)\cap F_s(b)=\varnothing.
-$$
-
-The resulting hierarchy is:
-
-```text
-successful stage s
-└── artifact partition A(s), containing one or more named artifacts
-    └── artifact a
-        └── minimal complete file set F_s(a)
-            ├── one file     → ResolvedSingleFileArtifact
-            └── two or more → ResolvedBundleArtifact
-```
-
-### Artifact boundary
-
-`BaseSpec.artifacts` supplies `N_s`. Each name identifies one output value that
-a consumer may reference. The files jointly required to reconstruct that value
-form its `F_s(a)`. Distinct artifact names therefore induce distinct blocks in
-`A(s)`.
-
-Examples:
-
-```text
-model.pt + config.pkl
-→ both files required by the model loader
-→ one artifact named model
-→ ResolvedBundleArtifact
-```
-
-```text
-model.pt + perturbation_embeddings.pt
-→ either value may be consumed independently
-→ artifacts named model and perturbation_embeddings
-→ two ResolvedSingleFileArtifact records
-```
-
-The declaration asserts semantic completeness and minimality. The verifier
-enforces the structural consequences: cardinality, complete member inventory,
-disjoint membership, path containment, atomic materialization, and exact file
-identity.
-
-`O_s` contains artifact files only. Measurement files, logs, and protocol
-records retain their separate roles in `RunAttempt` and `ResolvedRun`.
-
----
-
-## 7. Runtime coordinates represented by the protocol
+## 5. Runtime coordinates represented by the protocol
 
 The following records connect the plan to one realized runtime state:
 
@@ -373,7 +503,7 @@ is a counterexample to strict parameter reproducibility.
 
 ---
 
-## 8. Source snapshot and run-plan snapshot
+## 6. Source snapshot and run-plan snapshot
 
 The protocol uses two immutable Git snapshots.
 
@@ -388,7 +518,7 @@ Source commit A
         │
         ▼ create and validate the concrete run plan
 Run-plan commit B
-├── <run_id>.run.yaml
+├── experiments/<experiment_id>/runs/<variant_id>/<run_id>/spec.yaml
 └── stage-spec files
         │
         ▼ execute B's plan using A's source
@@ -405,7 +535,7 @@ execution begins.
 
 ---
 
-## 9. File identity and storage
+## 7. File identity and storage
 
 All protocol models reject unexpected fields and are frozen after validation:
 
@@ -429,6 +559,7 @@ Storage locations are:
 class RemoteFileRef(ProtocolModel):
     kind: Literal["remote"] = "remote"
     url: HttpUrl
+    version: NonEmptyStr
 
 
 class GitSource(ProtocolModel):
@@ -477,8 +608,8 @@ class SnapshotFileRef(ProtocolModel):
     bytes: int = Field(ge=0)
 ```
 
-Role-specific references preserve the general file identity while identifying
-the type of document expected at that location:
+Role-specific references restrict the permitted storage location, identify the
+expected document type, or perform both roles:
 
 ```python
 class ResolvedGitFileRef(ResolvedFileRef):
@@ -537,12 +668,20 @@ Artifact storage paths mirror the declared repository-relative output paths.
 Stored-input materialization paths remain independent of the pointer file's Git
 path and the artifact's remote storage path.
 
+For a run identified by `experiment_id`, `variant_id`, and `run_id`, every
+declared artifact path lies beneath:
+
+```text
+experiments/<experiment_id>/runs/<variant_id>/<run_id>/artifacts/
+```
+
 ---
 
-## 10. Artifact declarations and resolved artifacts
+## 8. Artifact declarations and resolved artifacts
 
 ```python
 ArtifactName = HumanId
+ArtifactLoaderId = HumanId
 ```
 
 ### Stage declaration
@@ -551,12 +690,13 @@ ArtifactName = HumanId
 class SingleFileArtifactSpec(ProtocolModel):
     kind: Literal["file"] = "file"
     path: RepoRelPath
+    loader: ArtifactLoaderId
 
 
 class BundleArtifactSpec(ProtocolModel):
     kind: Literal["bundle"] = "bundle"
     path: RepoRelPath
-
+    loader: ArtifactLoaderId
 
 ArtifactSpec = Annotated[
     SingleFileArtifactSpec | BundleArtifactSpec,
@@ -570,6 +710,41 @@ class BaseSpec(ProtocolModel):
 
 For a file artifact, `path` is its canonical file path. For a bundle artifact,
 `path` is its canonical directory root.
+
+An artifact loader is a Python file stored at:
+
+```text
+src/mantra/artifact_loaders/<loader_id>.py
+```
+
+`ArtifactSpec.loader` supplies the `loader_id`. The verifier retrieves the loader file using:
+
+```text
+RunSpec.source.repository
++
+RunSpec.source.commit
++
+src/mantra/artifact_loaders/<loader_id>.py
+```
+
+The loader defines:
+
+```python
+def load(path: Path) -> object:
+    ...
+```
+
+For a single-file artifact, `path` identifies the materialized file.
+
+For a bundle artifact, `path` identifies the materialized directory containing every member of $F_s(a)$.
+
+During replay, the executor:
+
+1. Verifies every file in $F_s(a)$.
+2. Materializes the complete file set.
+3. Loads the module identified by `ArtifactSpec.loader`.
+4. Calls `load(path)`.
+5. Supplies the returned value to the consuming stage.
 
 ### Resolved representation
 
@@ -635,7 +810,7 @@ non-overlapping.
 
 ---
 
-## 11. Stage-result snapshots and promotion pointers
+## 9. Stage-result snapshots and promotion pointers
 
 Each completed stage publishes one stage-result snapshot:
 
@@ -654,7 +829,7 @@ snapshot:
   commit: <stage-result-commit>
   repo_type: dataset
 resolved_spec:
-  path: experiments/e001/runs/01JABC/attempts/1/train.resolved.yaml
+  path: experiments/e001/runs/baseline/01JABC/stages/train/resolved.yaml
   sha256: <resolved-spec-sha256>
   bytes: 8421
 ```
@@ -665,21 +840,21 @@ The snapshot contains:
 ResolvedStageRef.snapshot
 ├── ResolvedStageRef.resolved_spec
 │   └── loads ResolvedBaseSpec
-└── every SnapshotFileRef reached through
+└── every file identified by a SnapshotFileRef reached through
     ResolvedBaseSpec.artifacts[artifact_name]
 ```
 
 The artifact names satisfy:
 
 ```text
-keys(BaseSpec.artifacts)
+keys(ResolvedBaseSpec.spec.artifacts)
 ==
 keys(ResolvedBaseSpec.artifacts)
 ==
 N_s
 ```
 
-For every artifact name `a`, the verifier performs:
+For every artifact name $a$, the verifier performs:
 
 ```text
 ResolvedStageRef.snapshot
@@ -735,7 +910,7 @@ The selected `StageArtifactRef.artifact_name` must occur in that stage's loaded
 
 ---
 
-## 12. Stage inputs
+## 10. Stage inputs
 
 ### Stored input
 
@@ -762,8 +937,10 @@ StoredInputRef.pointer
 The traversal is:
 
 ```text
-StoredInputRef.pointer
-→ retrieve and verify ArtifactPointer
+ResolvedStoredInputRef.pointer
+→ retrieve pointer-file bytes
+→ verify SHA-256 and byte count
+→ parse ArtifactPointer
 → ArtifactPointer.run
 → retrieve and verify ResolvedRun
 → successful RunAttempt
@@ -825,13 +1002,70 @@ producer ResolvedBaseSpec.spec.artifacts[
 
 ### Download root
 
-A `DownloadSpec` receives one external URL and creates the first
-byte-identified artifact inside MANTRA. Later runs consume that artifact through
-an `ArtifactPointer` after promotion.
+A `DownloadSpec` records the external source URL and source-defined version. Its
+resolved record adds the retrieval time:
+
+```python
+class ResolvedDownloadSpec(ResolvedBaseSpec):
+    retrieved_at: AwareDatetime
+```
+
+The resolved record satisfies:
+
+```text
+ResolvedDownloadSpec.inputs
+==
+ResolvedDownloadSpec.spec.inputs
+
+ResolvedDownloadSpec.retrieved_at
+<=
+ResolvedDownloadSpec.completed_at
+```
+
+The completed download stage hashes the retrieved bytes and publishes them in
+its stage-result snapshot. The published artifact establishes an exact root
+dataset $D_0$. A model-building plan selects those bytes through an
+`ArtifactPointer`; its declared data-selection map $S_q$ produces:
+
+$$
+D_q = S_q(D_0).
+$$
+
+`RemoteFileRef.url`, `RemoteFileRef.version`, and
+`ResolvedDownloadSpec.retrieved_at` record the external source. The resulting
+`SnapshotFileRef.sha256` and `SnapshotFileRef.bytes` identify the exact dataset
+bytes stored in the Hugging Face snapshot.
+
+```text
+RemoteFileRef
+├── url
+└── version
+        │
+        ▼ execute DownloadSpec
+ResolvedDownloadSpec.retrieved_at
+        │
+        ▼ hash and publish the result
+ResolvedStageRef.snapshot
+└── SnapshotFileRef
+    ├── path
+    ├── sha256
+    └── bytes
+        │
+        ▼ promote for later selection
+ArtifactPointer
+```
 
 ---
 
-## 13. Experiment, variant, replicate, and seed
+## 11. Experiment, variant, replicate, and seed
+
+`RunSpec.source` fixes the Git repository and commit containing the selected
+experiment and variant files. Their repository-relative paths are:
+
+```text
+experiments/<experiment_id>/spec.yaml
+experiments/<experiment_id>/variants/<variant_id>.spec.yaml
+```
 
 ```text
 ExperimentSpec
@@ -918,11 +1152,11 @@ every stage's ReproducibilitySpec.randomness.seed
 
 Before each stage executes, MANTRA applies the stage's recorded seed to Python,
 NumPy, PyTorch, and the DataLoader generator. Every retry of one run uses the
-same seed. A different replicate seed produces a different run.
+same seed. Selecting another replicate supplies its seed to another `RunSpec`.
 
 ---
 
-## 14. Environment, numerical controls, and command
+## 12. Environment, numerical controls, and command
 
 The pre-execution records and realized records have separate roles:
 
@@ -959,7 +1193,7 @@ The verifier checks each constrained coordinate against the realized
 
 ### Canonical command
 
-For the `RunStageRef` and loaded stage spec belonging to stage `s`, the executor
+For the `RunStageRef` and loaded stage spec belonging to stage $s$, the executor
 constructs:
 
 ```text
@@ -982,7 +1216,7 @@ spec.
 
 ---
 
-## 15. Run, attempt, and measurement records
+## 13. Run, attempt, and measurement records
 
 ```python
 class RunStageRef(ProtocolModel):
@@ -1006,7 +1240,7 @@ class RunSpec(ProtocolModel):
 ```
 
 `RunSpec.estimator` identifies the artifact whose loading contract reconstructs
-`theta_hat_q`.
+$\widehat\theta_q$.
 
 ```python
 class RunAttempt(ProtocolModel):
@@ -1071,7 +1305,7 @@ every row against the containing run, attempt, stage, and experiment.
 
 ---
 
-## 16. Validation and external verification
+## 14. Validation and external verification
 
 ### Pydantic validators
 
@@ -1082,9 +1316,11 @@ Pydantic validates relationships visible inside one loaded object:
 3. Required fields and discriminated unions.
 4. Nonempty artifact mappings.
 5. File-versus-bundle cardinality.
-6. Unique IDs, paths, artifact names, and bundle-member paths.
+6. Unique IDs, paths, and bundle-member paths.
 7. Matching key sets embedded within one resolved stage spec.
 8. Attempt status, timestamp, ordering, and successful-attempt invariants.
+9. Download URL and version equality, and retrieval time at or before stage
+   completion.
 
 ### External verifier
 
@@ -1095,13 +1331,17 @@ multiple records.
 
 1. Retrieve `ResolvedRun.spec` and verify its SHA-256 and byte count.
 2. Parse the file as `RunSpec`.
-3. Load the deterministic experiment and variant paths from `RunSpec.source`.
+3. Derive the experiment and variant paths from `RunSpec.experiment_id` and
+   `RunSpec.variant_id`, then load both files from `RunSpec.source`.
 4. Verify the experiment, variant, replicate, metric, and seed relationships.
 5. Retrieve each stage spec from the run-plan snapshot and verify its
    `RunStageRef.sha256` and `RunStageRef.bytes`.
-6. Verify stage order, future-input order, output-path separation, and typed
-   variant parameters.
-7. Verify that each attempt's resolved stages form an ordered prefix of
+6. Verify that every `FutureInputRef.producer_stage_id` names an earlier
+   `RunStageRef`.
+7. Verify that local input paths, `BaseSpec.script`, and declared artifact roots
+   are pairwise non-overlapping where the executor materializes files.
+8. Verify the typed variant parameters against the loaded stage specs.
+9. Verify that each attempt's resolved stages form an ordered prefix of
    `RunSpec.stages` and that the successful attempt contains every run stage.
 
 #### Resolved execution
@@ -1110,9 +1350,13 @@ multiple records.
    `ResolvedStageRef.snapshot` with `ResolvedStageRef.resolved_spec.path`.
 2. Parse each file through the resolved-stage-spec union.
 3. Verify the canonical command.
-4. Verify the resolved source, environment, execution context, inputs, and
-   completion time.
-5. Verify that each constrained runtime coordinate satisfies its plan policy.
+4. Verify that `ResolvedBaseSpec.source` identifies `BaseSpec.script` in
+   `RunSpec.source` and matches the retrieved source bytes.
+5. Verify that the resolved environment and `ExecutionContext` satisfy every
+   requested environment and reproducibility constraint.
+6. Verify that the resolved inputs correspond by name and kind to the planned
+   inputs.
+7. Verify the stage completion time against its containing `RunAttempt`.
 
 #### Artifact partition
 
@@ -1135,7 +1379,8 @@ multiple records.
    the `ResolvedStageRef` named by `FutureInputRef.producer_stage_id`.
 4. Select the artifact named by `FutureInputRef.producer_artifact` from the
    producer's loaded `ResolvedBaseSpec.artifacts` mapping.
-5. Materialize the complete artifact before executing the consumer.
+5. Verify every file in the selected artifact before returning its complete
+   file set to the executor.
 
 #### Run result
 
@@ -1147,7 +1392,7 @@ multiple records.
 
 ---
 
-## 17. Execution and publication sequence
+## 15. Execution and publication sequence
 
 ### Before execution
 
@@ -1155,12 +1400,13 @@ multiple records.
    lockfile, and promoted-input pointers as source commit A.
 2. Select the experiment, variant, and replicate.
 3. Create the concrete stage specs.
-4. Construct `RunSpec` with source commit A, the selected seed, ordered
+4. Validate and serialize every stage spec.
+5. Calculate the SHA-256 and byte count of every serialized stage-spec file.
+6. Construct `RunSpec` with source commit A, the selected seed, ordered
    `RunStageRef` records, and the estimator artifact reference.
-5. Validate the complete run plan.
-6. Calculate the SHA-256 and byte count of every stage-spec file.
-7. Publish `RunSpec` and every stage spec together as run-plan commit B.
-8. Retrieve commit B and verify every published file.
+7. Validate and serialize the complete run plan.
+8. Publish `RunSpec` and every stage spec together as run-plan commit B.
+9. Retrieve commit B and verify every published file.
 
 ### For each attempt
 
@@ -1174,14 +1420,22 @@ multiple records.
    3. Apply the run seed to every controlled random-number generator.
    4. Construct and record the canonical command.
    5. Execute the stage script with its stage-spec path.
-   6. Classify the declared artifact outputs into `A(s)` and `F_s(a)`.
+   6. Resolve every declared artifact as a `ResolvedSingleFileArtifact` or
+      `ResolvedBundleArtifact`, producing $A(s)$ and each $F_s(a)$.
    7. Record measurements and logs.
    8. Publish and verify the stage-result snapshot described below.
-6. Publish and verify the attempt's measurement and log files.
-7. Record the attempt's terminal status and completion time.
-8. After the run reaches a terminal status, write and publish `ResolvedRun`.
+6. Record the attempt's terminal status and completion time, then close its
+   measurement and log files.
+7. Publish and verify the closed measurement and log files.
 
-### Successful-stage publication
+### After the final attempt
+
+1. Determine the run's terminal status and `successful_attempt_id`.
+2. Construct `ResolvedRun` with the run-plan reference and every closed
+   `RunAttempt`.
+3. Publish and verify `ResolvedRun`.
+
+### Result publication
 
 ```text
 Stage-result commit C_s — one stage-result snapshot in the artifact repository
@@ -1205,7 +1459,7 @@ Terminal-run commit E — terminal record in the artifact repository
         └── resolved_stages → stage-result commits C_s
 
 Optional promotion commit F — pointer in Git
-└── inputs/<name>.pointer.yaml
+└── inputs/<producer_type>/<producer_id>/<selection_name>.pointer.yaml
     ├── run → ResolvedRun at commit E
     └── artifact → StageArtifactRef
         │
@@ -1230,20 +1484,110 @@ under `inputs/` at optional commit F. The pointer contains the terminal
 
 ---
 
-## 18. Reference cases
+## 16. Repository layout
+
+Pointer filenames use:
+
+```python
+SelectionName = HumanId
+```
+
+Each `selection_name` is scoped by its `dataset_id`, `prior_id`, or `model_id`.
+
+```text
+repository/
+├── README.md
+├── pyproject.toml
+├── environment.yml
+├── .gitignore
+├── docs/
+├── scripts/
+├── src/
+│   └── mantra/
+│       ├── datasets/
+│       │   └── <dataset_id>/
+│       │       └── download.py
+│       ├── priors/
+│       │   └── <prior_id>/
+│       │       └── build.py
+│       ├── models/
+│       │   └── <model_id>/
+│       │       ├── embed.py
+│       │       ├── train.py
+│       │       └── evaluate.py
+│       ├── metrics/
+│       │   └── <metric_id>.py
+│       └── artifact_loaders/
+│           └── <loader_id>.py
+├── tests/
+├── inputs/
+│   ├── datasets/
+│   │   └── <dataset_id>/
+│   │       └── <selection_name>.pointer.yaml
+│   ├── priors/
+│   │   └── <prior_id>/
+│   │       └── <selection_name>.pointer.yaml
+│   └── models/
+│       └── <model_id>/
+│           └── <selection_name>.pointer.yaml
+├── benchmarks/
+│   └── <benchmark_id>.spec.yaml
+└── experiments/
+    └── <experiment_id>/
+        ├── spec.yaml
+        ├── README.md
+        ├── variants/
+        │   └── <variant_id>.spec.yaml
+        └── runs/
+            └── <variant_id>/
+                └── <run_id>/
+                    ├── spec.yaml
+                    ├── resolved.yaml
+                    ├── stages/
+                    │   └── <stage_id>/
+                    │       ├── spec.yaml
+                    │       └── resolved.yaml
+                    ├── artifacts/
+                    │   ├── datasets/
+                    │   │   └── <dataset_id>/
+                    │   │       └── dataset.h5ad
+                    │   ├── priors/
+                    │   │   └── <prior_id>/
+                    │   │       └── prior.pt
+                    │   └── models/
+                    │       └── <model_id>/
+                    │           ├── embedding.pt
+                    │           ├── weights.pt
+                    │           └── predictions.pt
+                    ├── measurements/
+                    │   └── <stage_id>.<metric_id>.jsonl
+                    └── logs/
+                        ├── <attempt_id>.<stage_id>.stdout.log
+                        └── <attempt_id>.<stage_id>.stderr.log
+```
+
+The run directory is the durable output root. Its `artifacts/`,
+`measurements/`, and `logs/` directories separate the files produced during
+execution by protocol role. Stable repository-relative paths identify each
+role; immutable storage commits distinguish files published by different
+attempts.
+
+---
+
+## 17. Reference cases
 
 | Stage output | Artifact partition |
 |---|---|
 | Final estimator stored in `model.pt` | One `ResolvedSingleFileArtifact` named `model` |
 | Estimator requiring `model.pt` and `config.pkl` | One `ResolvedBundleArtifact` named `model` |
-| Sharded estimator plus its index | One `ResolvedBundleArtifact` |
-| Model and independently consumed embeddings | Two named artifacts |
-| Model and exact-continuation state selected independently | Two named artifacts |
-| Checkpoint whose loader requires model, optimizer, scheduler, RNG, and sampler files together | One checkpoint bundle |
-| Persisted prediction matrix consumed independently | One named artifact |
+| Sharded estimator plus its index | One `ResolvedBundleArtifact` named `model` |
+| Model and independently consumed embeddings | Two artifacts named `model` and `embeddings` |
+| Model and independently selected exact-continuation state | Two artifacts named `model` and `continuation_state` |
+| Checkpoint whose loader requires model, optimizer, scheduler, RNG, and sampler files together | One `ResolvedBundleArtifact` named `checkpoint` |
+| Persisted prediction matrix consumed independently | One artifact named `predictions` |
 | Loss or correlation value | Measurement |
 | Forward-pass activation reconstructed during the stage | Stage-local value |
-| Activation explicitly consumed by another stage | Named artifact |
+| Activation explicitly consumed by another stage | One named artifact |
 
 Example with two artifacts:
 
@@ -1251,11 +1595,11 @@ Example with two artifacts:
 artifacts:
   model:
     kind: bundle
-    path: artifacts/model
+    path: experiments/e001/runs/baseline/01JABC/artifacts/models/strand/model
 
   perturbation_embeddings:
     kind: file
-    path: artifacts/perturbation_embeddings.pt
+    path: experiments/e001/runs/baseline/01JABC/artifacts/models/strand/embedding.pt
 ```
 
 The resolved records satisfy:
@@ -1263,28 +1607,29 @@ The resolved records satisfy:
 ```text
 A(train)
 ├── F_train(model)
-│   ├── artifacts/model/config.pkl
-│   └── artifacts/model/model.pt
+│   ├── experiments/e001/runs/baseline/01JABC/artifacts/models/strand/model/config.pkl
+│   └── experiments/e001/runs/baseline/01JABC/artifacts/models/strand/model/model.pt
 └── F_train(perturbation_embeddings)
-    └── artifacts/perturbation_embeddings.pt
+    └── experiments/e001/runs/baseline/01JABC/artifacts/models/strand/embedding.pt
 ```
 
 ---
 
-## 19. Migration sequence
+## 18. Migration sequence
 
 1. Freeze the runtime-state definition and strict-reproducibility condition.
-2. Freeze the exact requested-environment and execution-context field shapes.
-3. Freeze the typed `VariantStageParams` models.
-4. Freeze `StageArtifactRef` and the final-estimator selector.
-5. Freeze the stage, artifact, and physical-file partition contracts.
-6. Freeze `StageResultSnapshotRef`, `SnapshotFileRef`, `ResolvedStageRef`, and
+2. Freeze `RemoteFileRef.version` and `ResolvedDownloadSpec.retrieved_at`.
+3. Freeze the exact requested-environment and execution-context field shapes.
+4. Freeze the typed `VariantStageParams` models.
+5. Freeze `StageArtifactRef` and the final-estimator selector.
+6. Freeze the stage, artifact, and physical-file partition contracts.
+7. Freeze `StageResultSnapshotRef`, `SnapshotFileRef`, `ResolvedStageRef`, and
    `ResolvedRunRef`.
-7. Propagate direct artifact selection through stage specs, resolved stage
+8. Propagate direct artifact selection through stage specs, resolved stage
    specs, future inputs, attempts, resolved runs, and promotion pointers.
-8. Map the frozen contract onto `ProvenanceS1.md`.
-9. Update `models_v4.py`.
-10. Update `verifier.py`.
-11. Replace affected tests with focused tests of the new invariants.
-12. Execute one complete dummy run and reject one deliberately corrupted
+9. Map the frozen contract onto `ProvenanceS1.md`.
+10. Update `models_v4.py`.
+11. Update `verifier.py`.
+12. Replace affected tests with focused tests of the new invariants.
+13. Execute one complete dummy run and reject one deliberately corrupted
     referenced file.

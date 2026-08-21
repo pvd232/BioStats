@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """Update local Codex project/thread references after moving a project folder.
 
-Default migration:
-    /Users/machina/Documents/Bio Stats
-    -> /Users/machina/Documents/ChatGPT/BioStats
-
 The script updates local ChatGPT/Codex desktop state: Codex thread cwd rows,
 saved thread-log session metadata, and the desktop file-picker path. It backs up
 changed state files under ~/.codex/backups before writing.
@@ -12,13 +8,10 @@ changed state files under ~/.codex/backups before writing.
 Quit the ChatGPT desktop app before a real run so it does not rewrite these
 files from stale in-memory state.
 
-Preview:
-    ./scripts/migrate_codex_project_ref.py --dry-run --allow-missing
+Preview a migration:
+    ./scripts/migrate_codex_project_ref.py --old "/old/path" --new "/new/path" --dry-run
 
-Run the default migration:
-    ./scripts/migrate_codex_project_ref.py --create-target
-
-Run a future migration:
+Run a migration:
     ./scripts/migrate_codex_project_ref.py --old "/old/path" --new "/new/path"
 """
 
@@ -33,10 +26,6 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-
-
-DEFAULT_OLD_PATH = "/Users/machina/Documents/Bio Stats"
-DEFAULT_NEW_PATH = "/Users/machina/Documents/ChatGPT/BioStats"
 
 
 @dataclass(frozen=True)
@@ -230,15 +219,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--old",
-        default=DEFAULT_OLD_PATH,
+        required=True,
         type=path_arg,
-        help=f"Old project path. Default: {DEFAULT_OLD_PATH}",
+        help="Old project path.",
     )
     parser.add_argument(
         "--new",
-        default=DEFAULT_NEW_PATH,
+        required=True,
         type=path_arg,
-        help=f"New project path. Default: {DEFAULT_NEW_PATH}",
+        help="New project path.",
     )
     parser.add_argument(
         "--dry-run",

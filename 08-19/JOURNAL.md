@@ -224,3 +224,178 @@ review Sections 1 through 4 line by line before changing code.
 - [`verifier.py`](../mantra_provenance/verifier.py)
 - [`test_models_v4.py`](../tests/test_models_v4.py)
 - [`test_verifier.py`](../tests/test_verifier.py)
+
+---
+
+## Late-session continuation
+
+The August 19 workday continued through approximately 4 a.m. on August 20. The
+following work belongs to the August 19 journal.
+
+### Formal foundation
+
+The formal argument was rebuilt from the standard estimator construction:
+
+```text
+family design α
+→ parameter space Θ_α
+→ parameter-to-function map I_α
+→ function family G_α
+
+estimator specification β
++ dataset D
+→ fitted parameters θ̂
+→ fitted function ĝ
+```
+
+The run plan $q$ now fixes $\alpha$, $\beta$, and $D_q$ and induces the
+nonempty set of permitted runtime states $E_q$. Strict parameter
+reproducibility is:
+
+$$
+\forall e,e'\in E_q,
+\qquad
+T_{\alpha,\beta,q}(e)
+=
+T_{\alpha,\beta,q}(e').
+$$
+
+The separate reproducibility-objective symbol $\mathcal R$ was removed from
+the target formulation. The run plan and its permitted runtime states express
+the required condition directly.
+
+### Induced partitions
+
+The target contract now connects the plan to its physical records through:
+
+```text
+q
+→ E_q
+→ strict parameter reproducibility
+→ Π(q)
+→ A(s)
+→ F_s(a)
+→ exact file identity
+```
+
+Each completed stage may produce one or more named artifacts. Each artifact is
+represented by one physical file or a bundle of at least two jointly required
+files. Independently consumed or promoted values receive separate artifact
+names.
+
+### Requested, realized, and verified state
+
+The schema roles were fixed as:
+
+```text
+Spec
+→ declares requested state and induces E_q
+
+Resolved
+→ records realized state e
+
+Verifier
+→ checks e ∈ E_q
+→ verifies recorded file identities and cross-record relationships
+```
+
+`Ref` identifies another stored object. `ArtifactPointer` is a stored promotion
+record selecting one artifact from one terminal run.
+
+### Runtime controls
+
+The following relationships were accepted:
+
+```text
+selected ReplicateSpec.seed
+== RunSpec.seed
+== every stage ReproducibilitySpec.randomness.seed
+```
+
+```text
+GCEEnvironmentSpec
+→ requested provisioning
+
+ReproducibilitySpec
+→ requested numerical controls
+
+ExecutionContext
+→ observed runtime values
+
+external verifier
+→ checks that the observed values satisfy both requests
+```
+
+The canonical stage command is derived from the Python executable, stage
+script, and concrete stage-spec path. Typed variant parameters connect each
+declared factor level to the exact stage parameters that implement it.
+
+### Stage-result snapshots and promotion
+
+The target v2 design removed artifact manifests and consolidated each completed
+stage into one stage-result snapshot:
+
+```text
+stage-result snapshot C_s
+├── resolved stage spec
+└── every physical file for every named stage artifact
+```
+
+Same-run inputs select a producer stage ID and artifact name. Promoted inputs
+use:
+
+```text
+ArtifactPointer
+├── run: ResolvedRunRef
+└── artifact: StageArtifactRef
+    ├── stage_id
+    └── artifact_name
+```
+
+This traversal reaches the successful attempt, producing stage, exact artifact
+files, run plan, source, and upstream inputs.
+
+### Publication sequence
+
+| Commit | Repository | Contents |
+|---|---|---|
+| A | Git | Source, experiment, variants, metrics, lockfile, and promoted-input pointers |
+| B | Git | `RunSpec` and every concrete stage spec |
+| $C_s$ | Artifact repository | One completed stage's resolved spec and artifact files |
+| $D_i$ | Artifact repository | Closed measurement and log files for attempt $i$ |
+| E | Artifact repository | Terminal `ResolvedRun` |
+| F | Git, optional | New promotion pointers |
+
+### External dataset identity
+
+The source dataset is denoted $D_0$. The run plan fixes the dataset selection
+and construction procedure $S_q$, producing:
+
+$$
+D_q=S_q(D_0).
+$$
+
+The procedure may fix the source dataset release, cell-quality filters,
+selected perturbations, highly variable genes, and pseudobulk construction.
+Exact bytes acquired from an external URL become a published MANTRA artifact
+before a later training run treats them as fixed input.
+
+### Remaining foundation decisions
+
+1. Define the artifact loading contract that establishes physical
+   completeness and reconstruction from $F_s(a)$.
+2. State parsimony as a design objective and define the local anti-redundancy
+   conditions enforced by the schema and verifier.
+3. Finish the exact v2 class and field shapes before migrating implementation.
+
+### Validation
+
+The v1 implementation remained green:
+
+```text
+82 tests passed
+51 subtests passed
+```
+
+The v2 document passed Markdown-fence, display-math, Python-block, Pandoc with
+MathJax, and `git diff --check` validation during the session.
