@@ -375,6 +375,24 @@ class RunAndStageVerificationTests(unittest.TestCase):
         with self.assertRaisesRegex(VerificationError, "not a valid RunSpec"):
             verify_run_spec(duplicate_record, fetcher=lambda _: duplicate_raw)
 
+    def test_resolved_run_spec_uses_the_source_repository(self) -> None:
+        spec = train_spec()
+        run, _ = run_spec([("train", spec)])
+        raw = yaml_bytes(run)
+        location = git_file(f"{RUN_ROOT}/spec.yaml").model_copy(
+            update={"repository": "https://github.com/example/other"}
+        )
+        record = ResolvedRun.model_construct(
+            spec=ResolvedRunSpecRef(
+                sha256=sha256(raw),
+                bytes=len(raw),
+                stored_at=location,
+            )
+        )
+
+        with self.assertRaisesRegex(VerificationError, "one Git repository"):
+            verify_run_spec(record, fetcher=lambda _: raw)
+
     def test_stage_plan_loads_named_future_artifact(self) -> None:
         build = build_spec()
         train = train_spec(future_prior=True)

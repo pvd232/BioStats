@@ -394,6 +394,10 @@ def verify_run_spec(
         raise VerificationError(
             "resolved run spec reference is outside the canonical run path"
         )
+    if resolved_run.spec.stored_at.repository != file_run.source.repository:
+        raise VerificationError(
+            "resolved run spec and source snapshot must use one Git repository"
+        )
 
     return file_run
 
@@ -1128,30 +1132,23 @@ def verify_promoted_artifact(
             "artifact pointer run is not a valid ResolvedRun document"
         ) from exc
 
-    verified_plan = verify_run_plan(resolved_run, fetcher=fetcher)
-    expected_run_path = f"{run_root(verified_plan.run)}/resolved.yaml"
+    verified_run = verify_run_result(resolved_run, fetcher=fetcher)
+    expected_run_path = f"{run_root(verified_run.plan.run)}/resolved.yaml"
     if pointer.run.stored_at.path != expected_run_path:
         raise VerificationError(
             "artifact pointer run reference is outside the canonical run path"
         )
 
     if (
-        verified_plan.run.benchmark_id is not None
-        and pointer.artifact == verified_plan.run.estimator
+        verified_run.plan.run.benchmark_id is not None
+        and pointer.artifact == verified_run.plan.run.estimator
         and pointer.benchmark_result is None
     ):
         raise VerificationError(
             "promotion of a benchmarked estimator requires a benchmark result"
         )
 
-    resolved_stages = verify_resolved_stages(
-        resolved_run,
-        verified_plan.run,
-        verified_plan.stages,
-        fetcher=fetcher,
-    )
-
-    producer_spec = resolved_stages.get(pointer.artifact.stage_id)
+    producer_spec = verified_run.resolved_stages.get(pointer.artifact.stage_id)
     if producer_spec is None:
         raise VerificationError("artifact pointer selects an absent producer stage")
 
@@ -1175,7 +1172,7 @@ def verify_promoted_artifact(
 
         verify_benchmark_result(benchmark_result, fetcher=fetcher)
         expected_result_path = (
-            f"{run_root(verified_plan.run)}/benchmark.result.yaml"
+            f"{run_root(verified_run.plan.run)}/benchmark.result.yaml"
         )
         if pointer.benchmark_result.stored_at.path != expected_result_path:
             raise VerificationError(
@@ -1189,7 +1186,7 @@ def verify_promoted_artifact(
             raise VerificationError(
                 "artifact pointer and benchmark result select different runs"
             )
-        if pointer.artifact != verified_plan.run.estimator:
+        if pointer.artifact != verified_run.plan.run.estimator:
             raise VerificationError("benchmark promotion must select the run estimator")
 
     successful_attempt = next(
@@ -1543,6 +1540,13 @@ def verify_benchmark_result(
         verified_run.plan.run,
         verified_run.plan.stages,
         require_complete=True,
+        fetcher=fetcher,
+    )
+    verify_stored_inputs(confirmation_stages, fetcher=fetcher)
+    verify_attempt_future_inputs(
+        result.confirmation,
+        verified_run.plan.run,
+        confirmation_stages,
         fetcher=fetcher,
     )
     confirmation_measurements = verify_attempt_files(

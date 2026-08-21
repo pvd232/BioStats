@@ -1134,6 +1134,197 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(VerificationError, "new stage-result snapshots"):
             verify_benchmark_result(reused_result, fetcher=store.fetch)
 
+    def test_strict_benchmark_verifies_confirmation_input_lineage(self) -> None:
+        result, resolved_run, store = build_benchmark_fixture()
+        confirmation_build, confirmation_train, confirmation_evaluate = (
+            result.confirmation.resolved_stages
+        )
+        original_build = resolved_run.attempts[-1].resolved_stages[0]
+
+        resolved_train = ResolvedTrainSpec.model_validate(
+            yaml.safe_load(
+                store.fetch(
+                    hf_file(
+                        confirmation_train.snapshot.commit,
+                        str(confirmation_train.resolved_spec.path),
+                    )
+                )
+            )
+        ).model_copy(
+            update={
+                "inputs": {
+                    "prior": ResolvedFutureInputRef(producer=original_build)
+                }
+            }
+        )
+        tampered_train = publish_resolved_stage(
+            store,
+            run_root_path=str(result.run.stored_at.path).removesuffix(
+                "/resolved.yaml"
+            ),
+            stage_id="train",
+            snapshot_commit=confirmation_train.snapshot.commit,
+            resolved_spec=resolved_train,
+        )
+
+        resolved_evaluate = ResolvedEvaluateSpec.model_validate(
+            yaml.safe_load(
+                store.fetch(
+                    hf_file(
+                        confirmation_evaluate.snapshot.commit,
+                        str(confirmation_evaluate.resolved_spec.path),
+                    )
+                )
+            )
+        )
+        resolved_evaluate = resolved_evaluate.model_copy(
+            update={
+                "inputs": {
+                    **resolved_evaluate.inputs,
+                    "model_parameters": ResolvedFutureInputRef(
+                        producer=tampered_train
+                    ),
+                }
+            }
+        )
+        updated_evaluate = publish_resolved_stage(
+            store,
+            run_root_path=str(result.run.stored_at.path).removesuffix(
+                "/resolved.yaml"
+            ),
+            stage_id="evaluate",
+            snapshot_commit=confirmation_evaluate.snapshot.commit,
+            resolved_spec=resolved_evaluate,
+        )
+        confirmation = result.confirmation.model_copy(
+            update={
+                "resolved_stages": (
+                    confirmation_build,
+                    tampered_train,
+                    updated_evaluate,
+                )
+            }
+        )
+
+        with self.assertRaisesRegex(
+            VerificationError,
+            "does not identify the completed producer stage",
+        ):
+            verify_benchmark_result(
+                result.model_copy(update={"confirmation": confirmation}),
+                fetcher=store.fetch,
+            )
+
+    def test_strict_benchmark_verifies_confirmation_stored_inputs(self) -> None:
+        result, _, store = build_benchmark_fixture()
+        confirmation_build, confirmation_train, confirmation_evaluate = (
+            result.confirmation.resolved_stages
+        )
+        resolved_evaluate = ResolvedEvaluateSpec.model_validate(
+            yaml.safe_load(
+                store.fetch(
+                    hf_file(
+                        confirmation_evaluate.snapshot.commit,
+                        str(confirmation_evaluate.resolved_spec.path),
+                    )
+                )
+            )
+        )
+        evaluation_dataset = resolved_evaluate.inputs["evaluation_dataset"]
+        self.assertEqual(evaluation_dataset.kind, "stored")
+        tampered_dataset = evaluation_dataset.model_copy(
+            update={
+                "pointer": evaluation_dataset.pointer.model_copy(
+                    update={"sha256": "0" * 64}
+                )
+            }
+        )
+        tampered_evaluate_spec = resolved_evaluate.model_copy(
+            update={
+                "inputs": {
+                    **resolved_evaluate.inputs,
+                    "evaluation_dataset": tampered_dataset,
+                }
+            }
+        )
+        tampered_evaluate = publish_resolved_stage(
+            store,
+            run_root_path=str(result.run.stored_at.path).removesuffix(
+                "/resolved.yaml"
+            ),
+            stage_id="evaluate",
+            snapshot_commit=confirmation_evaluate.snapshot.commit,
+            resolved_spec=tampered_evaluate_spec,
+        )
+        confirmation = result.confirmation.model_copy(
+            update={
+                "resolved_stages": (
+                    confirmation_build,
+                    confirmation_train,
+                    tampered_evaluate,
+                )
+            }
+        )
+
+        with self.assertRaisesRegex(VerificationError, "SHA-256 mismatch"):
+            verify_benchmark_result(
+                result.model_copy(update={"confirmation": confirmation}),
+                fetcher=store.fetch,
+            )
+
+    def test_promoted_artifact_verifies_producer_input_lineage(self) -> None:
+        store = DocumentStore()
+        run_reference, records = publish_producer_run(store)
+        resolved_run = records["run"]
+        download_stage, train_stage = resolved_run.attempts[0].resolved_stages
+        resolved_train = ResolvedTrainSpec.model_validate(
+            yaml.safe_load(
+                store.fetch(
+                    hf_file(
+                        train_stage.snapshot.commit,
+                        str(train_stage.resolved_spec.path),
+                    )
+                )
+            )
+        ).model_copy(
+            update={
+                "inputs": {
+                    "training_dataset": ResolvedFutureInputRef(
+                        producer=train_stage
+                    )
+                }
+            }
+        )
+        tampered_train = publish_resolved_stage(
+            store,
+            run_root_path=str(run_reference.stored_at.path).removesuffix(
+                "/resolved.yaml"
+            ),
+            stage_id="train",
+            snapshot_commit=train_stage.snapshot.commit,
+            resolved_spec=resolved_train,
+        )
+        tampered_attempt = resolved_run.attempts[0].model_copy(
+            update={"resolved_stages": (download_stage, tampered_train)}
+        )
+        tampered_run = resolved_run.model_copy(
+            update={"attempts": (tampered_attempt,)}
+        )
+        tampered_raw = yaml_bytes(tampered_run)
+        store.put(run_reference.stored_at, tampered_raw)
+        pointer = ArtifactPointer(
+            run=run_reference.model_copy(
+                update={"sha256": sha256(tampered_raw), "bytes": len(tampered_raw)}
+            ),
+            artifact={"stage_id": "train", "artifact_name": MODEL_PARAMETERS},
+        )
+
+        with self.assertRaisesRegex(
+            VerificationError,
+            "does not identify the completed producer stage",
+        ):
+            verify_promoted_artifact(pointer, fetcher=store.fetch)
+
     def test_benchmarked_estimator_requires_benchmark_result(self) -> None:
         result, _, store = build_benchmark_fixture()
         pointer = ArtifactPointer(
