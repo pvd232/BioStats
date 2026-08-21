@@ -1275,6 +1275,9 @@ ArtifactPointer.run
 → exact artifact files
 ```
 
+Every `ArtifactPointerRef.path` begins with `inputs/` and ends with
+`.pointer.yaml`.
+
 ### Stage inputs
 
 A stored input selects an artifact promoted from a completed run:
@@ -1807,6 +1810,9 @@ RunAttempt.started_at
 <= Measurement.measured_at
 <= RunAttempt.completed_at
 ```
+
+Measurement JSON objects have unique field names. A successful evaluation stage
+records exactly one row for each metric in `EvaluateSpec.params.metric_ids`.
 
 ## 17. Concrete stage records
 

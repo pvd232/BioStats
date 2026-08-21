@@ -15,7 +15,7 @@ from types import ModuleType
 
 import yaml
 from huggingface_hub import hf_hub_download
-from pydantic import TypeAdapter, ValidationError
+from pydantic import TypeAdapter
 
 from .ids import InputName, StageId
 from .models_v4 import (
@@ -89,6 +89,16 @@ def resolved_stage_spec_path(run: RunSpec, stage_id: StageId) -> RepoRelPath:
 
 class VerificationError(ValueError):
     """A referenced file could not be retrieved or failed verification."""
+
+
+def unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Construct one JSON object while rejecting duplicate field names."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key!r}")
+        result[key] = value
+    return result
 
 
 @dataclass(frozen=True)
@@ -966,8 +976,10 @@ def verify_attempt_files(
             if not line.strip():
                 continue
             try:
-                measurement = Measurement.model_validate(json.loads(line))
-            except (json.JSONDecodeError, ValidationError) as exc:
+                measurement = Measurement.model_validate(
+                    json.loads(line, object_pairs_hook=unique_json_object)
+                )
+            except ValueError as exc:
                 raise VerificationError(
                     "measurement file contains an invalid Measurement row"
                 ) from exc
@@ -1013,6 +1025,24 @@ def verify_attempt_files(
                     "measurement timestamp falls outside its containing attempt"
                 )
             measurements.append(measurement)
+
+    if attempt.status == "succeeded":
+        for stage_id in completed_stage_ids:
+            stage_spec = stage_specs[stage_id]
+            if not isinstance(stage_spec, EvaluateSpec):
+                continue
+            for metric_id in stage_spec.params.metric_ids:
+                matches = [
+                    measurement
+                    for measurement in measurements
+                    if measurement.stage_id == stage_id
+                    and measurement.metric_id == metric_id
+                ]
+                if len(matches) != 1:
+                    raise VerificationError(
+                        f"successful evaluation stage {stage_id!r} must record "
+                        f"exactly one measurement for metric {metric_id!r}"
+                    )
 
     for reference in attempt.log_files:
         if not isinstance(reference.stored_at, HuggingFaceFileRef):

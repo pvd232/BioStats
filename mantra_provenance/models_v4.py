@@ -113,6 +113,16 @@ class GitFileRef(GitSource):
 class ArtifactPointerRef(GitFileRef):
     """A Git reference to the pointer selecting a promoted artifact."""
 
+    @model_validator(mode="after")
+    def validate_pointer_path(self) -> ArtifactPointerRef:
+        if not self.path.startswith("inputs/") or not self.path.endswith(
+            ".pointer.yaml"
+        ):
+            raise ValueError(
+                "artifact pointer path must match inputs/**/*.pointer.yaml"
+            )
+        return self
+
 
 class HuggingFaceFileRef(ProtocolModel):
     """A file stored at an exact Hugging Face repository revision."""
