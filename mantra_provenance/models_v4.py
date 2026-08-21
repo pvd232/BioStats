@@ -167,48 +167,43 @@ class ResolvedGitFileRef(ResolvedFileRef):
     stored_at: GitFileRef  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
-class ResolvedArtifactManifestRef(ResolvedFileRef):
-    kind: Literal["artifact_manifest"] = "artifact_manifest"
-
-
 class ResolvedArtifactPointerRef(ResolvedFileRef):
     kind: Literal["artifact_pointer"] = "artifact_pointer"
     stored_at: ArtifactPointerRef  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 # ---------------------------------------------------------------------------
-# Artifact connectors
+# Artifact selectors
 # ---------------------------------------------------------------------------
 
 
-class ArtifactManifest(ProtocolModel):
-    """
-    Connects an artifact to the files that explain how it was produced.
+class ResolvedRunSpecRef(ResolvedFileRef):
+    """Identifies the exact RunSpec file governing one run."""
 
-    Each field points to an exact file and therefore carries its own SHA-256.
-    """
+    kind: Literal["run_spec"] = "run_spec"
+    stored_at: GitFileRef  # pyright: ignore[reportIncompatibleVariableOverride]
 
-    schema_version: Literal[1] = 1
 
-    artifact: ResolvedFileRef
-    resolved_spec: ResolvedFileRef
-    spec: ResolvedFileRef
-    source: ResolvedGitFileRef
+class ResolvedRunRef(ResolvedFileRef):
+    """Identifies one terminal ResolvedRun file."""
 
-    created_at: AwareDatetime
+    kind: Literal["resolved_run"] = "resolved_run"
+    stored_at: HuggingFaceFileRef  # pyright: ignore[reportIncompatibleVariableOverride]
+
+
+class StageArtifactRef(ProtocolModel):
+    """Selects one named artifact produced by one stage."""
+
+    stage_id: StageId
+    artifact_name: ArtifactName
 
 
 class ArtifactPointer(ProtocolModel):
-    """
-    Selects the manifest for an artifact chosen as a reusable input.
-
-    The manifest identifies the artifact bytes and records the execution that
-    created them. Updating the Git-tracked pointer selects a different manifest
-    without moving or overwriting either artifact.
-    """
+    """Selects one artifact accepted as a reusable input."""
 
     schema_version: Literal[1] = 1
-    manifest: ResolvedArtifactManifestRef
+    run: ResolvedRunRef
+    artifact: StageArtifactRef
 
 
 # ---------------------------------------------------------------------------
@@ -464,10 +459,11 @@ AttemptStatus = Literal[
 
 
 class ResolvedStageRef(ProtocolModel):
-    """Binds a run stage to its resolved execution record."""
+    """Binds one completed stage to its immutable stage-result snapshot."""
 
     stage_id: StageId
-    resolved_spec: ResolvedFileRef
+    snapshot: StageResultSnapshotRef
+    resolved_spec: SnapshotFileRef
 
 
 class RunAttempt(ProtocolModel):
@@ -478,7 +474,6 @@ class RunAttempt(ProtocolModel):
     completed_at: AwareDatetime
 
     resolved_stages: tuple[ResolvedStageRef, ...]
-    artifact_manifests: tuple[ResolvedArtifactManifestRef, ...]
     measurement_files: tuple[ResolvedFileRef, ...]
     log_files: tuple[ResolvedFileRef, ...]
 
@@ -528,6 +523,7 @@ class RunSpec(ProtocolModel):
     source: GitSource
 
     stages: tuple[RunStageRef, ...] = Field(min_length=1)
+    estimator: StageArtifactRef
 
     @model_validator(mode="after")
     def validate_common_invariants(self) -> RunSpec:
@@ -539,14 +535,16 @@ class RunSpec(ProtocolModel):
         if len(set(stage_spec_paths)) != len(stage_spec_paths):
             raise ValueError("stage spec paths must be unique")
 
+        if self.estimator.stage_id not in set(stage_ids):
+            raise ValueError("estimator must select a declared run stage")
+
         return self
 
 
 class ResolvedRun(ProtocolModel):
     schema_version: Literal[1] = 1
 
-    run: RunSpec
-    run_file: ResolvedFileRef
+    spec: ResolvedRunSpecRef
 
     status: Literal["succeeded", "failed", "cancelled"]
 
@@ -559,7 +557,6 @@ class ResolvedRun(ProtocolModel):
     def validate_common_invariants(self) -> ResolvedRun:
         unique_attempt_ids = set()
         successful_attempts = []
-        expected_stage_ids = tuple(stage.stage_id for stage in self.run.stages)
         previous_attempt: RunAttempt | None = None
 
         for index, attempt in enumerate(self.attempts):
@@ -579,14 +576,6 @@ class ResolvedRun(ProtocolModel):
             ):
                 raise ValueError(
                     "an attempt cannot begin before the previous attempt finishes"
-                )
-
-            resolved_stage_ids = tuple(
-                stage.stage_id for stage in attempt.resolved_stages
-            )
-            if resolved_stage_ids != expected_stage_ids[: len(resolved_stage_ids)]:
-                raise ValueError(
-                    "resolved stages must follow the run's declared stage order"
                 )
 
             if attempt.status == "succeeded":
@@ -611,13 +600,6 @@ class ResolvedRun(ProtocolModel):
                     "successful_attempt_id must identify the successful attempt"
                 )
 
-            resolved_stage_ids = tuple(
-                stage.stage_id for stage in successful_attempt.resolved_stages
-            )
-            if resolved_stage_ids != expected_stage_ids:
-                raise ValueError(
-                    "The successful attempt must complete every run stage in order"
-                )
         else:
             if successful_attempts:
                 raise ValueError("A failed or cancelled run cannot have a success")
@@ -742,37 +724,6 @@ class ExecutionContext(ProtocolModel):
 # Stage input references
 # ---------------------------------------------------------------------------
 
-"""
-BuildSpec
-{... 
-    inputs: {
-       # <InputName> : <StoredInputRef | FutureInputRef> 
-       "prior" : {
-            "kind" : "stored"
-            "pointer" : ...
-       }
-    }
-... 
-}
-StoredInputRef
-  { ... 
-    kind = "stored"
-    pointer: ArtifactPointerRef(...)
-    path: inputs/models/current_weights.pt ... }
-        ↓
-ArtifactPointerRef (Git pointer file to artifact manifest)
-inputs/models/current_weights.pt.pointer.yaml
-        ↓
-remote artifact manifest
-        ↓
-remote weights.pt bytes
-        ↓
-local execution binding
-inputs/models/current_weights.pt
-
-"""
-
-
 class StoredInputRef(ProtocolModel):
     """A promoted artifact selected before the run begins."""
 
@@ -782,10 +733,11 @@ class StoredInputRef(ProtocolModel):
 
 
 class FutureInputRef(ProtocolModel):
-    """The declared output of an earlier stage in the same run."""
+    """One named artifact produced by an earlier stage in the same run."""
 
     kind: Literal["future"] = "future"
     producer_stage_id: StageId
+    producer_artifact: ArtifactName
 
 
 InternalInputRef = Annotated[
@@ -941,7 +893,7 @@ class ResolvedStoredInputRef(ProtocolModel):
 
 class ResolvedFutureInputRef(ProtocolModel):
     kind: Literal["future"] = "future"
-    manifest: ResolvedArtifactManifestRef
+    producer: ResolvedStageRef
 
 
 ResolvedInternalInputRef = Annotated[
