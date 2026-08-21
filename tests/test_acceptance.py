@@ -365,11 +365,12 @@ def add_bundle_artifact(
 def publish_resolved_stage(
     store: DocumentStore,
     *,
+    run_root_path: str,
     stage_id: str,
     snapshot_commit: str,
     resolved_spec: object,
 ) -> ResolvedStageRef:
-    path = f"stages/{stage_id}/resolved.yaml"
+    path = f"{run_root_path}/stages/{stage_id}/resolved.yaml"
     raw = yaml_bytes(resolved_spec)
     store.put(hf_file(snapshot_commit, path), raw)
     return ResolvedStageRef(
@@ -526,6 +527,7 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
     )
     download_stage = publish_resolved_stage(
         store,
+        run_root_path=run_root,
         stage_id="download",
         snapshot_commit=download_commit,
         resolved_spec=resolved_download,
@@ -559,6 +561,7 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
     )
     train_stage = publish_resolved_stage(
         store,
+        run_root_path=run_root,
         stage_id="train",
         snapshot_commit=train_commit,
         resolved_spec=resolved_train,
@@ -784,6 +787,7 @@ def build_complete_fixture() -> tuple[
     )
     build_stage = publish_resolved_stage(
         store,
+        run_root_path=run_root,
         stage_id="build",
         snapshot_commit=build_commit,
         resolved_spec=resolved_build,
@@ -815,6 +819,7 @@ def build_complete_fixture() -> tuple[
     )
     train_stage = publish_resolved_stage(
         store,
+        run_root_path=run_root,
         stage_id="train",
         snapshot_commit=train_commit,
         resolved_spec=resolved_train,
@@ -847,6 +852,7 @@ def build_complete_fixture() -> tuple[
     )
     evaluate_stage = publish_resolved_stage(
         store,
+        run_root_path=run_root,
         stage_id="evaluate",
         snapshot_commit=evaluate_commit,
         resolved_spec=resolved_evaluate,

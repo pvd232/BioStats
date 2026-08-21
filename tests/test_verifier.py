@@ -53,6 +53,8 @@ PLAN_COMMIT = "b" * 40
 SNAPSHOT_COMMIT = "c" * 40
 REPOSITORY = "https://github.com/example/mantra"
 HF_REPOSITORY = "example/mantra-runs"
+RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+RUN_ROOT = f"experiments/e001_strand/runs/baseline/{RUN_ID}"
 YAML_ADAPTER = TypeAdapter(Any)
 
 
@@ -191,7 +193,7 @@ def run_spec(stage_specs: list[tuple[str, object]]) -> tuple[RunSpec, dict[str, 
     stage_refs = []
 
     for stage_id, spec in stage_specs:
-        path = f"stages/{stage_id}.spec.yaml"
+        path = f"{RUN_ROOT}/stages/{stage_id}/spec.yaml"
         raw = yaml_bytes(spec)
         documents[path] = raw
         stage_refs.append(
@@ -204,7 +206,7 @@ def run_spec(stage_specs: list[tuple[str, object]]) -> tuple[RunSpec, dict[str, 
         )
 
     run = RunSpec(
-        run_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        run_id=RUN_ID,
         experiment_id="e001_strand",
         variant_id="baseline",
         replicate_id="replicate_01",
@@ -243,12 +245,12 @@ def train_spec(*, future_prior: bool = False) -> TrainSpec:
         artifacts={
             MODEL_PARAMETERS: {
                 "kind": "file",
-                "path": "artifacts/train/model_parameters.safetensors",
+                "path": f"{RUN_ROOT}/artifacts/train/model_parameters.safetensors",
                 "loader": "model_parameters",
             },
             CONTINUATION_STATE: {
                 "kind": "file",
-                "path": "artifacts/train/continuation_state.pt",
+                "path": f"{RUN_ROOT}/artifacts/train/continuation_state.pt",
                 "loader": "continuation_state",
             },
         },
@@ -269,7 +271,7 @@ def build_spec() -> BuildSpec:
         artifacts={
             "prior": {
                 "kind": "file",
-                "path": "artifacts/build/prior.pt",
+                "path": f"{RUN_ROOT}/artifacts/build/prior.pt",
                 "loader": "prior",
             }
         },
@@ -339,7 +341,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
         run_reference = ResolvedRunSpecRef(
             sha256=sha256(raw),
             bytes=len(raw),
-            stored_at=git_file("experiments/e001_strand/runs/run/spec.yaml"),
+            stored_at=git_file(f"{RUN_ROOT}/spec.yaml"),
         )
         record = ResolvedRun.model_construct(spec=run_reference)
 
@@ -369,7 +371,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
         run_reference = ResolvedRunSpecRef(
             sha256="f" * 64,
             bytes=1,
-            stored_at=git_file("experiments/e001_strand/runs/run/spec.yaml"),
+            stored_at=git_file(f"{RUN_ROOT}/spec.yaml"),
         )
 
         loaded = verify_stage_plan(
@@ -380,6 +382,19 @@ class RunAndStageVerificationTests(unittest.TestCase):
 
         self.assertEqual(set(loaded), {"build", "train"})
         self.assertIn("prior", loaded["build"].artifacts)
+
+        outside_ref = run.stages[0].model_copy(
+            update={"spec": "stages/build/spec.yaml"}
+        )
+        outside_run = run.model_copy(
+            update={"stages": (outside_ref, *run.stages[1:])}
+        )
+        with self.assertRaisesRegex(VerificationError, "canonical run path"):
+            verify_stage_plan(
+                outside_run,
+                run_reference,
+                fetcher=lambda location: documents[location.path],
+            )
 
     def test_resolved_stage_checks_run_controls_and_snapshot_files(self) -> None:
         spec = train_spec()
@@ -395,7 +410,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             source=resolved_git(source_raw, str(spec.script)),
             environment=resolved_environment(lock_raw),
             execution_context=execution_context(),
-            command=("python", str(spec.script), "stages/train.spec.yaml"),
+            command=("python", str(spec.script), str(run.stages[0].spec)),
             inputs={
                 "training_dataset": {
                     "kind": "stored",
@@ -408,7 +423,10 @@ class RunAndStageVerificationTests(unittest.TestCase):
                 MODEL_PARAMETERS: {
                     "kind": "file",
                     "file": {
-                        "path": "artifacts/train/model_parameters.safetensors",
+                        "path": (
+                            f"{RUN_ROOT}/artifacts/train/"
+                            "model_parameters.safetensors"
+                        ),
                         "sha256": sha256(model_raw),
                         "bytes": len(model_raw),
                     },
@@ -416,7 +434,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
                 CONTINUATION_STATE: {
                     "kind": "file",
                     "file": {
-                        "path": "artifacts/train/continuation_state.pt",
+                        "path": f"{RUN_ROOT}/artifacts/train/continuation_state.pt",
                         "sha256": sha256(continuation_raw),
                         "bytes": len(continuation_raw),
                     },
@@ -429,7 +447,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             stage_id="train",
             snapshot=snapshot(),
             resolved_spec={
-                "path": "stages/train.spec.resolved.yaml",
+                "path": f"{RUN_ROOT}/stages/train/resolved.yaml",
                 "sha256": sha256(resolved_raw),
                 "bytes": len(resolved_raw),
             },
@@ -449,7 +467,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             spec=ResolvedRunSpecRef(
                 sha256=sha256(run_raw),
                 bytes=len(run_raw),
-                stored_at=git_file("experiments/e001_strand/runs/run/spec.yaml"),
+                stored_at=git_file(f"{RUN_ROOT}/spec.yaml"),
             ),
             status="succeeded",
             attempts=(attempt,),
@@ -457,11 +475,11 @@ class RunAndStageVerificationTests(unittest.TestCase):
             completed_at=datetime(2026, 8, 21, 13, 1, tzinfo=UTC),
         )
         documents = {
-            "stages/train.spec.resolved.yaml": resolved_raw,
+            f"{RUN_ROOT}/stages/train/resolved.yaml": resolved_raw,
             str(spec.script): source_raw,
             "uv.lock": lock_raw,
-            "artifacts/train/model_parameters.safetensors": model_raw,
-            "artifacts/train/continuation_state.pt": continuation_raw,
+            f"{RUN_ROOT}/artifacts/train/model_parameters.safetensors": model_raw,
+            f"{RUN_ROOT}/artifacts/train/continuation_state.pt": continuation_raw,
             "src/mantra/artifact_loaders/model_parameters.py": loader_raw,
             "src/mantra/artifact_loaders/continuation_state.py": loader_raw,
         }
@@ -490,7 +508,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             stage_id="train",
             snapshot=snapshot(),
             resolved_spec={
-                "path": "stages/train.spec.resolved.yaml",
+                "path": f"{RUN_ROOT}/stages/train/resolved.yaml",
                 "sha256": "e" * 64,
                 "bytes": 10,
             },
@@ -508,7 +526,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
                     stored_at=HuggingFaceFileRef(
                         repository=HF_REPOSITORY,
                         commit=SNAPSHOT_COMMIT,
-                        path="measurements/train.training_loss.jsonl",
+                        path=f"{RUN_ROOT}/measurements/train.training_loss.jsonl",
                         repo_type="dataset",
                     ),
                 ),
@@ -520,7 +538,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
                     stored_at=HuggingFaceFileRef(
                         repository=HF_REPOSITORY,
                         commit=SNAPSHOT_COMMIT,
-                        path="logs/1.train.stdout.log",
+                        path=f"{RUN_ROOT}/logs/1.train.stdout.log",
                         repo_type="dataset",
                     ),
                 ),
@@ -535,8 +553,8 @@ class RunAndStageVerificationTests(unittest.TestCase):
             metric_ids=("training_loss",),
         )
         documents = {
-            "measurements/train.training_loss.jsonl": measurement_raw,
-            "logs/1.train.stdout.log": log_raw,
+            f"{RUN_ROOT}/measurements/train.training_loss.jsonl": measurement_raw,
+            f"{RUN_ROOT}/logs/1.train.stdout.log": log_raw,
         }
 
         measurements = verify_attempt_files(
@@ -635,7 +653,7 @@ class RunPlanRelationshipTests(unittest.TestCase):
             artifacts={
                 "predictions": {
                     "kind": "file",
-                    "path": "artifacts/evaluate/predictions.parquet",
+                    "path": f"{RUN_ROOT}/artifacts/evaluate/predictions.parquet",
                     "loader": "predictions",
                 }
             },
@@ -707,7 +725,7 @@ class FutureInputVerificationTests(unittest.TestCase):
             stage_id="build",
             snapshot=snapshot(),
             resolved_spec={
-                "path": "stages/build.spec.resolved.yaml",
+                "path": f"{RUN_ROOT}/stages/build/resolved.yaml",
                 "sha256": "e" * 64,
                 "bytes": 100,
             },
@@ -716,7 +734,7 @@ class FutureInputVerificationTests(unittest.TestCase):
             stage_id="train",
             snapshot=snapshot(commit="d" * 40),
             resolved_spec={
-                "path": "stages/train.spec.resolved.yaml",
+                "path": f"{RUN_ROOT}/stages/train/resolved.yaml",
                 "sha256": "f" * 64,
                 "bytes": 100,
             },
@@ -727,7 +745,7 @@ class FutureInputVerificationTests(unittest.TestCase):
             source=resolved_git(source_raw, str(build.script)),
             environment=resolved_environment(lock_raw),
             execution_context=execution_context(),
-            command=("python", str(build.script), "stages/build.spec.yaml"),
+            command=("python", str(build.script), str(run.stages[0].spec)),
             inputs={
                 "depmap": {
                     "kind": "stored",
@@ -738,7 +756,7 @@ class FutureInputVerificationTests(unittest.TestCase):
                 "prior": {
                     "kind": "file",
                     "file": {
-                        "path": "artifacts/build/prior.pt",
+                        "path": f"{RUN_ROOT}/artifacts/build/prior.pt",
                         "sha256": sha256(prior_raw),
                         "bytes": len(prior_raw),
                     },
@@ -751,7 +769,7 @@ class FutureInputVerificationTests(unittest.TestCase):
             source=resolved_git(source_raw, str(train.script)),
             environment=resolved_environment(lock_raw),
             execution_context=execution_context(),
-            command=("python", str(train.script), "stages/train.spec.yaml"),
+            command=("python", str(train.script), str(run.stages[1].spec)),
             inputs={
                 "prior": ResolvedFutureInputRef(producer=producer_stage),
             },
@@ -759,7 +777,10 @@ class FutureInputVerificationTests(unittest.TestCase):
                 MODEL_PARAMETERS: {
                     "kind": "file",
                     "file": {
-                        "path": "artifacts/train/model_parameters.safetensors",
+                        "path": (
+                            f"{RUN_ROOT}/artifacts/train/"
+                            "model_parameters.safetensors"
+                        ),
                         "sha256": "1" * 64,
                         "bytes": 1,
                     },
@@ -767,7 +788,7 @@ class FutureInputVerificationTests(unittest.TestCase):
                 CONTINUATION_STATE: {
                     "kind": "file",
                     "file": {
-                        "path": "artifacts/train/continuation_state.pt",
+                        "path": f"{RUN_ROOT}/artifacts/train/continuation_state.pt",
                         "sha256": "2" * 64,
                         "bytes": 1,
                     },
@@ -790,7 +811,7 @@ class FutureInputVerificationTests(unittest.TestCase):
             spec=ResolvedRunSpecRef(
                 sha256=sha256(run_raw),
                 bytes=len(run_raw),
-                stored_at=git_file("experiments/e001_strand/runs/run/spec.yaml"),
+                stored_at=git_file(f"{RUN_ROOT}/spec.yaml"),
             ),
             status="succeeded",
             attempts=(attempt,),
@@ -802,9 +823,9 @@ class FutureInputVerificationTests(unittest.TestCase):
             record,
             run,
             {"build": resolved_build, "train": resolved_train},
-            fetcher=lambda location: {"artifacts/build/prior.pt": prior_raw}[
-                location.path
-            ],
+            fetcher=lambda location: {
+                f"{RUN_ROOT}/artifacts/build/prior.pt": prior_raw
+            }[location.path],
         )
 
         self.assertEqual(

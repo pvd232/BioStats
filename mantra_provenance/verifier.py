@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 from collections.abc import Callable, Mapping
@@ -62,6 +63,23 @@ from .yaml_io import load_yaml_bytes
 StorageFetcher = Callable[[StorageModel], bytes]
 SPEC_ADAPTER = TypeAdapter(Spec)
 RESOLVED_SPEC_ADAPTER = TypeAdapter(ResolvedSpec)
+
+
+def run_root(run: RunSpec) -> RepoRelPath:
+    """Return the canonical repository root for one run's records and outputs."""
+    return (
+        f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
+    )
+
+
+def stage_spec_path(run: RunSpec, stage_id: StageId) -> RepoRelPath:
+    """Return the canonical stage-spec path for a run stage."""
+    return f"{run_root(run)}/stages/{stage_id}/spec.yaml"
+
+
+def resolved_stage_spec_path(run: RunSpec, stage_id: StageId) -> RepoRelPath:
+    """Return the canonical resolved-stage path for a run stage."""
+    return f"{run_root(run)}/stages/{stage_id}/resolved.yaml"
 
 
 class VerificationError(ValueError):
@@ -355,6 +373,12 @@ def verify_run_spec(
     except (yaml.YAMLError, ValueError) as exc:
         raise VerificationError("resolved run spec is not a valid RunSpec") from exc
 
+    expected_path = f"{run_root(file_run)}/spec.yaml"
+    if resolved_run.spec.stored_at.path != expected_path:
+        raise VerificationError(
+            "resolved run spec reference is outside the canonical run path"
+        )
+
     return file_run
 
 
@@ -547,6 +571,11 @@ def verify_stage_plan(
     loaded_stages: dict[StageId, BaseSpec] = {}
 
     for stage in run.stages:
+        if stage.spec != stage_spec_path(run, stage.stage_id):
+            raise VerificationError(
+                f"stage {stage.stage_id!r} spec is outside its canonical run path"
+            )
+
         plan_location = run_spec_reference.stored_at
         location = GitFileRef(
             repository=plan_location.repository,
@@ -567,6 +596,29 @@ def verify_stage_plan(
             raise VerificationError(
                 f"stage {stage.stage_id!r} file is not a valid stage spec"
             ) from exc
+
+        if not str(spec.script).startswith("src/mantra/"):
+            raise VerificationError(
+                f"stage {stage.stage_id!r} script must be beneath src/mantra"
+            )
+
+        artifact_root = f"{run_root(run)}/artifacts/"
+        for artifact_name, artifact in spec.artifacts.items():
+            if not str(artifact.path).startswith(artifact_root):
+                raise VerificationError(
+                    f"artifact {artifact_name!r} of stage {stage.stage_id!r} "
+                    "is outside the canonical run artifact root"
+                )
+
+        if isinstance(spec, InternalSpec):
+            for input_name, input_ref in spec.inputs.items():
+                if isinstance(input_ref, StoredInputRef) and not str(
+                    input_ref.path
+                ).startswith("inputs/"):
+                    raise VerificationError(
+                        f"stored input {input_name!r} of stage "
+                        f"{stage.stage_id!r} is outside inputs"
+                    )
 
         for previous_stage_id, previous_spec in loaded_stages.items():
             for artifact_name, artifact in spec.artifacts.items():
@@ -689,6 +741,16 @@ def verify_attempt_stages(
     run_stage_refs = {stage.stage_id: stage for stage in run.stages}
 
     for stage_reference in attempt.resolved_stages:
+        expected_resolved_path = resolved_stage_spec_path(
+            run,
+            stage_reference.stage_id,
+        )
+        if stage_reference.resolved_spec.path != expected_resolved_path:
+            raise VerificationError(
+                f"stage {stage_reference.stage_id!r} resolved spec is outside "
+                "its canonical run path"
+            )
+
         raw = read_snapshot_file(
             stage_reference.snapshot,
             stage_reference.resolved_spec,
@@ -703,6 +765,17 @@ def verify_attempt_stages(
             ) from exc
 
         stage_spec = stage_specs[stage_reference.stage_id]
+
+        for artifact_name, artifact_spec in stage_spec.artifacts.items():
+            if repo_file_paths_overlap(
+                stage_reference.resolved_spec.path,
+                artifact_spec.path,
+            ):
+                raise VerificationError(
+                    f"stage {stage_reference.stage_id!r} resolved spec collides "
+                    f"with artifact {artifact_name!r}"
+                )
+
         if resolved_spec.spec != stage_spec:
             raise VerificationError(
                 f"stage {stage_reference.stage_id!r} does not embed its stage spec"
@@ -866,8 +939,18 @@ def verify_attempt_files(
     completed_stage_ids = {stage.stage_id for stage in attempt.resolved_stages}
     permitted_metrics = set(experiment.metric_ids)
     measurements: list[Measurement] = []
+    root = run_root(run)
 
     for reference in attempt.measurement_files:
+        if not isinstance(reference.stored_at, HuggingFaceFileRef):
+            raise VerificationError(
+                "measurement files must use immutable artifact storage"
+            )
+        if not str(reference.stored_at.path).startswith(f"{root}/measurements/"):
+            raise VerificationError(
+                "measurement file is outside the canonical run path"
+            )
+
         raw = read_resolved_file(reference, fetcher=fetcher)
         try:
             lines = raw.decode("utf-8").splitlines()
@@ -910,6 +993,14 @@ def verify_attempt_files(
                 raise VerificationError(
                     "evaluation measurement metric is absent from its stage spec"
                 )
+            expected_path = (
+                f"{root}/measurements/{measurement.stage_id}."
+                f"{measurement.metric_id}.jsonl"
+            )
+            if reference.stored_at.path != expected_path:
+                raise VerificationError(
+                    "measurement file path does not match its stage and metric"
+                )
             if not (
                 attempt.started_at <= measurement.measured_at <= attempt.completed_at
             ):
@@ -919,6 +1010,17 @@ def verify_attempt_files(
             measurements.append(measurement)
 
     for reference in attempt.log_files:
+        if not isinstance(reference.stored_at, HuggingFaceFileRef):
+            raise VerificationError("log files must use immutable artifact storage")
+        log_pattern = re.compile(
+            rf"^{re.escape(root)}/logs/{attempt.attempt_id}\."
+            r"([a-z][a-z0-9_]*)\.(stdout|stderr)\.log$"
+        )
+        match = log_pattern.fullmatch(str(reference.stored_at.path))
+        if match is None or match.group(1) not in completed_stage_ids:
+            raise VerificationError(
+                "log file path does not match its attempt and stage"
+            )
         read_resolved_file(reference, fetcher=fetcher)
 
     return tuple(measurements)
@@ -992,6 +1094,11 @@ def verify_promoted_artifact(
         ) from exc
 
     verified_plan = verify_run_plan(resolved_run, fetcher=fetcher)
+    expected_run_path = f"{run_root(verified_plan.run)}/resolved.yaml"
+    if pointer.run.stored_at.path != expected_run_path:
+        raise VerificationError(
+            "artifact pointer run reference is outside the canonical run path"
+        )
     resolved_stages = verify_resolved_stages(
         resolved_run,
         verified_plan.run,
@@ -1022,6 +1129,13 @@ def verify_promoted_artifact(
             ) from exc
 
         verify_benchmark_result(benchmark_result, fetcher=fetcher)
+        expected_result_path = (
+            f"{run_root(verified_plan.run)}/benchmark.result.yaml"
+        )
+        if pointer.benchmark_result.stored_at.path != expected_result_path:
+            raise VerificationError(
+                "artifact pointer benchmark result is outside the canonical run path"
+            )
         if benchmark_result.status != "passed":
             raise VerificationError(
                 "artifact pointer benchmark result must have passed"
@@ -1245,6 +1359,12 @@ def verify_benchmark_result(
         ) from exc
 
     verified_run = verify_run_result(resolved_run, fetcher=fetcher)
+
+    expected_run_location = f"{run_root(verified_run.plan.run)}/resolved.yaml"
+    if result.run.stored_at.path != expected_run_location:
+        raise VerificationError(
+            "benchmark result run reference is outside the canonical run path"
+        )
 
     expected_benchmark_location = GitFileRef(
         repository=verified_run.plan.run.source.repository,
