@@ -6,6 +6,7 @@ dependencies:
   - pyyaml
   - validators
   - pytest
+  - ruff
   - huggingface_hub
   - numpy
   - pytorch

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import yaml
@@ -24,7 +24,6 @@ from mantra_provenance.models_v4 import (
     ResolvedRun,
     ResolvedRunSpecRef,
     ResolvedStageRef,
-    ResolvedStoredInputRef,
     ResolvedTrainSpec,
     RunAttempt,
     RunSpec,

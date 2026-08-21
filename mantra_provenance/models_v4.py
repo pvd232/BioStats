@@ -405,7 +405,8 @@ factors:
       - dropout_0
       - dropout_01
 
-The cartesian product would be 3 x 3 x 2 x 2 = 36 combinations. But we only specify four meaningful variants:
+The cartesian product would be 3 x 3 x 2 x 2 = 36 combinations. The plan
+declares four meaningful variants:
 
 variants:
   - baseline

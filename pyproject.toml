@@ -16,7 +16,14 @@ dependencies = [
 [project.optional-dependencies]
 test = [
     "pytest>=9,<10",
+    "ruff>=0.12,<1",
 ]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
 
 [tool.setuptools.packages.find]
 include = ["mantra_provenance*"]
