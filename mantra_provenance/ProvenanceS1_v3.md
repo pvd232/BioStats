@@ -3047,7 +3047,7 @@ $$
 \ell_k^{(t+1)},
 g_k^{(t+1)},
 \theta_{k,\mathrm{forward}}^{(t+1)},
-r_k^{(t+1)}
+r_{k,\mathrm{gradient}}^{(t+1)}
 \right)
 \\
 &\qquad =
@@ -3068,8 +3068,14 @@ Here:
 2. $g_k^{(t+1)}$ contains the resulting parameter gradients.
 3. $\theta_{k,\mathrm{forward}}^{(t+1)}$ contains the model parameters and
    persistent buffers after the forward computation.
-4. $r_k^{(t+1)}$ contains the generator states after stochastic model
-   operations used to compute the gradients.
+4. $r_{k,\mathrm{gradient}}^{(t+1)}$ contains the generator states after
+   stochastic model operations used to compute the gradients.
+
+During training, Dropout samples a new Bernoulli mask during each forward call.
+The generator state consumed by that sampling therefore advances from
+$r_{k,\mathrm{batch}}^{(t+1)}$ to
+$r_{k,\mathrm{gradient}}^{(t+1)}$. This behavior is defined by the PyTorch
+2.13.0 [`Dropout` implementation](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/nn/modules/dropout.py#L35-L72).
 
 If the forward computation changes no persistent model buffers, then:
 
@@ -3122,6 +3128,16 @@ b_k^{(t+1)}
 b_{k,\mathrm{batch}}^{(t+1)}.
 $$
 
+The operations $A_{\beta,q,t}$ and $P_{\beta,q,t}$ have no generator-state
+argument in this factorization. The generator component of the completed state
+is therefore:
+
+$$
+r_k^{(t+1)}
+=
+r_{k,\mathrm{gradient}}^{(t+1)}.
+$$
+
 ### A.5 Reassembly
 
 The completed update produces:
@@ -3154,7 +3170,7 @@ b_{k,\mathrm{batch}}^{(t+1)}
 \ell_k^{(t+1)},
 g_k^{(t+1)},
 \theta_{k,\mathrm{forward}}^{(t+1)},
-r_k^{(t+1)}
+r_{k,\mathrm{gradient}}^{(t+1)}
 \right)
 \\
 &\longmapsto
