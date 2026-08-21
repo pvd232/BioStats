@@ -16,7 +16,6 @@ from pydantic import TypeAdapter, ValidationError
 
 from .ids import InputName, StageId
 from .models_v4 import (
-    ArtifactManifest,
     ArtifactPointer,
     BaseSpec,
     ExperimentSpec,
@@ -25,16 +24,22 @@ from .models_v4 import (
     HuggingFaceFileRef,
     InternalSpec,
     RepoRelPath,
-    ResolvedArtifactManifestRef,
+    ResolvedArtifact,
     ResolvedBaseSpec,
+    ResolvedBundleArtifact,
     ResolvedFileRef,
     ResolvedFutureInputRef,
     ResolvedInternalSpec,
     ResolvedRun,
+    ResolvedRunSpecRef,
+    ResolvedSingleFileArtifact,
     ResolvedSpec,
+    ResolvedStageRef,
     ResolvedStoredInputRef,
     RunSpec,
+    SnapshotFileRef,
     Spec,
+    StageResultSnapshotRef,
     StorageModel,
     StoredInputRef,
     VariantSpec,
@@ -51,23 +56,28 @@ class VerificationError(ValueError):
 
 
 @dataclass(frozen=True)
-class VerifiedArtifactManifest:
-    """Files and records verified through one artifact manifest."""
+class VerifiedSnapshotFile:
+    """One snapshot file whose bytes match its recorded identity."""
 
-    manifest: ArtifactManifest
-    spec: BaseSpec
-    resolved_spec: ResolvedBaseSpec
-    artifact: ResolvedFileRef
+    reference: SnapshotFileRef
     content: bytes
 
 
 @dataclass(frozen=True)
+class VerifiedArtifact:
+    """One resolved artifact and all of its verified files."""
+
+    artifact: ResolvedArtifact
+    files: tuple[VerifiedSnapshotFile, ...]
+
+
+@dataclass(frozen=True)
 class VerifiedInput:
-    """Verified artifact bytes and the local path where a stage consumes them."""
+    """A verified artifact and the local path where a stage consumes it."""
 
     path: RepoRelPath
-    artifact: ResolvedFileRef
-    content: bytes
+    artifact: ResolvedArtifact
+    files: tuple[VerifiedSnapshotFile, ...]
 
 
 def fetch_git_file_bytes(
@@ -189,23 +199,70 @@ def read_resolved_file(
     return verify_resolved_file_bytes(reference, raw)
 
 
+def read_snapshot_file(
+    snapshot: StageResultSnapshotRef,
+    reference: SnapshotFileRef,
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> bytes:
+    """Retrieve and verify one file from a stage-result snapshot."""
+    retrieve = fetch_storage_bytes if fetcher is None else fetcher
+    location = HuggingFaceFileRef(
+        repository=snapshot.repository,
+        commit=snapshot.commit,
+        path=reference.path,
+        repo_type=snapshot.repo_type,
+    )
+    raw = retrieve(location)
+
+    resolved_reference = ResolvedFileRef(
+        sha256=reference.sha256,
+        bytes=reference.bytes,
+        stored_at=location,
+    )
+    return verify_resolved_file_bytes(resolved_reference, raw)
+
+
+def verify_snapshot_artifact(
+    stage: ResolvedStageRef,
+    artifact: ResolvedArtifact,
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> VerifiedArtifact:
+    """Verify every file representing one artifact in a stage snapshot."""
+    if isinstance(artifact, ResolvedSingleFileArtifact):
+        references = (artifact.file,)
+    elif isinstance(artifact, ResolvedBundleArtifact):
+        references = tuple(member.file for member in artifact.members)
+    else:
+        raise TypeError(f"unsupported resolved artifact: {type(artifact).__name__}")
+
+    files = tuple(
+        VerifiedSnapshotFile(
+            reference=reference,
+            content=read_snapshot_file(
+                stage.snapshot,
+                reference,
+                fetcher=fetcher,
+            ),
+        )
+        for reference in references
+    )
+    return VerifiedArtifact(artifact=artifact, files=files)
+
+
 def verify_resolved_run_file(
     resolved_run: ResolvedRun,
     *,
     fetcher: StorageFetcher | None = None,
 ) -> RunSpec:
-    """Verify that ``run_file`` parses to the RunSpec embedded in a resolved run."""
-    raw = read_resolved_file(resolved_run.run_file, fetcher=fetcher)
+    """Retrieve and verify the RunSpec governing a resolved run."""
+    raw = read_resolved_file(resolved_run.spec, fetcher=fetcher)
 
     try:
         file_run = RunSpec.model_validate(yaml.safe_load(raw))
     except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
-        raise VerificationError("run_file is not a valid RunSpec document") from exc
-
-    if file_run != resolved_run.run:
-        raise VerificationError(
-            "run_file does not match the RunSpec embedded in ResolvedRun"
-        )
+        raise VerificationError("resolved run spec is not a valid RunSpec") from exc
 
     return file_run
 
@@ -221,14 +278,12 @@ def verify_experiment_and_variant(
     experiment_location = GitFileRef(
         repository=run.source.repository,
         commit=run.source.commit,
-        path=(f"experiments/{run.experiment_id}/{run.experiment_id}.experiment.yaml"),
+        path=f"experiments/{run.experiment_id}/spec.yaml",
     )
     variant_location = GitFileRef(
         repository=run.source.repository,
         commit=run.source.commit,
-        path=(
-            f"experiments/{run.experiment_id}/variants/{run.variant_id}.variant.yaml"
-        ),
+        path=f"experiments/{run.experiment_id}/variants/{run.variant_id}.spec.yaml",
     )
 
     try:
@@ -285,7 +340,7 @@ def verify_experiment_and_variant(
 
 def verify_stage_plan(
     run: RunSpec,
-    run_file: ResolvedFileRef,
+    run_file: ResolvedRunSpecRef,
     *,
     fetcher: StorageFetcher | None = None,
 ) -> dict[StageId, BaseSpec]:
@@ -295,19 +350,11 @@ def verify_stage_plan(
 
     for stage in run.stages:
         plan_location = run_file.stored_at
-        if isinstance(plan_location, GitFileRef):
-            location: StorageModel = GitFileRef(
-                repository=plan_location.repository,
-                commit=plan_location.commit,
-                path=stage.spec,
-            )
-        else:
-            location = HuggingFaceFileRef(
-                repository=plan_location.repository,
-                commit=plan_location.commit,
-                path=stage.spec,
-                repo_type=plan_location.repo_type,
-            )
+        location = GitFileRef(
+            repository=plan_location.repository,
+            commit=plan_location.commit,
+            path=stage.spec,
+        )
 
         stage_reference = ResolvedFileRef(
             sha256=stage.sha256,
@@ -324,11 +371,17 @@ def verify_stage_plan(
             ) from exc
 
         for previous_stage_id, previous_spec in loaded_stages.items():
-            if repo_file_paths_overlap(spec.output, previous_spec.output):
-                raise VerificationError(
-                    f"stage output paths for {previous_stage_id!r} and "
-                    f"{stage.stage_id!r} collide"
-                )
+            for artifact_name, artifact in spec.artifacts.items():
+                for previous_name, previous_artifact in previous_spec.artifacts.items():
+                    if repo_file_paths_overlap(
+                        artifact.path,
+                        previous_artifact.path,
+                    ):
+                        raise VerificationError(
+                            f"artifact paths for {previous_stage_id!r}/"
+                            f"{previous_name!r} and {stage.stage_id!r}/"
+                            f"{artifact_name!r} collide"
+                        )
 
         if isinstance(spec, InternalSpec):
             stored_inputs = tuple(
@@ -348,22 +401,35 @@ def verify_stage_plan(
                         "must name an earlier stage"
                     )
 
-                producer_output = loaded_stages[producer_stage_id].output
+                producer_spec = loaded_stages[producer_stage_id]
+                producer_artifact = producer_spec.artifacts.get(
+                    input_ref.producer_artifact
+                )
+                if producer_artifact is None:
+                    raise VerificationError(
+                        f"future input {input_name!r} of stage {stage.stage_id!r} "
+                        f"selects undeclared artifact "
+                        f"{input_ref.producer_artifact!r}"
+                    )
 
-                if repo_file_paths_overlap(producer_output, spec.script):
+                producer_path = producer_artifact.path
+
+                if repo_file_paths_overlap(producer_path, spec.script):
                     raise VerificationError(
                         f"future input {input_name!r} path collides with the "
                         f"script of stage {stage.stage_id!r}"
                     )
 
-                if repo_file_paths_overlap(producer_output, spec.output):
-                    raise VerificationError(
-                        f"future input {input_name!r} path collides with the "
-                        f"output of stage {stage.stage_id!r}"
-                    )
+                for artifact_name, artifact in spec.artifacts.items():
+                    if repo_file_paths_overlap(producer_path, artifact.path):
+                        raise VerificationError(
+                            f"future input {input_name!r} path collides with "
+                            f"artifact {artifact_name!r} of stage "
+                            f"{stage.stage_id!r}"
+                        )
 
                 for stored_input in stored_inputs:
-                    if repo_file_paths_overlap(producer_output, stored_input.path):
+                    if repo_file_paths_overlap(producer_path, stored_input.path):
                         raise VerificationError(
                             f"future input {input_name!r} path collides with a "
                             f"stored input of stage {stage.stage_id!r}"
@@ -376,6 +442,7 @@ def verify_stage_plan(
 
 def verify_resolved_stages(
     resolved_run: ResolvedRun,
+    run: RunSpec,
     stage_specs: Mapping[StageId, BaseSpec],
     *,
     fetcher: StorageFetcher | None = None,
@@ -395,7 +462,7 @@ def verify_resolved_stages(
     if successful_attempt is None or successful_attempt.status != "succeeded":
         raise VerificationError("successful attempt could not be identified")
 
-    expected_stage_ids = tuple(stage.stage_id for stage in resolved_run.run.stages)
+    expected_stage_ids = tuple(stage.stage_id for stage in run.stages)
     resolved_stage_ids = tuple(
         stage.stage_id for stage in successful_attempt.resolved_stages
     )
@@ -408,9 +475,14 @@ def verify_resolved_stages(
         raise VerificationError("loaded stage specs do not match the run stage plan")
 
     verified_stages: dict[StageId, ResolvedBaseSpec] = {}
+    run_stage_refs = {stage.stage_id: stage for stage in run.stages}
 
     for stage_reference in successful_attempt.resolved_stages:
-        raw = read_resolved_file(stage_reference.resolved_spec, fetcher=fetcher)
+        raw = read_snapshot_file(
+            stage_reference.snapshot,
+            stage_reference.resolved_spec,
+            fetcher=fetcher,
+        )
         try:
             resolved_spec = RESOLVED_SPEC_ADAPTER.validate_python(yaml.safe_load(raw))
         except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
@@ -427,8 +499,8 @@ def verify_resolved_stages(
 
         source_location = resolved_spec.source.stored_at
         if (
-            source_location.repository != resolved_run.run.source.repository
-            or source_location.commit != resolved_run.run.source.commit
+            source_location.repository != run.source.repository
+            or source_location.commit != run.source.commit
         ):
             raise VerificationError(
                 f"stage {stage_reference.stage_id!r} source does not match the "
@@ -447,15 +519,122 @@ def verify_resolved_stages(
 
         read_resolved_file(resolved_spec.source, fetcher=fetcher)
         read_resolved_file(resolved_spec.environment.lockfile, fetcher=fetcher)
-        read_resolved_file(resolved_spec.output, fetcher=fetcher)
+
+        requested_environment = stage_spec.environment or run.environment
+        resolved_environment = resolved_spec.environment
+        if (
+            resolved_environment.machine_image.project
+            != requested_environment.machine_image.project
+            or resolved_environment.machine_image.name
+            != requested_environment.machine_image.name
+            or resolved_environment.machine_type != requested_environment.machine_type
+            or resolved_environment.compute != requested_environment.compute
+            or resolved_environment.lockfile.stored_at
+            != requested_environment.lockfile
+        ):
+            raise VerificationError(
+                f"stage {stage_reference.stage_id!r} realized a different "
+                "environment than requested"
+            )
+
+        context = resolved_spec.execution_context
+        if context.determinism != run.reproducibility.determinism:
+            raise VerificationError(
+                f"stage {stage_reference.stage_id!r} determinism controls do "
+                "not match the run plan"
+            )
+        if context.precision != run.reproducibility.precision:
+            raise VerificationError(
+                f"stage {stage_reference.stage_id!r} precision controls do not "
+                "match the run plan"
+            )
+        if context.parallelism != run.reproducibility.parallelism:
+            raise VerificationError(
+                f"stage {stage_reference.stage_id!r} parallelism controls do "
+                "not match the run plan"
+            )
+
+        recorded_seeds = {
+            context.randomness.python_seed,
+            context.randomness.numpy_seed,
+            context.randomness.torch_seed,
+            context.randomness.dataloader_seed,
+        }
+        if recorded_seeds != {run.seed}:
+            raise VerificationError(
+                f"stage {stage_reference.stage_id!r} did not apply the run seed"
+            )
+
+        run_stage_ref = run_stage_refs[stage_reference.stage_id]
+        expected_command = (
+            "python",
+            str(stage_spec.script),
+            str(run_stage_ref.spec),
+        )
+        if resolved_spec.command != expected_command:
+            raise VerificationError(
+                f"stage {stage_reference.stage_id!r} command does not match "
+                "the run plan"
+            )
+
+        for artifact in resolved_spec.artifacts.values():
+            verify_snapshot_artifact(
+                stage_reference,
+                artifact,
+                fetcher=fetcher,
+            )
 
         verified_stages[stage_reference.stage_id] = resolved_spec
 
     return verified_stages
 
 
+def verify_promoted_artifact(
+    pointer: ArtifactPointer,
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> VerifiedArtifact:
+    """Follow a promoted artifact pointer through its completed producer run."""
+    resolved_run_raw = read_resolved_file(pointer.run, fetcher=fetcher)
+    try:
+        resolved_run = ResolvedRun.model_validate(yaml.safe_load(resolved_run_raw))
+    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+        raise VerificationError(
+            "artifact pointer run is not a valid ResolvedRun document"
+        ) from exc
+
+    run = verify_resolved_run_file(resolved_run, fetcher=fetcher)
+    stage_specs = verify_stage_plan(run, resolved_run.spec, fetcher=fetcher)
+    resolved_stages = verify_resolved_stages(
+        resolved_run,
+        run,
+        stage_specs,
+        fetcher=fetcher,
+    )
+
+    producer_spec = resolved_stages.get(pointer.artifact.stage_id)
+    if producer_spec is None:
+        raise VerificationError("artifact pointer selects an absent producer stage")
+
+    artifact = producer_spec.artifacts.get(pointer.artifact.artifact_name)
+    if artifact is None:
+        raise VerificationError("artifact pointer selects an undeclared artifact")
+
+    successful_attempt = next(
+        attempt
+        for attempt in resolved_run.attempts
+        if attempt.attempt_id == resolved_run.successful_attempt_id
+    )
+    producer_stage = next(
+        stage
+        for stage in successful_attempt.resolved_stages
+        if stage.stage_id == pointer.artifact.stage_id
+    )
+    return verify_snapshot_artifact(producer_stage, artifact, fetcher=fetcher)
+
+
 def verify_stored_inputs(
-    resolved_stages: dict[StageId, ResolvedBaseSpec],
+    resolved_stages: Mapping[StageId, ResolvedBaseSpec],
     *,
     fetcher: StorageFetcher | None = None,
 ) -> dict[StageId, dict[InputName, VerifiedInput]]:
@@ -497,15 +676,11 @@ def verify_stored_inputs(
                     "is not a valid ArtifactPointer document"
                 ) from exc
 
-            verified_manifest = verify_artifact_manifest(
-                pointer.manifest,
-                fetcher=fetcher,
-            )
-
+            verified_artifact = verify_promoted_artifact(pointer, fetcher=fetcher)
             stage_inputs[input_name] = VerifiedInput(
                 path=spec_input.path,
-                artifact=verified_manifest.artifact,
-                content=verified_manifest.content,
+                artifact=verified_artifact.artifact,
+                files=verified_artifact.files,
             )
 
         if stage_inputs:
@@ -516,6 +691,7 @@ def verify_stored_inputs(
 
 def verify_future_inputs(
     resolved_run: ResolvedRun,
+    run: RunSpec,
     resolved_stages: Mapping[StageId, ResolvedBaseSpec],
     *,
     fetcher: StorageFetcher | None = None,
@@ -534,18 +710,13 @@ def verify_future_inputs(
     if successful_attempt is None or successful_attempt.status != "succeeded":
         raise VerificationError("successful attempt could not be identified")
 
-    verified_manifests: list[
-        tuple[ResolvedArtifactManifestRef, VerifiedArtifactManifest]
-    ] = []
-    for manifest_reference in successful_attempt.artifact_manifests:
-        verified_manifest = verify_artifact_manifest(
-            manifest_reference, fetcher=fetcher
-        )
-        verified_manifests.append((manifest_reference, verified_manifest))
-
     stage_positions: dict[StageId, int] = {}
-    for position, stage_reference in enumerate(resolved_run.run.stages):
+    for position, stage_reference in enumerate(run.stages):
         stage_positions[stage_reference.stage_id] = position
+
+    completed_stages = {
+        stage.stage_id: stage for stage in successful_attempt.resolved_stages
+    }
 
     verified_inputs: dict[StageId, dict[InputName, VerifiedInput]] = {}
     for consumer_stage_id, resolved_consumer_spec in resolved_stages.items():
@@ -592,136 +763,47 @@ def verify_future_inputs(
                     f"resolved producer stage {producer_stage_id!r} is missing"
                 )
 
-            producer_stage_reference = None
-            for stage_reference in successful_attempt.resolved_stages:
-                if stage_reference.stage_id == producer_stage_id:
-                    producer_stage_reference = stage_reference
-                    break
-
+            producer_stage_reference = completed_stages.get(producer_stage_id)
             if producer_stage_reference is None:
                 raise VerificationError(
                     f"successful attempt has no resolved stage for "
                     f"{producer_stage_id!r}"
                 )
 
-            producer_manifest_reference = None
-            verified_producer_manifest = None
-
-            for manifest_reference, verified_manifest in verified_manifests:
-                if (
-                    verified_manifest.manifest.resolved_spec
-                    == producer_stage_reference.resolved_spec
-                ):
-                    if producer_manifest_reference is not None:
-                        raise VerificationError(
-                            f"producer stage {producer_stage_id!r} has multiple "
-                            "artifact manifests"
-                        )
-                    producer_manifest_reference = manifest_reference
-                    verified_producer_manifest = verified_manifest
-
-            if (
-                producer_manifest_reference is None
-                or verified_producer_manifest is None
-            ):
-                raise VerificationError(
-                    f"producer stage {producer_stage_id!r} has no artifact manifest"
-                )
-
-            if resolved_input.manifest != producer_manifest_reference:
+            if resolved_input.producer != producer_stage_reference:
                 raise VerificationError(
                     f"future input {input_name!r} of stage "
-                    f"{consumer_stage_id!r} does not reference the producer's "
-                    "artifact manifest"
+                    f"{consumer_stage_id!r} does not identify the completed "
+                    "producer stage"
                 )
 
-            if verified_producer_manifest.resolved_spec != resolved_producer_spec:
+            artifact_name = spec_input.producer_artifact
+            artifact = resolved_producer_spec.artifacts.get(artifact_name)
+            if artifact is None:
                 raise VerificationError(
-                    f"artifact manifest for producer stage "
-                    f"{producer_stage_id!r} does not reference its resolved spec"
+                    f"producer stage {producer_stage_id!r} has no artifact "
+                    f"named {artifact_name!r}"
                 )
 
-            if verified_producer_manifest.artifact != resolved_producer_spec.output:
+            declared_artifact = resolved_producer_spec.spec.artifacts.get(artifact_name)
+            if declared_artifact is None:
                 raise VerificationError(
-                    f"artifact manifest for producer stage "
-                    f"{producer_stage_id!r} does not identify its output"
+                    f"producer stage {producer_stage_id!r} did not declare "
+                    f"artifact {artifact_name!r}"
                 )
 
+            verified_artifact = verify_snapshot_artifact(
+                producer_stage_reference,
+                artifact,
+                fetcher=fetcher,
+            )
             stage_inputs[input_name] = VerifiedInput(
-                path=resolved_producer_spec.spec.output,
-                artifact=verified_producer_manifest.artifact,
-                content=verified_producer_manifest.content,
+                path=declared_artifact.path,
+                artifact=verified_artifact.artifact,
+                files=verified_artifact.files,
             )
 
         if stage_inputs:
             verified_inputs[consumer_stage_id] = stage_inputs
 
     return verified_inputs
-
-
-def verify_artifact_manifest(
-    reference: ResolvedArtifactManifestRef,
-    *,
-    fetcher: StorageFetcher | None = None,
-) -> VerifiedArtifactManifest:
-    manifest_raw = read_resolved_file(
-        reference,
-        fetcher=fetcher,
-    )
-    try:
-        manifest = ArtifactManifest.model_validate(yaml.safe_load(manifest_raw))
-    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
-        raise VerificationError(
-            "file is not a valid ArtifactManifest document"
-        ) from exc
-    artifact_raw = read_resolved_file(
-        manifest.artifact,
-        fetcher=fetcher,
-    )
-    spec_raw = read_resolved_file(
-        manifest.spec,
-        fetcher=fetcher,
-    )
-    resolved_spec_raw = read_resolved_file(
-        manifest.resolved_spec,
-        fetcher=fetcher,
-    )
-    read_resolved_file(
-        manifest.source,
-        fetcher=fetcher,
-    )
-
-    try:
-        spec = SPEC_ADAPTER.validate_python(yaml.safe_load(spec_raw))
-    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
-        raise VerificationError("manifest spec is not a valid stage spec") from exc
-
-    try:
-        resolved_spec = RESOLVED_SPEC_ADAPTER.validate_python(
-            yaml.safe_load(resolved_spec_raw)
-        )
-    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
-        raise VerificationError(
-            "manifest resolved_spec is not a valid resolved stage spec"
-        ) from exc
-
-    if resolved_spec.spec != spec:
-        raise VerificationError(
-            "resolved spec does not embed the manifest's stage spec"
-        )
-
-    if resolved_spec.output != manifest.artifact:
-        raise VerificationError("resolved spec output does not match manifest artifact")
-
-    if resolved_spec.source != manifest.source:
-        raise VerificationError(
-            "resolved spec source does not match manifest source"
-        )
-
-    return VerifiedArtifactManifest(
-        manifest=manifest,
-        spec=spec,
-        resolved_spec=resolved_spec,
-        artifact=manifest.artifact,
-        content=artifact_raw,
-    )
