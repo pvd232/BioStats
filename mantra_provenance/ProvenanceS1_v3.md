@@ -2909,3 +2909,241 @@ protocol layout.
 A single-file artifact occupies its declared file path. A bundle artifact
 occupies its declared directory root, and its loader defines the required
 member filenames beneath that root.
+
+## Appendix A. DataLoader iteration and RNG state
+
+This appendix fixes the DataLoader behavior used by the protocol. A training
+stage supplies one explicit `torch.Generator` to a map-style DataLoader with
+shuffled sampling and automatic batching. The same generator supplies the
+DataLoader base seed and the `RandomSampler` permutation. `BatchSampler` groups
+indices without consuming randomness. The diagrams assume
+`persistent_workers=False`.
+
+### Single-process loading
+
+```python
+generator = torch.Generator().manual_seed(run_seed)
+
+loader = DataLoader(
+    dataset,
+    batch_size=batch_size,
+    shuffle=True,
+    generator=generator,
+    num_workers=0,
+    persistent_workers=False,
+)
+```
+
+The DataLoader and its `RandomSampler` hold the same generator object:
+
+```text
+loader.generator ───────┐
+                        ├── generator g, initially in state G₀
+RandomSampler.generator ┘
+```
+
+One pass proceeds as follows:
+
+```text
+DataLoader loader already exists
+│
+└── iterator = iter(loader)
+    ├── creates the DataLoader iterator
+    ├── creates an iterator over BatchSampler
+    └── draws the DataLoader base seed from g
+        └── G₀ → G₁
+            │
+            ▼
+first next(iterator)
+├── BatchSampler creates an iterator over RandomSampler
+├── first demand for sample indices
+├── RandomSampler generates the shuffled index sequence using g
+│   └── G₁ → G₂
+├── BatchSampler consumes the first batch_size indices
+│   └── creates index batch 1
+├── dataset retrieves those observations
+├── transformations process those observations
+├── collation combines them
+└── returns batch 1
+            │
+            ▼
+second next(iterator)
+├── BatchSampler consumes the next batch_size indices
+│   └── uses the existing shuffled sequence
+├── dataset retrieves and transforms those observations
+├── collation combines them
+└── returns batch 2
+            │
+            ▼
+subsequent next(iterator) calls
+└── continue through the existing shuffled sequence
+            │
+            ▼
+all indices consumed
+├── RandomSampler iterator ends
+├── BatchSampler iterator ends
+└── DataLoader iterator raises StopIteration
+            │
+            ▼
+iterator = iter(loader)
+├── begins the next pass
+├── draws another base seed from g
+└── the next demand for indices generates a new permutation using g
+```
+
+An index batch is the complete list of dataset indices for one returned batch.
+For example:
+
+```text
+shuffled index sequence
+[41, 7, 93, 12, 56, 4, 81, 29, ...]
+
+BatchSampler
+├── index batch 1: [41, 7, 93, 12]
+└── index batch 2: [56, 4, 81, 29]
+```
+
+Dataset retrieval loads the observations named by one index batch.
+Transformations process those observations. Collation combines the processed
+observations into the batch returned by `next(iterator)`. Collation does not
+select additional observations.
+
+`BatchSampler` maintains a position in the sampler's index stream. In this
+single-process view, each `next(iterator)` consumes the next index batch from
+that stream. `BatchSampler` has no RNG state.
+
+### Multiprocess loading
+
+With `num_workers > 0`, sampling remains in the main process. Worker processes
+retrieve, transform, and collate the observations selected by the sampler.
+
+```text
+main process
+
+shared generator g in state G₀
+│
+└── iterator = iter(loader)
+    ├── draws the DataLoader base seed from g
+    │   └── G₀ → G₁
+    │
+    ├── starts worker processes
+    │   ├── worker 0 initializes its worker RNG states
+    │   ├── worker 1 initializes its worker RNG states
+    │   └── ...
+    │
+    └── primes the prefetch queue
+        ├── BatchSampler requests the first index batch
+        │   └── RandomSampler generates the permutation using g
+        │       └── G₁ → G₂
+        ├── index batch 1 → worker 0
+        ├── index batch 2 → worker 1
+        └── additional index batches are prefetched
+                    │
+        ┌───────────┴───────────┐
+        ▼                       ▼
+worker 0                    worker 1
+├── retrieve observations  ├── retrieve observations
+├── apply transformations  ├── apply transformations
+├── collate batch 1        ├── collate batch 2
+└── return batch 1         └── return batch 2
+        │                       │
+        └───────────┬───────────┘
+                    ▼
+main process
+
+first next(iterator)
+└── returns prepared batch 1
+
+second next(iterator)
+└── returns prepared batch 2
+
+continued retrieval
+└── dispatches additional index batches until the sequence is exhausted
+```
+
+Prefetching requests index batches while `iter(loader)` creates the
+multiprocess iterator. The shared generator can therefore supply both the base
+seed and the shuffled permutation before the caller's first
+`next(iterator)`.
+
+For worker $i$, PyTorch sets the worker's Python and PyTorch seeds to the
+DataLoader base seed plus $i$. PyTorch derives the worker's NumPy seed from the
+base seed and $i$. Random transformations executed by that worker advance the
+worker RNG states used by their implementations.
+
+### Separate generators
+
+The following configuration gives the DataLoader and `RandomSampler` different
+generator objects:
+
+```python
+loader_generator = torch.Generator().manual_seed(run_seed)
+sampler_generator = torch.Generator().manual_seed(run_seed)
+
+sampler = RandomSampler(
+    dataset,
+    generator=sampler_generator,
+)
+
+loader = DataLoader(
+    dataset,
+    sampler=sampler,
+    batch_size=batch_size,
+    generator=loader_generator,
+)
+```
+
+The two states advance independently:
+
+```text
+loader generator L₀
+│
+└── iter(loader) draws the DataLoader base seed
+    └── L₀ → L₁
+
+
+sampler generator S₀
+│
+└── first demand for indices generates the permutation
+    └── S₀ → S₁
+```
+
+Giving both generators the same numeric seed does not join their states. The
+protocol uses one shared generator because replay then captures and restores
+one DataLoader sampling state.
+
+When no generator is supplied, PyTorch uses its default CPU generator to draw
+the DataLoader base seed and a seed for a private `RandomSampler` generator.
+The private generator then produces the shuffled permutation:
+
+```text
+default PyTorch CPU generator
+├── supplies the DataLoader base seed
+└── supplies a seed for a private RandomSampler generator
+        │
+        ▼
+private RandomSampler generator
+└── generates the shuffled permutation
+```
+
+### Epoch boundary
+
+When the training procedure defines one epoch as one complete DataLoader pass:
+
+```text
+one epoch
+├── begins with iterator = iter(loader)
+├── consumes batches through repeated next(iterator)
+└── ends when the iterator raises StopIteration
+```
+
+The next epoch begins with another `iter(loader)` call.
+
+This appendix follows the PyTorch 2.13.0 implementations of:
+
+- [`DataLoader` iterator and base-seed construction](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/utils/data/dataloader.py#L685-L715);
+- [`RandomSampler`](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/utils/data/sampler.py#L160-L185);
+- [`BatchSampler`](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/utils/data/sampler.py#L338-L349);
+- [multiprocess prefetching](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/utils/data/dataloader.py#L1274-L1276);
+- [worker-queue index dispatch](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/utils/data/dataloader.py#L1531-L1557); and
+- [worker RNG initialization](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/utils/data/_utils/worker.py#L274-L281).
