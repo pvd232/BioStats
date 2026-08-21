@@ -1727,7 +1727,7 @@ class VariantSpec(ProtocolModel):
     experiment_id: ExperimentId
     variant_id: VariantId
     levels: dict[FactorId, LevelId]
-    stage_params: tuple[VariantStageParams, ...] = Field(min_length=1)
+    stage_params: tuple[VariantStageParams, ...] = ()
 ```
 
 The factor names in `VariantSpec.levels` equal the factor names in the selected
