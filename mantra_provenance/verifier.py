@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import tempfile
@@ -20,6 +21,7 @@ from .models_v4 import (
     ArtifactPointer,
     ArtifactSpec,
     BaseSpec,
+    BenchmarkResult,
     BenchmarkSpec,
     EvaluateSpec,
     ExperimentSpec,
@@ -27,6 +29,7 @@ from .models_v4 import (
     GitFileRef,
     HuggingFaceFileRef,
     InternalSpec,
+    Measurement,
     RepoRelPath,
     ResolvedArtifact,
     ResolvedBaseSpec,
@@ -40,6 +43,7 @@ from .models_v4 import (
     ResolvedSpec,
     ResolvedStageRef,
     ResolvedStoredInputRef,
+    RunAttempt,
     RunSpec,
     SnapshotFileRef,
     Spec,
@@ -94,6 +98,25 @@ class VerifiedRunPlan:
     variant: VariantSpec
     benchmark: BenchmarkSpec | None
     stages: dict[StageId, BaseSpec]
+
+
+@dataclass(frozen=True)
+class VerifiedRunResult:
+    """A verified terminal run and its connected records."""
+
+    plan: VerifiedRunPlan
+    resolved_stages: dict[StageId, ResolvedBaseSpec]
+    measurements: tuple[Measurement, ...]
+
+
+@dataclass(frozen=True)
+class VerifiedBenchmarkResult:
+    """A benchmark result and its verified run and confirmation execution."""
+
+    result: BenchmarkResult
+    run: VerifiedRunResult
+    confirmation_stages: dict[StageId, ResolvedBaseSpec]
+    confirmation_measurements: tuple[Measurement, ...]
 
 
 def fetch_git_file_bytes(
@@ -637,36 +660,23 @@ def verify_run_plan(
     )
 
 
-def verify_resolved_stages(
-    resolved_run: ResolvedRun,
+def verify_attempt_stages(
+    attempt: RunAttempt,
     run: RunSpec,
     stage_specs: Mapping[StageId, BaseSpec],
     *,
+    require_complete: bool,
     fetcher: StorageFetcher | None = None,
 ) -> dict[StageId, ResolvedBaseSpec]:
-    """Verify the resolved stages retained by a successful run attempt."""
-    if resolved_run.status != "succeeded":
-        raise VerificationError("resolved-stage verification requires a succeeded run")
-
-    successful_attempt = next(
-        (
-            attempt
-            for attempt in resolved_run.attempts
-            if attempt.attempt_id == resolved_run.successful_attempt_id
-        ),
-        None,
-    )
-    if successful_attempt is None or successful_attempt.status != "succeeded":
-        raise VerificationError("successful attempt could not be identified")
-
+    """Verify the ordered resolved-stage prefix retained by one attempt."""
     expected_stage_ids = tuple(stage.stage_id for stage in run.stages)
-    resolved_stage_ids = tuple(
-        stage.stage_id for stage in successful_attempt.resolved_stages
-    )
-    if resolved_stage_ids != expected_stage_ids:
+    resolved_stage_ids = tuple(stage.stage_id for stage in attempt.resolved_stages)
+    if resolved_stage_ids != expected_stage_ids[: len(resolved_stage_ids)]:
         raise VerificationError(
-            "successful attempt resolved stages do not match the run stage order"
+            "attempt resolved stages must form an ordered run-stage prefix"
         )
+    if require_complete and resolved_stage_ids != expected_stage_ids:
+        raise VerificationError("successful attempt must contain every run stage")
 
     if set(stage_specs) != set(expected_stage_ids):
         raise VerificationError("loaded stage specs do not match the run stage plan")
@@ -674,7 +684,7 @@ def verify_resolved_stages(
     verified_stages: dict[StageId, ResolvedBaseSpec] = {}
     run_stage_refs = {stage.stage_id: stage for stage in run.stages}
 
-    for stage_reference in successful_attempt.resolved_stages:
+    for stage_reference in attempt.resolved_stages:
         raw = read_snapshot_file(
             stage_reference.snapshot,
             stage_reference.resolved_spec,
@@ -705,9 +715,9 @@ def verify_resolved_stages(
             )
 
         if not (
-            successful_attempt.started_at
+            attempt.started_at
             < resolved_spec.completed_at
-            <= successful_attempt.completed_at
+            <= attempt.completed_at
         ):
             raise VerificationError(
                 f"stage {stage_reference.stage_id!r} completion time falls outside "
@@ -792,6 +802,148 @@ def verify_resolved_stages(
     return verified_stages
 
 
+def verify_resolved_stages(
+    resolved_run: ResolvedRun,
+    run: RunSpec,
+    stage_specs: Mapping[StageId, BaseSpec],
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> dict[StageId, ResolvedBaseSpec]:
+    """Verify the complete stage sequence retained by a successful run."""
+    if resolved_run.status != "succeeded":
+        raise VerificationError("resolved-stage verification requires a succeeded run")
+
+    successful_attempt = next(
+        (
+            attempt
+            for attempt in resolved_run.attempts
+            if attempt.attempt_id == resolved_run.successful_attempt_id
+        ),
+        None,
+    )
+    if successful_attempt is None or successful_attempt.status != "succeeded":
+        raise VerificationError("successful attempt could not be identified")
+
+    return verify_attempt_stages(
+        successful_attempt,
+        run,
+        stage_specs,
+        require_complete=True,
+        fetcher=fetcher,
+    )
+
+
+def verify_attempt_files(
+    attempt: RunAttempt,
+    run: RunSpec,
+    experiment: ExperimentSpec,
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> tuple[Measurement, ...]:
+    """Verify an attempt's measurements and logs against their file identities."""
+    completed_stage_ids = {stage.stage_id for stage in attempt.resolved_stages}
+    permitted_metrics = set(experiment.metric_ids)
+    measurements: list[Measurement] = []
+
+    for reference in attempt.measurement_files:
+        raw = read_resolved_file(reference, fetcher=fetcher)
+        try:
+            lines = raw.decode("utf-8").splitlines()
+        except UnicodeDecodeError as exc:
+            raise VerificationError("measurement file is not valid UTF-8") from exc
+
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                measurement = Measurement.model_validate(json.loads(line))
+            except (json.JSONDecodeError, ValidationError) as exc:
+                raise VerificationError(
+                    "measurement file contains an invalid Measurement row"
+                ) from exc
+
+            if measurement.run_id != run.run_id:
+                raise VerificationError("measurement run ID does not match the run")
+            if measurement.attempt_id != attempt.attempt_id:
+                raise VerificationError(
+                    "measurement attempt ID does not match its containing attempt"
+                )
+            if measurement.stage_id not in completed_stage_ids:
+                raise VerificationError(
+                    "measurement stage is absent from its containing attempt"
+                )
+            if measurement.metric_id not in permitted_metrics:
+                raise VerificationError(
+                    "measurement metric is absent from the experiment"
+                )
+            if not (
+                attempt.started_at
+                <= measurement.measured_at
+                <= attempt.completed_at
+            ):
+                raise VerificationError(
+                    "measurement timestamp falls outside its containing attempt"
+                )
+            measurements.append(measurement)
+
+    for reference in attempt.log_files:
+        read_resolved_file(reference, fetcher=fetcher)
+
+    return tuple(measurements)
+
+
+def verify_run_result(
+    resolved_run: ResolvedRun,
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> VerifiedRunResult:
+    """Verify a terminal run from its RunSpec through every completed attempt."""
+    plan = verify_run_plan(resolved_run, fetcher=fetcher)
+    all_measurements: list[Measurement] = []
+    successful_stages: dict[StageId, ResolvedBaseSpec] = {}
+
+    for attempt in resolved_run.attempts:
+        complete = attempt.status == "succeeded"
+        verified_stages = verify_attempt_stages(
+            attempt,
+            plan.run,
+            plan.stages,
+            require_complete=complete,
+            fetcher=fetcher,
+        )
+        all_measurements.extend(
+            verify_attempt_files(
+                attempt,
+                plan.run,
+                plan.experiment,
+                fetcher=fetcher,
+            )
+        )
+        if attempt.attempt_id == resolved_run.successful_attempt_id:
+            successful_stages = verified_stages
+
+    if resolved_run.status == "succeeded":
+        estimator_stage = successful_stages.get(plan.run.estimator.stage_id)
+        if estimator_stage is None:
+            raise VerificationError("successful run has no estimator-producing stage")
+        if plan.run.estimator.artifact_name not in estimator_stage.artifacts:
+            raise VerificationError("successful run has no selected estimator artifact")
+
+        verify_stored_inputs(successful_stages, fetcher=fetcher)
+        verify_future_inputs(
+            resolved_run,
+            plan.run,
+            successful_stages,
+            fetcher=fetcher,
+        )
+
+    return VerifiedRunResult(
+        plan=plan,
+        resolved_stages=successful_stages,
+        measurements=tuple(all_measurements),
+    )
+
+
 def verify_promoted_artifact(
     pointer: ArtifactPointer,
     *,
@@ -821,6 +973,34 @@ def verify_promoted_artifact(
     artifact = producer_spec.artifacts.get(pointer.artifact.artifact_name)
     if artifact is None:
         raise VerificationError("artifact pointer selects an undeclared artifact")
+
+    if pointer.benchmark_result is not None:
+        benchmark_result_raw = read_resolved_file(
+            pointer.benchmark_result,
+            fetcher=fetcher,
+        )
+        try:
+            benchmark_result = BenchmarkResult.model_validate(
+                yaml.safe_load(benchmark_result_raw)
+            )
+        except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+            raise VerificationError(
+                "artifact pointer benchmark result is invalid"
+            ) from exc
+
+        verify_benchmark_result(benchmark_result, fetcher=fetcher)
+        if benchmark_result.status != "passed":
+            raise VerificationError(
+                "artifact pointer benchmark result must have passed"
+            )
+        if benchmark_result.run != pointer.run:
+            raise VerificationError(
+                "artifact pointer and benchmark result select different runs"
+            )
+        if pointer.artifact != verified_plan.run.estimator:
+            raise VerificationError(
+                "benchmark promotion must select the run estimator"
+            )
 
     successful_attempt = next(
         attempt
@@ -1009,3 +1189,133 @@ def verify_future_inputs(
             verified_inputs[consumer_stage_id] = stage_inputs
 
     return verified_inputs
+
+
+def verify_benchmark_result(
+    result: BenchmarkResult,
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> VerifiedBenchmarkResult:
+    """Verify benchmark parity and metric criteria across two executions."""
+    benchmark_raw = read_resolved_file(result.benchmark, fetcher=fetcher)
+    try:
+        benchmark = BenchmarkSpec.model_validate(yaml.safe_load(benchmark_raw))
+    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+        raise VerificationError(
+            "benchmark result does not reference a valid BenchmarkSpec"
+        ) from exc
+
+    run_raw = read_resolved_file(result.run, fetcher=fetcher)
+    try:
+        resolved_run = ResolvedRun.model_validate(yaml.safe_load(run_raw))
+    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as exc:
+        raise VerificationError(
+            "benchmark result does not reference a valid ResolvedRun"
+        ) from exc
+
+    verified_run = verify_run_result(resolved_run, fetcher=fetcher)
+    if verified_run.plan.benchmark != benchmark:
+        raise VerificationError(
+            "benchmark result and run plan select different benchmark specs"
+        )
+
+    selected_attempt = next(
+        attempt
+        for attempt in resolved_run.attempts
+        if attempt.attempt_id == resolved_run.successful_attempt_id
+    )
+    if result.confirmation.attempt_id == selected_attempt.attempt_id:
+        raise VerificationError(
+            "benchmark confirmation must use a distinct attempt ID"
+        )
+
+    confirmation_stages = verify_attempt_stages(
+        result.confirmation,
+        verified_run.plan.run,
+        verified_run.plan.stages,
+        require_complete=True,
+        fetcher=fetcher,
+    )
+    confirmation_measurements = verify_attempt_files(
+        result.confirmation,
+        verified_run.plan.run,
+        verified_run.plan.experiment,
+        fetcher=fetcher,
+    )
+
+    estimator_ref = verified_run.plan.run.estimator
+    selected_estimator = verified_run.resolved_stages[
+        estimator_ref.stage_id
+    ].artifacts[estimator_ref.artifact_name]
+    confirmation_estimator = confirmation_stages[
+        estimator_ref.stage_id
+    ].artifacts[estimator_ref.artifact_name]
+    estimator_parity = selected_estimator == confirmation_estimator
+
+    evaluation_stage_ids = [
+        stage_id
+        for stage_id, stage in verified_run.plan.stages.items()
+        if isinstance(stage, EvaluateSpec)
+    ]
+    if len(evaluation_stage_ids) != 1:
+        raise VerificationError(
+            "benchmark verification requires one evaluation stage"
+        )
+    evaluation_stage_id = evaluation_stage_ids[0]
+    selected_predictions = verified_run.resolved_stages[
+        evaluation_stage_id
+    ].artifacts["predictions"]
+    confirmation_predictions = confirmation_stages[evaluation_stage_id].artifacts[
+        "predictions"
+    ]
+    prediction_parity = selected_predictions == confirmation_predictions
+
+    selected_measurements = tuple(
+        measurement
+        for measurement in verified_run.measurements
+        if measurement.attempt_id == selected_attempt.attempt_id
+        and measurement.stage_id == evaluation_stage_id
+    )
+    confirmation_evaluation_measurements = tuple(
+        measurement
+        for measurement in confirmation_measurements
+        if measurement.stage_id == evaluation_stage_id
+    )
+
+    criteria_pass = True
+    for criterion in benchmark.metrics:
+        selected_values = [
+            measurement.value
+            for measurement in selected_measurements
+            if measurement.metric_id == criterion.metric_id
+        ]
+        confirmation_values = [
+            measurement.value
+            for measurement in confirmation_evaluation_measurements
+            if measurement.metric_id == criterion.metric_id
+        ]
+        if len(selected_values) != 1 or len(confirmation_values) != 1:
+            raise VerificationError(
+                f"benchmark metric {criterion.metric_id!r} must occur once per "
+                "evaluation execution"
+            )
+
+        values = (selected_values[0], confirmation_values[0])
+        if criterion.comparison == "ge":
+            criteria_pass &= all(value >= criterion.threshold for value in values)
+        else:
+            criteria_pass &= all(value <= criterion.threshold for value in values)
+
+    passed = estimator_parity and prediction_parity and criteria_pass
+    expected_status = "passed" if passed else "failed"
+    if result.status != expected_status:
+        raise VerificationError(
+            "benchmark result status does not match parity and metric checks"
+        )
+
+    return VerifiedBenchmarkResult(
+        result=result,
+        run=verified_run,
+        confirmation_stages=confirmation_stages,
+        confirmation_measurements=confirmation_measurements,
+    )

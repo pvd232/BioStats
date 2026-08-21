@@ -40,6 +40,7 @@ from mantra_provenance.verifier import (
     VerificationError,
     read_resolved_file,
     read_snapshot_file,
+    verify_attempt_files,
     verify_future_inputs,
     verify_resolved_run_file,
     verify_resolved_stages,
@@ -459,6 +460,80 @@ class RunAndStageVerificationTests(unittest.TestCase):
         )
 
         self.assertEqual(verified["train"], resolved)
+
+    def test_attempt_measurements_and_logs_are_verified(self) -> None:
+        spec = train_spec()
+        run, _ = run_spec([("train", spec)])
+        measured_at = datetime(2026, 8, 21, 12, 30, tzinfo=UTC)
+        measurement_raw = (
+            '{"run_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV",'
+            '"attempt_id":1,"stage_id":"train",'
+            '"metric_id":"training_loss","value":0.1,'
+            f'"measured_at":"{measured_at.isoformat()}"}}\n'
+        ).encode()
+        log_raw = b"training complete\n"
+        stage = ResolvedStageRef(
+            stage_id="train",
+            snapshot=snapshot(),
+            resolved_spec={
+                "path": "stages/train.spec.resolved.yaml",
+                "sha256": "e" * 64,
+                "bytes": 10,
+            },
+        )
+        attempt = RunAttempt(
+            attempt_id=1,
+            status="succeeded",
+            started_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+            completed_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
+            resolved_stages=(stage,),
+            measurement_files=(
+                ResolvedFileRef(
+                    sha256=sha256(measurement_raw),
+                    bytes=len(measurement_raw),
+                    stored_at=HuggingFaceFileRef(
+                        repository=HF_REPOSITORY,
+                        commit=SNAPSHOT_COMMIT,
+                        path="measurements/train.training_loss.jsonl",
+                        repo_type="dataset",
+                    ),
+                ),
+            ),
+            log_files=(
+                ResolvedFileRef(
+                    sha256=sha256(log_raw),
+                    bytes=len(log_raw),
+                    stored_at=HuggingFaceFileRef(
+                        repository=HF_REPOSITORY,
+                        commit=SNAPSHOT_COMMIT,
+                        path="logs/1.train.stdout.log",
+                        repo_type="dataset",
+                    ),
+                ),
+            ),
+            failure_reason=None,
+        )
+        experiment = ExperimentSpec(
+            experiment_id="e001_strand",
+            factors=(),
+            variant_ids=("baseline",),
+            replicates=({"replicate_id": "replicate_01", "seed": 42},),
+            metric_ids=("training_loss",),
+        )
+        documents = {
+            "measurements/train.training_loss.jsonl": measurement_raw,
+            "logs/1.train.stdout.log": log_raw,
+        }
+
+        measurements = verify_attempt_files(
+            attempt,
+            run,
+            experiment,
+            fetcher=lambda location: documents[location.path],
+        )
+
+        self.assertEqual(len(measurements), 1)
+        self.assertEqual(measurements[0].value, 0.1)
 
 
 class RunPlanRelationshipTests(unittest.TestCase):
