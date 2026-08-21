@@ -8,7 +8,7 @@ benchmark confirmation.
 
 | File or directory | Role | Principal interface |
 |---|---|---|
-| [v3 protocol](ProvenanceS1_v3.md) | Defines the active formal and record contract | Sections 2–22 |
+| [v3 protocol](ProvenanceS1_v3.md) | Defines the active formal and record contract | Sections 1–23 |
 | [models](models_v4.py) | Validates protocol records and their internal invariants | `RunSpec`, `ResolvedRun`, `Spec`, `ResolvedSpec`, `BenchmarkSpec` |
 | [verifier](verifier.py) | Retrieves referenced files and checks cross-record relationships | `verify_run_result()`, `verify_benchmark_result()` |
 | [YAML loading](yaml_io.py) | Parses stage records and rejects duplicate mapping keys | `load_spec()`, `load_resolved_spec()` |

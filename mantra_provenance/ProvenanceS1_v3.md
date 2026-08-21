@@ -1302,6 +1302,11 @@ class ResolvedRunSpecRef(ResolvedFileRef):
 class ResolvedRunRef(ResolvedFileRef):
     kind: Literal["resolved_run"] = "resolved_run"
     stored_at: HuggingFaceFileRef
+
+
+class ResolvedBenchmarkResultRef(ResolvedFileRef):
+    kind: Literal["benchmark_result"] = "benchmark_result"
+    stored_at: HuggingFaceFileRef
 ```
 
 An `ArtifactPointer` selects one artifact accepted for reuse:
@@ -2454,11 +2459,6 @@ class BenchmarkResult(ProtocolModel):
     confirmation: RunAttempt
     status: Literal["passed", "failed"]
     completed_at: AwareDatetime
-
-
-class ResolvedBenchmarkResultRef(ResolvedFileRef):
-    kind: Literal["benchmark_result"] = "benchmark_result"
-    stored_at: HuggingFaceFileRef
 ```
 
 The benchmark reference satisfies:
