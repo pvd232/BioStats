@@ -2377,3 +2377,169 @@ ArtifactPointer.artifact
 ArtifactPointer.benchmark_result
 == ResolvedBenchmarkResultRef for the passed BenchmarkResult
 ```
+
+## 21. Validation and external verification
+
+Pydantic rejects a protocol record before publication when the record violates
+its own schema or internal invariants. The external verifier retrieves every
+referenced file, verifies its identity, parses its expected record type, and
+checks relationships that cross file boundaries.
+
+```text
+Pydantic
+└── proves each loaded record is internally valid
+
+external verifier
+├── proves each reference identifies the recorded bytes
+├── proves resolved state satisfies requested state
+└── proves the complete provenance graph is internally consistent
+```
+
+### Pydantic validation
+
+Pydantic enforces:
+
+1. Closed, immutable records.
+2. Identifier, path, SHA-256, commit, timestamp, and finite-number syntax.
+3. Required fields, nonempty mappings, and discriminated unions.
+4. Unique stage, artifact, factor, level, variant, replicate, seed, metric, and
+   bundle-member identities within their containing records.
+5. Single-file cardinality of one and bundle cardinality of at least two.
+6. Matching declared and resolved artifact-name sets inside one resolved stage
+   spec.
+7. Attempt status, failure-reason, and timestamp relationships.
+8. The training checkpoint input pair and reserved output pair.
+9. The evaluation model, dataset, split, metric, and predictions requirements.
+10. Benchmark split, metric, confirmation, and result requirements.
+
+### Run-plan verification
+
+Starting from a `ResolvedRunSpecRef`, the verifier:
+
+1. Retrieves the `RunSpec` bytes and checks SHA-256 and byte count.
+2. Loads `ExperimentSpec`, `VariantSpec`, and the optional `BenchmarkSpec` from
+   `RunSpec.source`.
+3. Checks the experiment, variant, replicate, global-seed, typed-parameter,
+   metric, and benchmark equalities in Sections 16 and 20.
+4. Retrieves every stage-spec file identified by `RunSpec.stages` and checks
+   its SHA-256 and byte count.
+5. Parses each file through the `Spec` union.
+6. Checks that every `FutureInputRef` selects an earlier stage and a declared
+   producer artifact.
+7. Checks input, script, and artifact-path disjointness after resolving every
+   input path.
+8. Checks that `RunSpec.estimator` selects `model_parameters` from a training
+   stage.
+
+These checks reconstruct the complete frozen $q$ from its root record and exact
+stage-spec files.
+
+### Resolved-stage verification
+
+For each `ResolvedStageRef`, the verifier:
+
+1. Retrieves `ResolvedStageRef.resolved_spec` from
+   `ResolvedStageRef.snapshot`.
+2. Checks the resolved-spec SHA-256 and byte count.
+3. Parses the file through the `ResolvedSpec` union.
+4. Requires its embedded stage spec to equal the stage spec selected by the
+   corresponding `RunStageRef`.
+5. Verifies `ResolvedBaseSpec.source` against `RunSpec.source` and
+   `BaseSpec.script`.
+6. Resolves the selected stage environment and checks the environment,
+   execution context, global seed, and global reproducibility controls defined
+   in Section 15.
+7. Checks the canonical command.
+8. Checks the resolved input names and kinds against the planned inputs.
+9. Checks that `completed_at` lies within the containing attempt.
+
+These checks establish that the recorded runtime state satisfies:
+
+$$
+e_j
+\in
+E_{q,j}.
+$$
+
+### Artifact verification
+
+For every artifact name in the loaded resolved stage spec, the verifier:
+
+1. Selects the declared `ArtifactSpec` and matching `ResolvedArtifact`.
+2. Checks single-file or bundle cardinality.
+3. Checks every path equality, bundle-member order, bundle containment, and
+   cross-artifact disjointness.
+4. Retrieves every `SnapshotFileRef` from the stage-result snapshot.
+5. Checks every file's SHA-256 and byte count.
+6. Retrieves the loader from `RunSpec.source` using `ArtifactSpec.loader`.
+7. Materializes the verified file or directory and invokes `load(path)`.
+8. Supplies the reconstructed value to replay or to the consuming stage.
+
+This traversal establishes:
+
+$$
+L_a
+\left(
+F_j(a)
+\right)
+=
+v_a^{(j)}.
+$$
+
+### Input-lineage verification
+
+For a stored input, the verifier:
+
+1. Retrieves and checks the `ArtifactPointer` file.
+2. Retrieves and checks the selected `ResolvedRun`.
+3. Selects its successful attempt.
+4. Selects the producer `ResolvedStageRef` and named artifact.
+5. Verifies and materializes the complete artifact.
+
+For a same-run input, the verifier:
+
+1. Selects the earlier `ResolvedStageRef` named by `producer_stage_id`.
+2. Loads its resolved stage spec.
+3. Selects `producer_artifact` from its artifact mapping.
+4. Verifies and materializes the complete artifact.
+
+### Training-continuation verification
+
+For a training stage initialized from a checkpoint, the verifier establishes:
+
+```text
+checkpoint_model_parameters producer
+== checkpoint_continuation_state producer
+
+checkpoint_model_parameters artifact
+== model_parameters
+
+checkpoint_continuation_state artifact
+== continuation_state
+```
+
+The replay executor invokes both loaders and reconstructs:
+
+$$
+s_\ell^{(0)}
+=
+s_k^{(T_k)}.
+$$
+
+### Run-result verification
+
+For a `ResolvedRun`, the verifier:
+
+1. Checks attempt IDs, order, timestamps, statuses, and failure reasons.
+2. Requires each attempt's resolved stages to form an ordered prefix of
+   `RunSpec.stages`.
+3. Requires the successful attempt to contain every stage exactly once and in
+   order.
+4. Verifies every measurement and log file.
+5. Checks every measurement against the run, attempt, stage, experiment, and
+   metric identities.
+6. Loads the estimator artifact selected by `RunSpec.estimator`.
+
+For a `BenchmarkResult`, the verifier additionally performs the benchmark-spec,
+confirmation-attempt, estimator-parity, prediction-parity, metric-criterion,
+and promotion relationships defined in Section 20.
