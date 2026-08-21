@@ -329,7 +329,8 @@ e_k
 \right).
 $$
 
-The stage specification and initial parameters initialize the optimizer state:
+The stage specification and initial parameters initialize the optimization
+state:
 
 $$
 o_k^{(0)}
@@ -367,6 +368,13 @@ b_k^{(0)}
 \right).
 $$
 
+Here, $\theta_k^{(t)}$ contains every parameter and persistent model buffer
+required by the fitted prediction function. The optimization state
+$o_k^{(t)}$ contains every mutable optimizer, learning-rate-scheduler, and
+gradient-scaler value used by $\beta$. The state $r_k^{(t)}$ contains every
+random-number-generator state, and $b_k^{(t)}$ contains the sampler and batch
+progress required to select the next training examples.
+
 ```text
 ωₖ + eₖ ───────────────→ θₖ⁽⁰⁾
                              │
@@ -401,7 +409,7 @@ b_k^{(t)}
 \right).
 $$
 
-Update the optimizer state:
+Update the optimization state:
 
 $$
 o_k^{(t+1)}
@@ -1249,11 +1257,8 @@ class RunSpec(ProtocolModel):
 ```
 
 `RunSpec.seed` is the global seed $\zeta_q$ assigned to the selected replicate.
-Its range is the shared domain accepted by NumPy's legacy
-[random-state seeding](https://numpy.org/doc/2.0/reference/random/legacy.html)
-and PyTorch's
-[generator seeding](https://docs.pytorch.org/docs/stable/generated/torch.Generator.html).
-The executor applies it to each generator according to
+`RNGSeed` restricts it to integers from zero through $2^{32}-1$, inclusive.
+The executor applies this value to every recorded generator according to
 `RunSpec.reproducibility`.
 
 `RunSpec.environment` supplies $h_q$. For stage $\omega_j$:
@@ -1278,6 +1283,7 @@ experiments/<experiment_id>/runs/<variant_id>/<run_id>/stages/<stage_id>/spec.ya
 ```
 
 The `RunSpec` file and the stage-spec files it identifies constitute $q$.
+The run-plan snapshot and `RunSpec.source` belong to one Git repository.
 
 ### Artifact selection and promotion
 
@@ -1363,7 +1369,8 @@ StoredInputRef.pointer
 
 `StoredInputRef.path` identifies the local file path or bundle root supplied to
 the consuming stage. Its category and entity ID equal those in
-`StoredInputRef.pointer.path`.
+`StoredInputRef.pointer.path`. The materialization path and pointer-file path
+do not overlap.
 
 A same-run input selects one artifact from an earlier stage:
 
@@ -1429,7 +1436,9 @@ class ResolvedRun(ProtocolModel):
 Attempt IDs are unique and strictly increasing. Each attempt's
 `resolved_stages` is an ordered prefix of `RunSpec.stages`. Its stage snapshots
 are unique. Measurement-file storage locations and log-file storage locations
-are unique and disjoint.
+are unique and disjoint. Attempts do not overlap in time, and no attempt follows
+a successful attempt. `ResolvedRun.completed_at` is at or after every attempt's
+completion time.
 
 A successful attempt satisfies:
 
@@ -1525,6 +1534,9 @@ class ReproducibilitySpec(ProtocolModel):
     precision: TorchPrecisionSpec
     parallelism: ParallelismSpec
 ```
+
+`TorchPrecisionSpec.autocast_dtype` is present exactly when
+`autocast_enabled` is true.
 
 The global seed occurs once in `RunSpec.seed`. `ReproducibilitySpec` records
 the remaining numerical controls shared by every stage.
@@ -1676,13 +1688,18 @@ ExecutionContext.randomness.python_seed
 == RunSpec.seed
 ```
 
+The executor records `ResolvedGCEEnvironment` and `ExecutionContext`. The
+verifier establishes their equality to the requested environment and
+reproducibility controls shown above.
+
 For a CPU environment, `ExecutionContext.backend.kind` is `cpu`. For a CUDA
 environment, the backend is `cuda`, its number of devices equals
 `CUDAComputeSpec.count`, and each device model equals `CUDAComputeSpec.model`.
 
-The verifier checks the resolved machine-image identity and verifies the
-lockfile and source-entrypoint bytes. `ExecutionContext` records the runtime
-library implementations and versions used by the stage.
+`ResolvedGCEEnvironment` records the machine-image ID and verified lockfile
+reference. `ExecutionContext` records the runtime library implementations and
+versions used by the stage. The verifier also verifies the source-entrypoint
+bytes.
 
 ### Source and command
 
@@ -1908,6 +1925,20 @@ class InternalSpec(BaseSpec):
     inputs: dict[InputName, InternalInputRef] = Field(min_length=1)
 
 
+class BuildParams(ProtocolModel):
+    pass
+
+
+class EmbedParams(ProtocolModel):
+    pass
+
+
+class TrainParams(ProtocolModel):
+    epochs: int = Field(ge=1)
+    batch_size: int = Field(ge=1)
+    learning_rate: float = Field(gt=0)
+
+
 class BuildSpec(InternalSpec):
     kind: Literal["build"] = "build"
     params: BuildParams
@@ -1951,6 +1982,9 @@ Within one stage spec:
 4. Artifact roots are pairwise non-overlapping.
 5. Input paths, artifact roots, and `BaseSpec.script` are pairwise
    non-overlapping.
+6. `model_parameters` and `continuation_state` occur only as training-stage
+   artifacts.
+7. `predictions` occurs only as an evaluation-stage artifact.
 
 After resolving same-run inputs, the external verifier applies the same path
 checks to their materialized paths.
@@ -2292,10 +2326,8 @@ A stored model input resolves through its `ArtifactPointer` to a
 `model_parameters` artifact. The evaluation dataset and every declared split
 are stored inputs selected before execution.
 
-The executor materializes every evaluation input as read-only. `EvaluateSpec`
-does not declare `model_parameters` or `continuation_state` as outputs. Its
-artifact mapping contains `predictions` and may contain additional evaluation
-outputs.
+The executor materializes every evaluation input as read-only. Its artifact
+mapping contains `predictions` and may contain additional evaluation outputs.
 
 ```text
 model_parameters artifact
@@ -2421,7 +2453,9 @@ ResolvedBenchmarkSpecRef.stored_at.path
 The selected run attempt and `BenchmarkResult.confirmation` have distinct
 attempt IDs, `succeeded` status, and every stage declared by the shared
 `RunSpec`. `BenchmarkResult.completed_at` is at or after the completion times of
-the selected `ResolvedRun` and confirmation attempt.
+the selected `ResolvedRun` and confirmation attempt. Every stored and same-run
+input in the confirmation attempt passes the input-lineage checks in Section
+21 before parity is evaluated.
 
 Let their realized runtime states be $e,e'\in E_q$. Estimator parity requires:
 
@@ -2487,13 +2521,15 @@ Pydantic enforces:
 3. Required fields, nonempty mappings, and discriminated unions.
 4. Unique stage, artifact, factor, level, variant, replicate, seed, metric, and
    bundle-member identities within their containing records, plus unique stage
-   snapshots, measurement files, and log files within an attempt.
+   snapshots, measurement files, and log files within an attempt and disjoint
+   measurement and log locations.
 5. Single-file cardinality of one and bundle cardinality of at least two.
 6. Matching declared and resolved artifact-name sets inside one resolved stage
    spec.
 7. Attempt status, failure-reason, and timestamp relationships.
-8. The training checkpoint input pair and reserved output pair.
-9. The evaluation model, dataset, split, metric, and predictions requirements.
+8. The training checkpoint input pair and exclusive reserved output pair.
+9. The evaluation model, dataset, split, metric, and exclusive predictions
+   requirements.
 10. Benchmark split, metric, confirmation, and result requirements.
 
 ### Run-plan verification
@@ -2501,7 +2537,8 @@ Pydantic enforces:
 Starting from a `ResolvedRunSpecRef`, the verifier:
 
 1. Retrieves the `RunSpec` bytes and checks SHA-256 and byte count.
-2. Rejects duplicate YAML keys and requires the canonical run-spec path.
+2. Rejects duplicate YAML keys, requires the canonical run-spec path, and
+   requires the run-plan and source snapshots to use one Git repository.
 3. Loads `ExperimentSpec`, `VariantSpec`, and the optional `BenchmarkSpec` from
    `RunSpec.source`.
 4. Checks the experiment, variant, replicate, global-seed, typed-parameter,
@@ -2581,7 +2618,8 @@ $$
 For a stored input, the verifier:
 
 1. Retrieves and checks the `ArtifactPointer` file.
-2. Retrieves and checks the selected `ResolvedRun`.
+2. Retrieves the selected `ResolvedRun` and verifies its complete provenance
+   graph, including every completed stage input.
 3. Selects its successful attempt.
 4. Selects the producer `ResolvedStageRef` and named artifact.
 5. Verifies and materializes the complete artifact.
@@ -2641,7 +2679,8 @@ For a `BenchmarkResult`, the verifier additionally performs the benchmark-spec,
 confirmation-attempt, estimator-parity, prediction-parity, metric-criterion,
 and promotion relationships defined in Section 20. The confirmation uses a new
 attempt ID and stage-result snapshots disjoint from every attempt in the
-selected run.
+selected run. Its stored and same-run inputs pass the same lineage verification
+applied to the selected run.
 
 ## 22. Execution and publication sequence
 

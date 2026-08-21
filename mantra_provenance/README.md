@@ -34,7 +34,7 @@ declared artifact files at one immutable snapshot.
 RunSpec + ordered stage specs
               │
               ▼
-        permitted run state
+    permitted runtime-state set
               │
               ▼
 RunAttempt.resolved_stages[]
@@ -57,8 +57,9 @@ spec, and checks the realized environment, command, inputs, artifacts,
 measurements, logs, and terminal estimator. Artifact loaders are selected by
 `ArtifactSpec.loader` from the exact Git commit recorded by `RunSpec.source`.
 
-`verify_benchmark_result()` verifies a second successful attempt, estimator and
-prediction file parity, metric criteria, and promotion relationships.
+`verify_benchmark_result()` verifies a second successful attempt, its complete
+input lineage, estimator and prediction file parity, metric criteria, and
+promotion relationships.
 
 ## Public operations
 
