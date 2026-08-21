@@ -1167,6 +1167,28 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         ):
             verify_run_result(retried_run, fetcher=store.fetch)
 
+    def test_run_separates_stage_results_from_attempt_files(self) -> None:
+        resolved_run, store, _ = build_complete_fixture()
+        attempt = resolved_run.attempts[0]
+        measurement = attempt.measurement_files[0]
+        reused_snapshot_measurement = measurement.model_copy(
+            update={
+                "stored_at": measurement.stored_at.model_copy(
+                    update={"commit": attempt.resolved_stages[0].snapshot.commit}
+                )
+            }
+        )
+        invalid_attempt = attempt.model_copy(
+            update={"measurement_files": (reused_snapshot_measurement,)}
+        )
+        invalid_run = resolved_run.model_copy(update={"attempts": (invalid_attempt,)})
+
+        with self.assertRaisesRegex(
+            VerificationError,
+            "stage-result and attempt-file snapshots",
+        ):
+            verify_run_result(invalid_run, fetcher=store.fetch)
+
     def test_strict_benchmark_passes_two_execution_verification(self) -> None:
         result, _, store = build_benchmark_fixture()
 
@@ -1201,6 +1223,31 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         ):
             verify_benchmark_result(
                 result.model_copy(update={"confirmation": reused_confirmation}),
+                fetcher=store.fetch,
+            )
+
+    def test_confirmation_separates_stage_results_from_attempt_files(self) -> None:
+        result, _, store = build_benchmark_fixture()
+        measurement = result.confirmation.measurement_files[0]
+        reused_snapshot_measurement = measurement.model_copy(
+            update={
+                "stored_at": measurement.stored_at.model_copy(
+                    update={
+                        "commit": result.confirmation.resolved_stages[0].snapshot.commit
+                    }
+                )
+            }
+        )
+        invalid_confirmation = result.confirmation.model_copy(
+            update={"measurement_files": (reused_snapshot_measurement,)}
+        )
+
+        with self.assertRaisesRegex(
+            VerificationError,
+            "stage-result and attempt-file snapshots",
+        ):
+            verify_benchmark_result(
+                result.model_copy(update={"confirmation": invalid_confirmation}),
                 fetcher=store.fetch,
             )
 

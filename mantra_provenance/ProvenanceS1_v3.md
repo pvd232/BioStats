@@ -1438,9 +1438,10 @@ Attempt IDs are unique and strictly increasing. Each attempt's
 are unique. Measurement-file storage locations and log-file storage locations
 are unique and disjoint. Every measurement and log file of one attempt belongs
 to one immutable snapshot $D_i$. Distinct attempts use distinct stage-result
-snapshots and distinct $D_i$ snapshots. Attempts do not overlap in time, and no
-attempt follows a successful attempt. `ResolvedRun.completed_at` is at or after
-every attempt's completion time.
+snapshots and distinct $D_i$ snapshots. Every $D_i$ is distinct from every
+stage-result snapshot. Attempts do not overlap in time, and no attempt follows
+a successful attempt. `ResolvedRun.completed_at` is at or after every attempt's
+completion time.
 
 A successful attempt satisfies:
 
@@ -2469,10 +2470,11 @@ ResolvedBenchmarkSpecRef.stored_at.path
 The selected run attempt and `BenchmarkResult.confirmation` have distinct
 attempt IDs, `succeeded` status, and every stage declared by the shared
 `RunSpec`. Their stage-result snapshots and attempt-file snapshots are
-distinct. `BenchmarkResult.completed_at` is at or after the completion times
-of the selected `ResolvedRun` and confirmation attempt. Every stored and
-same-run input in the confirmation attempt passes the input-lineage checks in
-Section 21 before parity is evaluated.
+distinct from each other and from all snapshots in the selected run.
+`BenchmarkResult.completed_at` is at or after the completion times of the
+selected `ResolvedRun` and confirmation attempt. Every stored and same-run
+input in the confirmation attempt passes the input-lineage checks in Section
+21 before parity is evaluated.
 
 Let their realized runtime states be $e,e'\in E_q$. Estimator parity requires:
 

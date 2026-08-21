@@ -1172,6 +1172,11 @@ def verify_run_result(
             )
         attempt_file_snapshots.update(current_attempt_file_snapshots)
 
+    if stage_result_snapshots & attempt_file_snapshots:
+        raise VerificationError(
+            "stage-result and attempt-file snapshots must be distinct"
+        )
+
     for attempt in resolved_run.attempts:
         complete = attempt.status == "succeeded"
         verified_stages = verify_attempt_stages(
@@ -1656,6 +1661,11 @@ def verify_benchmark_result(
     if original_attempt_file_snapshots & confirmation_attempt_file_snapshots:
         raise VerificationError(
             "benchmark confirmation must use a new measurement and log snapshot"
+        )
+    if confirmation_snapshots & confirmation_attempt_file_snapshots:
+        raise VerificationError(
+            "benchmark confirmation stage-result and attempt-file snapshots "
+            "must be distinct"
         )
 
     confirmation_stages = verify_attempt_stages(
