@@ -576,6 +576,10 @@ T_{\alpha,\beta,q}(e)
 \widehat{\theta}_q.
 $$
 
+The protocol represents equality of two terminal parameter values by equality
+of their `model_parameters` artifacts: identical relative paths, SHA-256
+values, byte counts, and bundle membership under the loader fixed by $q$.
+
 Because $\alpha$ is fixed by $q$, strict parameter reproducibility also gives:
 
 $$
@@ -2484,15 +2488,15 @@ Let their realized runtime states be $e,e'\in E_q$. Estimator parity requires:
 $$
 T_{\alpha,\beta,q}(e)
 =
-T_{\alpha,\beta,q}(e')
-=
-\widehat{\theta}_q.
+T_{\alpha,\beta,q}(e').
 $$
 
-The verifier establishes this equality by loading the artifact selected by
-`RunSpec.estimator` from the selected run attempt and confirmation attempt and
-comparing every file's SHA-256, byte count, relative path, and bundle
-membership.
+The verifier establishes this pairwise equality by loading the artifact
+selected by `RunSpec.estimator` from the selected run attempt and confirmation
+attempt and comparing every file's SHA-256, byte count, relative path, and
+bundle membership. When $q$ satisfies the strict condition in Section 6, both
+values equal $\widehat{\theta}_q$. The benchmark result records the
+two-execution claim; Section 6 defines the universal claim over $E_q$.
 
 Prediction parity applies the same comparison to the `predictions` artifact
 produced by each attempt's evaluation stage.
