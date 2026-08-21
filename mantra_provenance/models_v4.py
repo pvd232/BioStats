@@ -72,6 +72,9 @@ MODEL_PARAMETERS: ArtifactName = "model_parameters"
 CONTINUATION_STATE: ArtifactName = "continuation_state"
 CHECKPOINT_MODEL_INPUT: InputName = "checkpoint_model_parameters"
 CHECKPOINT_STATE_INPUT: InputName = "checkpoint_continuation_state"
+EVALUATION_MODEL_INPUT: InputName = "model_parameters"
+EVALUATION_DATASET_INPUT: InputName = "evaluation_dataset"
+PREDICTIONS: ArtifactName = "predictions"
 
 
 class ProtocolModel(BaseModel):
@@ -90,6 +93,7 @@ class RemoteFileRef(ProtocolModel):
 
     kind: Literal["remote"] = "remote"
     url: HttpUrl
+    version: NonEmptyStr
 
 class GitSource(ProtocolModel):
     """A repository snapshot identified by an exact Git commit."""
@@ -850,6 +854,19 @@ class TrainParams(ProtocolModel):
     learning_rate: float = Field(gt=0)
 
 
+class EvaluateParams(ProtocolModel):
+    metric_ids: tuple[MetricId, ...] = Field(min_length=1)
+    split_inputs: tuple[InputName, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_unique_names(self) -> EvaluateParams:
+        if len(set(self.metric_ids)) != len(self.metric_ids):
+            raise ValueError("evaluation metric IDs must be unique")
+        if len(set(self.split_inputs)) != len(self.split_inputs):
+            raise ValueError("evaluation split input names must be unique")
+        return self
+
+
 class BuildSpec(InternalSpec):
     kind: Literal["build"] = "build"  # pyright: ignore[reportIncompatibleVariableOverride]
     params: BuildParams
@@ -903,8 +920,61 @@ class TrainSpec(InternalSpec):
         return self
 
 
+class EvaluateSpec(InternalSpec):
+    kind: Literal["evaluate"] = "evaluate"  # pyright: ignore[reportIncompatibleVariableOverride]
+    params: EvaluateParams
+
+    @model_validator(mode="after")
+    def validate_evaluation_contract(self) -> EvaluateSpec:
+        model_input = self.inputs.get(EVALUATION_MODEL_INPUT)
+        if model_input is None:
+            raise ValueError("evaluation requires a model_parameters input")
+
+        dataset_input = self.inputs.get(EVALUATION_DATASET_INPUT)
+        if dataset_input is None:
+            raise ValueError("evaluation requires an evaluation_dataset input")
+        if dataset_input.kind != "stored":
+            raise ValueError("evaluation_dataset must be a stored input")
+
+        reserved_inputs = {EVALUATION_MODEL_INPUT, EVALUATION_DATASET_INPUT}
+        if reserved_inputs & set(self.params.split_inputs):
+            raise ValueError(
+                "evaluation split inputs must differ from reserved input names"
+            )
+
+        missing_splits = set(self.params.split_inputs) - set(self.inputs)
+        if missing_splits:
+            missing = ", ".join(sorted(missing_splits))
+            raise ValueError(f"evaluation split inputs are undeclared: {missing}")
+
+        for split_name in self.params.split_inputs:
+            if self.inputs[split_name].kind != "stored":
+                raise ValueError(
+                    f"evaluation split input {split_name!r} must be stored"
+                )
+
+        if model_input.kind == "future":
+            if model_input.producer_artifact != MODEL_PARAMETERS:
+                raise ValueError(
+                    "same-run evaluation must consume model_parameters"
+                )
+
+        if PREDICTIONS not in self.artifacts:
+            raise ValueError("evaluation must declare a predictions artifact")
+
+        forbidden_outputs = {MODEL_PARAMETERS, CONTINUATION_STATE} & set(
+            self.artifacts
+        )
+        if forbidden_outputs:
+            raise ValueError(
+                "evaluation cannot publish training checkpoint artifacts"
+            )
+
+        return self
+
+
 Spec = Annotated[
-    DownloadSpec | BuildSpec | EmbedSpec | TrainSpec,
+    DownloadSpec | BuildSpec | EmbedSpec | TrainSpec | EvaluateSpec,
     Field(discriminator="kind"),
 ]
 
@@ -1173,10 +1243,16 @@ class ResolvedTrainSpec(ResolvedInternalSpec):
     spec: TrainSpec  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
+class ResolvedEvaluateSpec(ResolvedInternalSpec):
+    kind: Literal["evaluate"] = "evaluate"  # pyright: ignore[reportIncompatibleVariableOverride]
+    spec: EvaluateSpec  # pyright: ignore[reportIncompatibleVariableOverride]
+
+
 ResolvedSpec = Annotated[
     ResolvedDownloadSpec
     | ResolvedBuildSpec
     | ResolvedEmbedSpec
-    | ResolvedTrainSpec,
+    | ResolvedTrainSpec
+    | ResolvedEvaluateSpec,
     Field(discriminator="kind"),
 ]
