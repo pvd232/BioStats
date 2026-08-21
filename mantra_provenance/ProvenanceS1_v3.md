@@ -2649,3 +2649,121 @@ ResolvedRun at snapshot E
 
 The pointer is published under `inputs/` in snapshot G. A later source snapshot
 may select that pointer through a `StoredInputRef`.
+
+## 23. Repository layout
+
+Pointer filenames use:
+
+```python
+SelectionName = HumanId
+```
+
+Each selection name is scoped by its dataset, prior, or model identity.
+
+```text
+repository/
+├── README.md
+├── pyproject.toml
+├── environment.yml
+├── .gitignore
+├── docs/
+├── scripts/
+├── src/
+│   └── mantra/
+│       ├── datasets/
+│       │   └── <dataset_id>/
+│       │       └── download.py
+│       ├── priors/
+│       │   └── <prior_id>/
+│       │       └── build.py
+│       ├── models/
+│       │   └── <model_id>/
+│       │       ├── embed.py
+│       │       ├── train.py
+│       │       └── evaluate.py
+│       ├── metrics/
+│       │   └── <metric_id>.py
+│       └── artifact_loaders/
+│           └── <loader_id>.py
+├── tests/
+├── inputs/
+│   ├── datasets/
+│   │   └── <dataset_id>/
+│   │       └── <selection_name>.pointer.yaml
+│   ├── priors/
+│   │   └── <prior_id>/
+│   │       └── <selection_name>.pointer.yaml
+│   └── models/
+│       └── <model_id>/
+│           └── <selection_name>.pointer.yaml
+├── benchmarks/
+│   └── <benchmark_id>.spec.yaml
+└── experiments/
+    └── <experiment_id>/
+        ├── spec.yaml
+        ├── README.md
+        ├── variants/
+        │   └── <variant_id>.spec.yaml
+        └── runs/
+            └── <variant_id>/
+                └── <run_id>/
+                    ├── spec.yaml
+                    ├── resolved.yaml
+                    ├── benchmark.result.yaml
+                    ├── stages/
+                    │   └── <stage_id>/
+                    │       ├── spec.yaml
+                    │       └── resolved.yaml
+                    ├── artifacts/
+                    │   ├── datasets/
+                    │   │   └── <dataset_id>/
+                    │   │       └── dataset.h5ad
+                    │   ├── priors/
+                    │   │   └── <prior_id>/
+                    │   │       └── prior.pt
+                    │   ├── models/
+                    │   │   └── <model_id>/
+                    │   │       ├── embedding.pt
+                    │   │       ├── model_parameters.safetensors
+                    │   │       └── continuation_state.pt
+                    │   └── evaluations/
+                    │       └── <benchmark_id>/
+                    │           └── predictions.parquet
+                    ├── measurements/
+                    │   └── <stage_id>.<metric_id>.jsonl
+                    └── logs/
+                        ├── <attempt_id>.<stage_id>.stdout.log
+                        └── <attempt_id>.<stage_id>.stderr.log
+```
+
+`BaseSpec.script` identifies a stage entrypoint beneath the corresponding
+identity directory in `src/mantra/`. For example:
+
+```text
+src/mantra/priors/depmap/build.py
+src/mantra/models/strand/train.py
+src/mantra/models/strand/evaluate.py
+```
+
+`RunSpec.source` fixes the exact bytes of every entrypoint, imported production
+module, metric, and artifact loader.
+
+`scripts/` contains repository-maintenance and developer utilities. Each script
+is a thin caller of code in `src/`, has one documented purpose, and remains
+outside the stage-entrypoint taxonomy. Scientific transformations executed by
+the protocol live under their dataset, prior, or model identity in
+`src/mantra/`.
+
+`tests/` contains deterministic checks for protocol models, verifier
+relationships, loaders, and production source. Test files are part of snapshot
+A and are not stage entrypoints.
+
+The run directory is the durable output root. Artifact files, measurements,
+logs, resolved records, and benchmark results use stable repository-relative
+paths. Immutable artifact-repository commits distinguish files produced by
+different attempts. A separate root `out/` directory is therefore outside the
+protocol layout.
+
+A single-file artifact occupies its declared file path. A bundle artifact
+occupies its declared directory root, and its loader defines the required
+member filenames beneath that root.
