@@ -11,6 +11,7 @@ from pydantic import TypeAdapter
 from mantra_provenance.models_v4 import (
     CONTINUATION_STATE,
     MODEL_PARAMETERS,
+    ArtifactPointer,
     ArtifactPointerRef,
     BenchmarkSpec,
     BuildSpec,
@@ -25,6 +26,7 @@ from mantra_provenance.models_v4 import (
     ResolvedFutureInputRef,
     ResolvedGitFileRef,
     ResolvedRun,
+    ResolvedRunRef,
     ResolvedRunSpecRef,
     ResolvedStageRef,
     ResolvedTrainSpec,
@@ -46,6 +48,7 @@ from mantra_provenance.verifier import (
     verify_run_plan_relationships,
     verify_run_spec,
     verify_stage_plan,
+    verify_stored_input_selections,
 )
 
 GIT_COMMIT = "a" * 40
@@ -710,6 +713,77 @@ class RunPlanRelationshipTests(unittest.TestCase):
             benchmark,
             {"train": train, "evaluate": evaluation},
         )
+
+
+class StoredInputSelectionTests(unittest.TestCase):
+    def test_stored_checkpoint_pair_selects_one_run_and_stage(self) -> None:
+        payload = train_spec().model_dump(mode="python")
+        payload["inputs"].update(
+            {
+                "checkpoint_model_parameters": {
+                    "kind": "stored",
+                    "pointer": artifact_pointer(
+                        "inputs/models/toy/model_parameters.pointer.yaml"
+                    ),
+                    "path": "inputs/models/toy/model_parameters.bin",
+                },
+                "checkpoint_continuation_state": {
+                    "kind": "stored",
+                    "pointer": artifact_pointer(
+                        "inputs/models/toy/continuation_state.pointer.yaml"
+                    ),
+                    "path": "inputs/models/toy/continuation_state.bin",
+                },
+            }
+        )
+        spec = TrainSpec.model_validate(payload)
+
+        run_reference = ResolvedRunRef(
+            sha256="3" * 64,
+            bytes=100,
+            stored_at=HuggingFaceFileRef(
+                repository=HF_REPOSITORY,
+                commit="4" * 40,
+                path=f"{RUN_ROOT}/resolved.yaml",
+                repo_type="dataset",
+            ),
+        )
+        model_pointer = ArtifactPointer(
+            run=run_reference,
+            artifact={"stage_id": "train", "artifact_name": MODEL_PARAMETERS},
+        )
+        state_pointer = ArtifactPointer(
+            run=run_reference,
+            artifact={"stage_id": "train", "artifact_name": CONTINUATION_STATE},
+        )
+
+        verify_stored_input_selections(
+            "train_resume",
+            spec,
+            {
+                "checkpoint_model_parameters": model_pointer,
+                "checkpoint_continuation_state": state_pointer,
+            },
+        )
+
+        other_run = run_reference.model_copy(
+            update={
+                "stored_at": run_reference.stored_at.model_copy(
+                    update={"commit": "5" * 40}
+                )
+            }
+        )
+        with self.assertRaisesRegex(VerificationError, "one resolved run"):
+            verify_stored_input_selections(
+                "train_resume",
+                spec,
+                {
+                    "checkpoint_model_parameters": model_pointer,
+                    "checkpoint_continuation_state": state_pointer.model_copy(
+                        update={"run": other_run}
+                    ),
+                },
+            )
 
 
 class FutureInputVerificationTests(unittest.TestCase):

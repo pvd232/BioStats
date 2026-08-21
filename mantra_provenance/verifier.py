@@ -19,6 +19,11 @@ from pydantic import TypeAdapter, ValidationError
 
 from .ids import InputName, StageId
 from .models_v4 import (
+    CHECKPOINT_MODEL_INPUT,
+    CHECKPOINT_STATE_INPUT,
+    CONTINUATION_STATE,
+    EVALUATION_MODEL_INPUT,
+    MODEL_PARAMETERS,
     ArtifactPointer,
     ArtifactSpec,
     BaseSpec,
@@ -1160,6 +1165,56 @@ def verify_promoted_artifact(
     return verify_snapshot_artifact(producer_stage, artifact, fetcher=fetcher)
 
 
+def verify_stored_input_selections(
+    stage_id: StageId,
+    stage_spec: InternalSpec,
+    pointers: Mapping[InputName, ArtifactPointer],
+) -> None:
+    """Verify relationships among stored pointers consumed by one stage."""
+    if isinstance(stage_spec, TrainSpec):
+        model_input = stage_spec.inputs.get(CHECKPOINT_MODEL_INPUT)
+        state_input = stage_spec.inputs.get(CHECKPOINT_STATE_INPUT)
+        if isinstance(model_input, StoredInputRef) and isinstance(
+            state_input,
+            StoredInputRef,
+        ):
+            model_pointer = pointers[CHECKPOINT_MODEL_INPUT]
+            state_pointer = pointers[CHECKPOINT_STATE_INPUT]
+            if model_pointer.run != state_pointer.run:
+                raise VerificationError(
+                    f"stored checkpoint inputs of stage {stage_id!r} must select "
+                    "one resolved run"
+                )
+            if (
+                model_pointer.artifact.stage_id
+                != state_pointer.artifact.stage_id
+            ):
+                raise VerificationError(
+                    f"stored checkpoint inputs of stage {stage_id!r} must select "
+                    "one producer stage"
+                )
+            if model_pointer.artifact.artifact_name != MODEL_PARAMETERS:
+                raise VerificationError(
+                    f"stored checkpoint model input of stage {stage_id!r} must "
+                    "select model_parameters"
+                )
+            if state_pointer.artifact.artifact_name != CONTINUATION_STATE:
+                raise VerificationError(
+                    f"stored checkpoint state input of stage {stage_id!r} must "
+                    "select continuation_state"
+                )
+
+    if isinstance(stage_spec, EvaluateSpec):
+        model_input = stage_spec.inputs[EVALUATION_MODEL_INPUT]
+        if isinstance(model_input, StoredInputRef):
+            model_pointer = pointers[EVALUATION_MODEL_INPUT]
+            if model_pointer.artifact.artifact_name != MODEL_PARAMETERS:
+                raise VerificationError(
+                    f"stored evaluation model input of stage {stage_id!r} must "
+                    "select model_parameters"
+                )
+
+
 def verify_stored_inputs(
     resolved_stages: Mapping[StageId, ResolvedBaseSpec],
     *,
@@ -1173,6 +1228,7 @@ def verify_stored_inputs(
             continue
 
         stage_inputs: dict[InputName, VerifiedInput] = {}
+        parsed_pointers: dict[InputName, ArtifactPointer] = {}
 
         for input_name, spec_input in resolved_stage.spec.inputs.items():
             if not isinstance(spec_input, StoredInputRef):
@@ -1203,12 +1259,20 @@ def verify_stored_inputs(
                     "is not a valid ArtifactPointer document"
                 ) from exc
 
+            parsed_pointers[input_name] = pointer
+
             verified_artifact = verify_promoted_artifact(pointer, fetcher=fetcher)
             stage_inputs[input_name] = VerifiedInput(
                 path=spec_input.path,
                 artifact=verified_artifact.artifact,
                 files=verified_artifact.files,
             )
+
+        verify_stored_input_selections(
+            stage_id,
+            resolved_stage.spec,
+            parsed_pointers,
+        )
 
         if stage_inputs:
             verified_inputs[stage_id] = stage_inputs
