@@ -1784,7 +1784,155 @@ RunAttempt.started_at
 <= RunAttempt.completed_at
 ```
 
-## 17. Protocol mapping
+## 17. Concrete stage records
+
+### Planned stage inputs
+
+```python
+class RemoteFileRef(ProtocolModel):
+    kind: Literal["remote"] = "remote"
+    url: HttpUrl
+    version: NonEmptyStr
+
+
+InternalInputRef = Annotated[
+    StoredInputRef | FutureInputRef,
+    Field(discriminator="kind"),
+]
+```
+
+A download stage consumes one versioned external source. Build, embed, and
+train stages consume stored or same-run artifacts.
+
+### Planned stage specifications
+
+```python
+class DownloadSpec(BaseSpec):
+    kind: Literal["download"] = "download"
+    inputs: dict[InputName, RemoteFileRef] = Field(min_length=1, max_length=1)
+
+
+class InternalSpec(BaseSpec):
+    inputs: dict[InputName, InternalInputRef] = Field(min_length=1)
+
+
+class BuildSpec(InternalSpec):
+    kind: Literal["build"] = "build"
+    params: BuildParams
+
+
+class EmbedSpec(InternalSpec):
+    kind: Literal["embed"] = "embed"
+    params: EmbedParams
+
+
+class TrainSpec(InternalSpec):
+    kind: Literal["train"] = "train"
+    params: TrainParams
+
+
+Spec = Annotated[
+    DownloadSpec | BuildSpec | EmbedSpec | TrainSpec,
+    Field(discriminator="kind"),
+]
+```
+
+`BuildParams`, `EmbedParams`, and `TrainParams` are typed parameter records.
+Their exact values are fixed by the selected `VariantSpec` and checked against
+the loaded stage spec as defined in Section 16.
+
+Within one stage spec:
+
+1. Input names are unique.
+2. Artifact names are unique.
+3. Stored-input paths are pairwise non-overlapping.
+4. Artifact roots are pairwise non-overlapping.
+5. Input paths, artifact roots, and `BaseSpec.script` are pairwise
+   non-overlapping.
+
+After resolving same-run inputs, the external verifier applies the same path
+checks to their materialized paths.
+
+### Resolved stage inputs
+
+```python
+ResolvedInternalInputRef = Annotated[
+    ResolvedStoredInputRef | ResolvedFutureInputRef,
+    Field(discriminator="kind"),
+]
+```
+
+The resolved input-name set equals the planned input-name set. Each resolved
+input has the same discriminated kind as its planned input. Section 14 defines
+the pointer equality for stored inputs and the producer equality for same-run
+inputs.
+
+### Resolved stage specifications
+
+```python
+class ResolvedDownloadSpec(ResolvedBaseSpec):
+    kind: Literal["download"] = "download"
+    spec: DownloadSpec
+    inputs: dict[InputName, RemoteFileRef]
+    retrieved_at: AwareDatetime
+
+
+class ResolvedInternalSpec(ResolvedBaseSpec):
+    spec: InternalSpec
+    inputs: dict[InputName, ResolvedInternalInputRef]
+
+
+class ResolvedBuildSpec(ResolvedInternalSpec):
+    kind: Literal["build"] = "build"
+    spec: BuildSpec
+
+
+class ResolvedEmbedSpec(ResolvedInternalSpec):
+    kind: Literal["embed"] = "embed"
+    spec: EmbedSpec
+
+
+class ResolvedTrainSpec(ResolvedInternalSpec):
+    kind: Literal["train"] = "train"
+    spec: TrainSpec
+
+
+ResolvedSpec = Annotated[
+    ResolvedDownloadSpec
+    | ResolvedBuildSpec
+    | ResolvedEmbedSpec
+    | ResolvedTrainSpec,
+    Field(discriminator="kind"),
+]
+```
+
+For a download stage:
+
+```text
+ResolvedDownloadSpec.inputs
+== ResolvedDownloadSpec.spec.inputs
+
+ResolvedDownloadSpec.retrieved_at
+<= ResolvedDownloadSpec.completed_at
+```
+
+The completed download snapshot records the exact retrieved bytes. A promoted
+download artifact can then serve as a stored input selected by a later run.
+
+For every resolved stage:
+
+```text
+ResolvedStageRef.resolved_spec
+→ loads the matching ResolvedSpec subtype
+
+ResolvedBaseSpec.spec
+== stage spec identified by the matching RunStageRef
+
+keys(ResolvedBaseSpec.spec.artifacts)
+== keys(ResolvedBaseSpec.artifacts)
+```
+
+## 18. Protocol mapping
 
 The terminal checkpoint of every training stage is represented by two reserved
 artifacts:
