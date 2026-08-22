@@ -16,7 +16,7 @@ both named `viper`.
 | [application API](docs/APPLICATION_API.md) | Defines the typed Python, CLI, and agent-facing operation contract | Operations, parameters, results, errors, and discovery |
 | [publication checklist](docs/PUBLICATION_TODO.md) | Tracks implementation and release work | Protocol, runner, package, and distribution tasks |
 | [versioning policy](docs/VERSIONING.md) | Separates software releases from serialized record schemas | Semantic package versions and record `schema_version` values |
-| [records](viper/records.py) | Validates protocol records and their internal invariants | `RunSpec`, `ResolvedRun`, `Spec`, `ResolvedSpec`, `BenchmarkSpec` |
+| [protocol](viper/protocol.py) | Defines the Pydantic models for the VIPER protocol | `RunSpec`, `ResolvedRun`, `Spec`, `ResolvedSpec`, `BenchmarkSpec` |
 | [verifier](viper/verifier.py) | Retrieves referenced files and checks cross-record relationships | `verify_run_result()`, `verify_benchmark_result()` |
 | [training resume](viper/resume.py) | Captures, serializes, restores, and validates optimizer, generator, and stateful-loader state | `capture_resume_state()`, `restore_resume_state()` |
 | [plan authoring](viper/authoring.py) | Writes canonical experiment, variant, benchmark, stage, and frozen run-plan files | `freeze_run_plan()`, `write_experiment_spec()`, `write_variant_spec()` |
@@ -35,7 +35,7 @@ The focused model, verifier, and acceptance checks live in the
 
 ## Record and verification flow
 
-The [records](viper/records.py) divide requested state from realized state. A
+The [protocol models](viper/protocol.py) divide requested state from realized state. A
 `RunSpec` and its ordered stage specs form the frozen run plan. Each completed
 stage publishes one `ResolvedStageRef` containing a resolved stage spec and all
 declared artifact files at one immutable snapshot.
@@ -130,7 +130,7 @@ python -m pytest -q
 ```
 
 Ruff checks active Python source and required code documentation. Pyright checks
-the record, verifier, authoring, resume, and stage-execution type contracts.
+the protocol, verifier, authoring, resume, and stage-execution type contracts.
 Pytest exercises model invariants, active YAML examples, plan authoring, command
 dispatch, one real stage process, artifact loaders, metrics, resumption,
 cross-file relationships, the complete provenance fixture, and tampered-byte

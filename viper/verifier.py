@@ -19,7 +19,7 @@ from huggingface_hub import hf_hub_download
 from pydantic import TypeAdapter
 
 from .ids import InputName, StageId
-from .records import (
+from .protocol import (
     PARAMETERS,
     PARAMETERS_INPUT,
     PREDICTIONS,

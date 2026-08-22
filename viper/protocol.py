@@ -1,4 +1,4 @@
-"""Pydantic records for the active VIPER provenance protocol.
+"""Pydantic models for the active VIPER provenance protocol.
 
 The model graph separates execution requests, resolved data artifacts,
 the exact Git source tree, requested environments, observed execution

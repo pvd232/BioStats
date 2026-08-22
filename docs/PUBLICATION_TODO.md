@@ -116,12 +116,12 @@ step depends on the completed steps above it.
 
 ## Internal modularization
 
-- [ ] Preserve `viper.records` and `viper.verifier` as public import paths.
-- [ ] After the complete runner acceptance test passes, divide `records.py`
+- [ ] Preserve `viper.protocol` and `viper.verifier` as public import paths.
+- [ ] After the complete runner acceptance test passes, divide `protocol.py`
   into internal modules for shared types, plans, stages, artifacts, runs,
   measurements, and benchmarks. Re-export the supported names from
-  `viper.records`.
-- [ ] Divide verifier internals by the records they verify: files, plans,
+  `viper.protocol`.
+- [ ] Divide verifier internals by the protocol objects they verify: files, plans,
   stages, runs, promoted artifacts, and benchmarks. Keep the existing public
   verification functions available from `viper.verifier`.
 

@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 import yaml
 from pydantic import ValidationError
 
-from viper.records import (
+from viper.protocol import (
     PARAMETERS,
     PREDICTIONS,
     RESUME_STATE,

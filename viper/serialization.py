@@ -10,7 +10,7 @@ from pydantic import BaseModel, TypeAdapter
 from yaml.nodes import MappingNode
 from yaml.resolver import BaseResolver
 
-from .records import ResolvedSpec, Spec
+from .protocol import ResolvedSpec, Spec
 
 
 class UniqueKeySafeLoader(yaml.SafeLoader):

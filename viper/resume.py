@@ -12,7 +12,7 @@ import torch
 from torch.optim import Optimizer
 from torchdata.stateful_dataloader import StatefulDataLoader
 
-from .records import (
+from .protocol import (
     DataLoaderConfiguration,
     DataLoaderResumeState,
     LegacyNumPyRNGState,

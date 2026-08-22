@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .records import (
+from .protocol import (
     ArtifactName,
     BaseSpec,
     BundleArtifactSpec,

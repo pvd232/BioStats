@@ -1,6 +1,6 @@
 """Shared protocol objects used by independent test modules."""
 
-from viper.records import (
+from viper.protocol import (
     DataLoaderConfiguration,
     DataLoaderResumeState,
     LegacyNumPyRNGState,

@@ -18,7 +18,7 @@ import yaml
 from pydantic import HttpUrl, TypeAdapter
 
 from tests.fixtures import metric_spec, resume_state, verification_policy
-from viper.records import (
+from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
     ArtifactPointer,

@@ -11,7 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from .ids import ExperimentId, ReplicateId, RunId, StageId, VariantId
-from .records import (
+from .protocol import (
     BenchmarkId,
     BenchmarkSpec,
     ExperimentSpec,

@@ -13,7 +13,7 @@ from viper.authoring import (
     write_experiment_spec,
     write_variant_spec,
 )
-from viper.records import (
+from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
     ExperimentSpec,

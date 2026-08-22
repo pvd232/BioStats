@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic import TypeAdapter
 
 from .authoring import freeze_run_plan, load_run_plan_draft
-from .records import ArtifactPointer, BenchmarkResult, ResolvedRun, RunSpec
+from .protocol import ArtifactPointer, BenchmarkResult, ResolvedRun, RunSpec
 from .serialization import load_resolved_stage, load_stage_spec, parse_yaml_bytes
 from .stage_execution import execute_stage_process
 from .verifier import (

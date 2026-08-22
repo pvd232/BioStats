@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from viper.records import (
+from viper.protocol import (
     DownloadSpec,
     ResolvedSingleFileArtifact,
     RunStageRef,
