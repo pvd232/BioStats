@@ -2075,15 +2075,15 @@ class ParameterSet(BaseModel):
 
 
 class BuildParams(ParameterSet):
-    pass
+    """Parameters consumed by one project-defined prior builder."""
 
 
 class EmbedParams(ParameterSet):
-    pass
+    """Parameters consumed by one project-defined embedding stage."""
 
 
 class TrainParams(ParameterSet):
-    pass
+    """Parameters consumed by one project-defined training procedure."""
 
 
 class BuildSpec(InternalSpec):
@@ -2102,7 +2102,7 @@ class TrainSpec(InternalSpec):
 
 
 class EvaluateParams(ParameterSet):
-    pass
+    """Model-specific parameters outside the shared evaluation contract."""
 
 
 class EvaluateSpec(InternalSpec):
