@@ -34,6 +34,8 @@ def test_application_schema_and_capability_discovery() -> None:
     assert "lineage" in capabilities.operations
     assert "status" in capabilities.operations
     assert "compare_runs" in capabilities.operations
+    assert "RunSpec" in capabilities.schemas
+    assert "CompareRunsRequest" in capabilities.schemas
     assert capabilities.execution_backends == ("trusted_local",)
 
 

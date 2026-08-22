@@ -63,6 +63,14 @@ class DurableJournal:
         expected = tuple(range(1, len(entries) + 1))
         if tuple(entry.sequence for entry in entries) != expected:
             raise ValueError("journal sequence is discontinuous")
+        if entries and entries[0].state != "allocated":
+            raise ValueError("the first journal state must be allocated")
+        for previous, current in zip(entries, entries[1:], strict=False):
+            if current.state not in ATTEMPT_STATE_TRANSITIONS[previous.state]:
+                raise ValueError(
+                    f"invalid journal transition: {previous.state} -> "
+                    f"{current.state}"
+                )
         return entries
 
     def append(

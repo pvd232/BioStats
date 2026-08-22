@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from viper.journal import DurableJournal
+from viper.journal import DurableJournal, JournalEntry
 from viper.worker import ExecutionPolicy, WorkerError, WorkerRequest, execute_worker
 from viper.workspace import AttemptWorkspace, WorkspaceError
 
@@ -53,6 +53,34 @@ def test_journal_rejects_invalid_attempt_transition(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="allocated -> publishing_stage"):
         journal.append("publishing_stage", "invalid publication", recorded_at=now)
+
+
+def test_journal_rejects_invalid_persisted_history(tmp_path: Path) -> None:
+    """Reject a journal whose stored entries violate the state machine."""
+    path = tmp_path / "control" / "journal.jsonl"
+    path.parent.mkdir(parents=True)
+    now = datetime.now(UTC)
+    entries = (
+        JournalEntry(
+            sequence=1,
+            state="allocated",
+            recorded_at=now,
+            event="attempt allocated",
+        ),
+        JournalEntry(
+            sequence=2,
+            state="closing_attempt",
+            recorded_at=now,
+            event="invalid close",
+        ),
+    )
+    path.write_text(
+        "".join(f"{entry.model_dump_json()}\n" for entry in entries),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="allocated -> closing_attempt"):
+        DurableJournal(path).read()
 
 
 def test_trusted_local_worker_receives_context_path(tmp_path: Path) -> None:

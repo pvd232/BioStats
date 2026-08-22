@@ -144,12 +144,16 @@ def _load_plan(
 def _flatten(value: Any, path: str = "") -> dict[str, Any]:
     """Map each JSON leaf to one stable dotted path."""
     if isinstance(value, dict):
+        if not value:
+            return {path: {}}
         flattened: dict[str, Any] = {}
         for key in sorted(value):
             child = f"{path}.{key}" if path else str(key)
             flattened.update(_flatten(value[key], child))
         return flattened
     if isinstance(value, list):
+        if not value:
+            return {path: []}
         flattened = {}
         for index, item in enumerate(value):
             flattened.update(_flatten(item, f"{path}[{index}]"))

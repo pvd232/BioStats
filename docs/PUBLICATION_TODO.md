@@ -261,7 +261,7 @@ python -m pytest tests/test_protocol.py tests/test_verifier.py tests/test_execut
 
 - [ ] List every supported public module and name in `docs/PUBLIC_API.md`.
 - [ ] Add explicit `__all__` declarations to each supported public module.
-- [ ] Keep root `viper` exports limited to supported modules and convenience
+- [x] Keep root `viper` exports limited to supported modules and convenience
   names.
 - [x] Add installed-wheel import tests for every listed public name.
 - [x] Add application and runner exports in the commits that create those
@@ -306,22 +306,22 @@ python -m twine check dist/*
 
 ### 2.1 Call boundaries
 
-- [ ] Typed Python functions accept validated Pydantic request objects.
-- [ ] Pydantic raises request-construction errors to typed Python callers.
-- [ ] A raw `dispatch(operation, payload)` entrypoint validates mappings for CLI
+- [x] Typed Python functions accept validated Pydantic request objects.
+- [x] Pydantic raises request-construction errors to typed Python callers.
+- [x] A raw `dispatch(operation, payload)` entrypoint validates mappings for CLI
   and agent callers.
-- [ ] Application operations raise `ViperError` for expected operational
+- [x] Application operations raise `ViperError` for expected operational
   failures.
-- [ ] Python callers receive unexpected implementation exceptions with their
+- [x] Python callers receive unexpected implementation exceptions with their
   original types.
-- [ ] The CLI converts parser, request, expected operation, and unexpected
+- [x] The CLI converts parser, request, expected operation, and unexpected
   failures into their corresponding result types.
 
 ### 2.2 Failure model
 
-- [ ] Define `FailureOrigin` as `request`, `application`, `cli`, or `internal`.
-- [ ] Keep `OperationName` limited to callable application operations.
-- [ ] Permit `operation=None` for syntax failures that occur before subcommand
+- [x] Define `FailureOrigin` as `request`, `application`, `cli`, or `internal`.
+- [x] Keep `OperationName` limited to callable application operations.
+- [x] Permit `operation=None` for syntax failures that occur before subcommand
   resolution.
 - [ ] Define stable error codes for parsing, validation, retrieval, conflict,
   execution, verification, publication, cancellation, and internal faults.
@@ -331,8 +331,8 @@ python -m twine check dist/*
 
 ### 2.3 Deterministic JSON
 
-- [ ] Encode UTF-8 with one trailing newline.
-- [ ] Emit fields in model-definition order.
+- [x] Encode UTF-8 with one trailing newline.
+- [x] Emit fields in model-definition order.
 - [ ] Encode paths with POSIX separators.
 - [ ] Encode datetimes as UTC RFC 3339 values.
 - [ ] Encode bytes with URL-safe Base64.
@@ -352,26 +352,26 @@ python -m pytest tests/test_application_errors.py tests/test_application_json.py
 
 ### 3.1 Application operations
 
-- [ ] Implement `validate_stage()` for one authored stage document.
-- [ ] Implement `validate_resolved_stage()` for one resolved stage document.
-- [ ] Implement `validate_run_spec()` for one `RunSpec` document.
-- [ ] Implement `freeze_run()` for canonical plan authoring.
-- [ ] Implement `execute_stage()` as the existing single-stage operation.
-- [ ] Implement `verify_run()`, `verify_benchmark()`, and `verify_pointer()`.
-- [ ] Implement `get_schema()` through an explicit name-to-model registry.
-- [ ] Implement `get_capabilities()` through an explicit capability registry.
-- [ ] Return one validated success model from every operation.
-- [ ] Document each operation beside its implementation.
+- [x] Implement `validate_stage()` for one authored stage document.
+- [x] Implement `validate_resolved_stage()` for one resolved stage document.
+- [x] Implement `validate_run_spec()` for one `RunSpec` document.
+- [x] Implement `freeze_run()` for canonical plan authoring.
+- [x] Implement `execute_stage()` as the existing single-stage operation.
+- [x] Implement `verify_run()`, `verify_benchmark()`, and `verify_pointer()`.
+- [x] Implement `get_schema()` through an explicit name-to-model registry.
+- [x] Implement `get_capabilities()` through an explicit capability registry.
+- [x] Return one validated success model from every operation.
+- [x] Document each operation beside its implementation.
 
 ### 3.2 CLI parser and rendering
 
-- [ ] Make `--json` a global option accepted before the subcommand.
-- [ ] Override parser exit behavior and convert syntax failures into
-  `CliFailure`.
-- [ ] Emit usage text in human mode.
-- [ ] Emit one JSON document in JSON mode.
+- [x] Make `--json` a global option accepted before the subcommand.
+- [x] Override parser exit behavior and convert syntax failures into
+  `ViperFailure` with `origin="cli"`.
+- [x] Emit usage text in human mode.
+- [x] Emit one JSON document in JSON mode.
 - [ ] Route warnings into the result model in JSON mode.
-- [ ] Limit CLI responsibilities to parsing, request construction, dispatch,
+- [x] Limit CLI responsibilities to parsing, request construction, dispatch,
   rendering, and exit-code selection.
 - [ ] Capture standard output, standard error, and exit status for every command
   in [CLI tests](../tests/test_cli.py).

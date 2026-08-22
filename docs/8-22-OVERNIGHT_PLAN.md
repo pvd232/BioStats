@@ -150,7 +150,7 @@ The trusted-local vertical slice reached the session outcome:
 - The verifier recomputes metrics that declare `verification="recompute"` and
   applies their declared comparators.
 - The acceptance suite rejects altered artifact bytes.
-- Ruff, Pyright, 109 tests, 13 subtests, package builds, metadata checks, and an
+- Ruff, Pyright, 119 tests, 13 subtests, package builds, metadata checks, and an
   installed-wheel smoke test pass.
 
 ## Phase 2: read-only agent operations
@@ -163,8 +163,8 @@ state unchanged.
    specs named by each RunSpec.
 2. `lineage()` returns the verified upstream path from each stage input to its
    source artifact and producing stage.
-3. `status()` summarizes the latest durable attempt-journal entry and the next
-   valid coordinator action.
+3. `status()` summarizes the latest durable attempt-journal entry and its
+   permitted successor states.
 4. `compare_runs()` compares two verified terminal runs after plan, input,
    artifact, and measurement verification.
 

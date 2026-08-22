@@ -23,7 +23,7 @@ calls the same function, and renders its result.
 | `verify_benchmark(request)` | `viper verify-benchmark` | Verified benchmark and confirmation summary |
 | `verify_pointer(request)` | `viper verify-pointer` | Verified artifact file count |
 | `get_schema(request)` | `viper schema` | JSON Schema for one registered public type |
-| `get_capabilities(request)` | `viper capabilities` | Operations and execution backends in this installation |
+| `get_capabilities(request)` | `viper capabilities` | Operations, schemas, and execution backends in this installation |
 
 Every success contains `status="ok"` and the function's `operation` name.
 
@@ -255,7 +255,8 @@ get_capabilities(request: CapabilitiesRequest) -> CapabilitiesSuccess
 returns `name` and `json_schema`.
 
 `CapabilitiesRequest` has zero fields. `CapabilitiesSuccess` returns the
-protocol version, callable operations, and installed execution backends.
+protocol version, callable operations, registered schema names, and installed
+execution backends.
 
 ## Failures
 

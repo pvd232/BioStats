@@ -364,6 +364,7 @@ class CapabilitiesSuccess(SuccessModel):
     operation: Literal["get_capabilities"] = "get_capabilities"  # pyright: ignore[reportIncompatibleVariableOverride]
     protocol_version: int
     operations: tuple[OperationName, ...]
+    schemas: tuple[str, ...]
     execution_backends: tuple[str, ...]
 
 
@@ -855,6 +856,7 @@ def get_capabilities(request: CapabilitiesRequest) -> CapabilitiesSuccess:
     return CapabilitiesSuccess(
         protocol_version=1,
         operations=OPERATIONS,
+        schemas=tuple(sorted(SCHEMA_REGISTRY)),
         execution_backends=("trusted_local",),
     )
 
