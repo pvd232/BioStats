@@ -13,6 +13,7 @@ from mantra_provenance.models_v4 import (
     PREDICTIONS,
     CUDABackendContext,
     EvaluateSpec,
+    FutureInputRef,
     ResolvedBundleArtifact,
     RunAttempt,
     RunSpec,
@@ -70,7 +71,18 @@ def reproducibility() -> dict:
             "process_count": 1,
             "torch_intraop_threads": 1,
             "torch_interop_threads": 1,
-            "dataloader_workers": 0,
+            "dataloader": {
+                "workers": 0,
+                "prefetch_factor": None,
+                "persistent_workers": False,
+                "in_order": True,
+            },
+        },
+        "numpy_randomness": {
+            "generators": {
+                "training": "PCG64",
+            },
+            "capture_legacy_global": True,
         },
     }
 
@@ -346,8 +358,10 @@ class TrainingCheckpointTests(unittest.TestCase):
         )
 
         spec = TrainSpec.model_validate(payload)
+        checkpoint = spec.inputs["checkpoint_model_parameters"]
+        assert isinstance(checkpoint, FutureInputRef)
         self.assertEqual(
-            spec.inputs["checkpoint_model_parameters"].producer_stage_id,
+            checkpoint.producer_stage_id,
             "train_01",
         )
 
@@ -626,10 +640,7 @@ class YAMLLoadingTests(unittest.TestCase):
             ("build.fixture.resolved.spec.yaml", load_resolved_spec),
         )
         example_root = (
-            Path(__file__).parents[1]
-            / "mantra_provenance"
-            / "examples"
-            / "provenance"
+            Path(__file__).parents[1] / "mantra_provenance" / "examples" / "provenance"
         )
 
         for filename, loader in examples:
@@ -639,7 +650,9 @@ class YAMLLoadingTests(unittest.TestCase):
     def test_stage_spec_loads_through_the_v4_union(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "train.spec.yaml"
-            path.write_text(yaml.safe_dump(train_payload()), encoding="utf-8")
+            dumped = yaml.safe_dump(train_payload())
+            assert isinstance(dumped, str)
+            path.write_text(dumped, encoding="utf-8")
 
             loaded = load_spec(path)
 

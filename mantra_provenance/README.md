@@ -11,6 +11,7 @@ benchmark confirmation.
 | [v3 protocol](ProvenanceS1_v3.md) | Defines the active formal and record contract | Sections 1–23 |
 | [models](models_v4.py) | Validates protocol records and their internal invariants | `RunSpec`, `ResolvedRun`, `Spec`, `ResolvedSpec`, `BenchmarkSpec` |
 | [verifier](verifier.py) | Retrieves referenced files and checks cross-record relationships | `verify_run_result()`, `verify_benchmark_result()` |
+| [training continuation](continuation.py) | Captures, serializes, restores, and validates optimizer, generator, and stateful-loader state | `capture_training_continuation()`, `restore_training_continuation()` |
 | [YAML loading](yaml_io.py) | Parses stage records and rejects duplicate mapping keys | `load_spec()`, `load_resolved_spec()` |
 | [examples](examples/provenance/) | Supplies loadable v4 stage and resolved-stage records | Download and build examples |
 | [identifiers](ids.py) | Defines run and human-readable identifier types | `RunId`, `HumanId` |
@@ -73,6 +74,14 @@ and any benchmark result required to authorize estimator promotion.
   selected run, confirmation attempt, parity, and metric thresholds.
 - `verify_promoted_artifact(pointer, fetcher=...)` verifies a promoted
   artifact's producer lineage and benchmark authorization when required.
+- `capture_training_continuation(...)` captures optimizer state, main-process
+  generator state, and the stateful DataLoader state at a training-stage
+  boundary.
+- `restore_training_continuation(...)` restores those values before the next
+  DataLoader iterator is created.
+- `save_training_continuation(path, continuation)` and
+  `load_training_continuation(path)` write and safely load the reserved
+  `continuation_state` artifact.
 - A custom `fetcher` receives a `GitFileRef` or `HuggingFaceFileRef` and returns
   bytes. Omitting it uses the package Git and Hugging Face retrieval functions.
 

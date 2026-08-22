@@ -25,6 +25,7 @@ from .models_v4 import (
     EVALUATION_MODEL_INPUT,
     MODEL_PARAMETERS,
     PREDICTIONS,
+    ArtifactName,
     ArtifactPointer,
     ArtifactSpec,
     BaseSpec,
@@ -60,6 +61,7 @@ from .models_v4 import (
     StageResultSnapshotRef,
     StorageModel,
     StoredInputRef,
+    TrainingContinuationState,
     TrainSpec,
     VariantSpec,
     repo_file_paths_overlap,
@@ -73,9 +75,7 @@ RESOLVED_SPEC_ADAPTER = TypeAdapter(ResolvedSpec)
 
 def run_root(run: RunSpec) -> RepoRelPath:
     """Return the canonical repository root for one run's records and outputs."""
-    return (
-        f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
-    )
+    return f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
 
 
 def stage_spec_path(run: RunSpec, stage_id: StageId) -> RepoRelPath:
@@ -335,6 +335,7 @@ def verify_snapshot_artifact(
 def load_verified_artifact(
     run: RunSpec,
     declaration: ArtifactSpec,
+    artifact_name: ArtifactName,
     artifact: VerifiedArtifact,
     *,
     materialization_path: RepoRelPath | None = None,
@@ -367,9 +368,7 @@ def load_verified_artifact(
     with tempfile.TemporaryDirectory(prefix="mantra-artifact-") as directory:
         root = Path(directory)
         target_path = (
-            declaration.path
-            if materialization_path is None
-            else materialization_path
+            declaration.path if materialization_path is None else materialization_path
         )
         if isinstance(artifact.artifact, ResolvedSingleFileArtifact):
             materialized_files = ((target_path, artifact.files[0]),)
@@ -394,12 +393,46 @@ def load_verified_artifact(
 
         artifact_path = root / target_path
         try:
-            return load(artifact_path)
+            loaded = load(artifact_path)
         except Exception as exc:
             raise VerificationError(
                 f"artifact loader {declaration.loader!r} could not reconstruct "
                 "the verified artifact"
             ) from exc
+
+        if artifact_name != CONTINUATION_STATE:
+            return loaded
+
+        try:
+            continuation = TrainingContinuationState.model_validate(loaded)
+        except ValueError as exc:
+            raise VerificationError(
+                "continuation_state loader returned an invalid "
+                "TrainingContinuationState"
+            ) from exc
+
+        expected_configuration = run.reproducibility.parallelism.dataloader
+        if continuation.dataloader.configuration != expected_configuration:
+            raise VerificationError(
+                "continuation_state DataLoader configuration does not match "
+                "the run plan"
+            )
+
+        expected_numpy = run.reproducibility.numpy_randomness
+        saved_numpy = continuation.main_process_rng.numpy
+
+        if set(saved_numpy.generators) != set(expected_numpy.generators):
+            raise VerificationError(
+                "continuation_state NumPy generator names do not match the run plan"
+            )
+
+        has_legacy_global = saved_numpy.legacy_global is not None
+        if has_legacy_global != expected_numpy.capture_legacy_global:
+            raise VerificationError(
+                "continuation_state legacy NumPy state does not match the run plan"
+            )
+
+        return continuation
 
 
 def verify_run_spec(
@@ -536,6 +569,7 @@ def verify_run_plan_relationships(
     stages: Mapping[StageId, BaseSpec],
 ) -> None:
     """Verify plan relationships spanning experiment, variant, and stages."""
+
     def require_source_snapshot(location: GitFileRef, label: str) -> None:
         if (
             location.repository != run.source.repository
@@ -740,9 +774,10 @@ def verify_stage_plan(
 
                 producer_path = producer_artifact.path
 
-                for previous_path, previous_name in (
-                    future_materialization_paths.items()
-                ):
+                for (
+                    previous_path,
+                    previous_name,
+                ) in future_materialization_paths.items():
                     if repo_file_paths_overlap(producer_path, previous_path):
                         raise VerificationError(
                             f"future input paths for {previous_name!r} and "
@@ -973,6 +1008,7 @@ def verify_attempt_stages(
             load_verified_artifact(
                 run,
                 stage_spec.artifacts[artifact_name],
+                artifact_name,
                 verified_artifact,
                 fetcher=fetcher,
             )
@@ -1160,9 +1196,7 @@ def verify_measurement_stage_times(
     for measurement in measurements:
         resolved_stage = resolved_stages.get(measurement.stage_id)
         if resolved_stage is None:
-            raise VerificationError(
-                "measurement stage has no resolved stage result"
-            )
+            raise VerificationError("measurement stage has no resolved stage result")
         if measurement.measured_at > resolved_stage.completed_at:
             raise VerificationError(
                 "measurement timestamp follows its named stage completion"
@@ -1350,6 +1384,7 @@ def verify_promoted_artifact(
         load_verified_artifact(
             verified_run.plan.run,
             declaration,
+            pointer.artifact.artifact_name,
             verified_artifact,
             materialization_path=materialization_path,
             fetcher=fetcher,
@@ -1377,10 +1412,7 @@ def verify_stored_input_selections(
                     f"stored checkpoint inputs of stage {stage_id!r} must select "
                     "one resolved run"
                 )
-            if (
-                model_pointer.artifact.stage_id
-                != state_pointer.artifact.stage_id
-            ):
+            if model_pointer.artifact.stage_id != state_pointer.artifact.stage_id:
                 raise VerificationError(
                     f"stored checkpoint inputs of stage {stage_id!r} must select "
                     "one producer stage"
@@ -1518,9 +1550,7 @@ def verify_attempt_future_inputs(
     for position, stage_reference in enumerate(run.stages):
         stage_positions[stage_reference.stage_id] = position
 
-    completed_stages = {
-        stage.stage_id: stage for stage in attempt.resolved_stages
-    }
+    completed_stages = {stage.stage_id: stage for stage in attempt.resolved_stages}
 
     verified_inputs: dict[StageId, dict[InputName, VerifiedInput]] = {}
     for consumer_stage_id, resolved_consumer_spec in resolved_stages.items():

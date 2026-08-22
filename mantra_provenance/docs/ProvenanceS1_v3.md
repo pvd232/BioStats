@@ -668,6 +668,74 @@ sₖ⁽ᴺᵏ⁾
         └── combined with model_parameters for exact continuation
 ```
 
+The `continuation_state` artifact loads as:
+
+```python
+class PythonRNGState(ProtocolModel):
+    version: int = Field(ge=0)
+    internal_state: tuple[int, ...] = Field(min_length=1)
+    gaussian_cache: float | None
+
+
+UInt32 = Annotated[int, Field(ge=0, lt=2**32)]
+UInt128 = Annotated[int, Field(ge=0, lt=2**128)]
+
+
+class PCG64InternalState(ProtocolModel):
+    state: UInt128
+    inc: UInt128
+
+
+class PCG64GeneratorState(ProtocolModel):
+    bit_generator: Literal["PCG64"] = "PCG64"
+    state: PCG64InternalState
+    has_uint32: Literal[0, 1]
+    uinteger: UInt32
+
+
+class LegacyNumPyRNGState(ProtocolModel):
+    bit_generator: Literal["MT19937"] = "MT19937"
+    keys: tuple[UInt32, ...] = Field(min_length=624, max_length=624)
+    position: int = Field(ge=0, le=624)
+    has_gaussian: Literal[0, 1]
+    cached_gaussian: float = Field(allow_inf_nan=False)
+
+
+class NumPyRNGState(ProtocolModel):
+    generators: dict[HumanId, PCG64GeneratorState]
+    legacy_global: LegacyNumPyRNGState | None
+
+
+class MainProcessRNGState(ProtocolModel):
+    python: PythonRNGState
+    numpy: NumPyRNGState
+    torch_cpu: bytes = Field(min_length=1)
+    torch_cuda: tuple[bytes, ...]
+
+
+class DataLoaderContinuationState(ProtocolModel):
+    configuration: DataLoaderConfiguration
+    state_dict: dict[str, object] = Field(min_length=1)
+
+
+class TrainingContinuationState(ProtocolModel):
+    schema_version: Literal[1] = 1
+    optimizer_state: dict[str, object] = Field(min_length=1)
+    main_process_rng: MainProcessRNGState
+    dataloader: DataLoaderContinuationState
+```
+
+`TrainingContinuationState.optimizer_state` records $o_k^{(N_k)}$.
+`main_process_rng` records the Python, named NumPy, legacy NumPy, and PyTorch
+generator states held by the training process. `dataloader.state_dict` records
+the state returned by the stateful loader, including the position from which
+data loading continues. Together, the latter two fields represent
+$r_k^{(N_k)}$ and $b_k^{(N_k)}$.
+
+The verifier requires `dataloader.configuration` to equal the run-wide
+`DataLoaderConfiguration`. It also requires the saved NumPy generator names
+and the presence of `legacy_global` to match `NumPyRandomnessSpec`.
+
 This is the coarsest artifact partition satisfying the two required uses:
 
 - Evaluation loads `model_parameters`.
@@ -1496,17 +1564,30 @@ class TorchPrecisionSpec(ProtocolModel):
     autocast_dtype: Literal["float16", "bfloat16"] | None
 
 
+class DataLoaderConfiguration(ProtocolModel):
+    workers: int = Field(ge=0)
+    prefetch_factor: int | None = Field(default=None, ge=1)
+    persistent_workers: bool = False
+    in_order: Literal[True] = True
+
+
 class ParallelismSpec(ProtocolModel):
     process_count: int = Field(ge=1)
     torch_intraop_threads: int = Field(ge=1)
     torch_interop_threads: int = Field(ge=1)
-    dataloader_workers: int = Field(ge=0)
+    dataloader: DataLoaderConfiguration
+
+
+class NumPyRandomnessSpec(ProtocolModel):
+    generators: dict[HumanId, Literal["PCG64"]] = Field(default_factory=dict)
+    capture_legacy_global: bool = False
 
 
 class ReproducibilitySpec(ProtocolModel):
     determinism: TorchDeterminismSpec
     precision: TorchPrecisionSpec
     parallelism: ParallelismSpec
+    numpy_randomness: NumPyRandomnessSpec
 ```
 
 `TorchPrecisionSpec.autocast_dtype` is present exactly when
@@ -1514,6 +1595,9 @@ class ReproducibilitySpec(ProtocolModel):
 
 The global seed occurs once in `RunSpec.seed`. `ReproducibilitySpec` records
 the remaining numerical controls shared by every stage.
+`NumPyRandomnessSpec.generators` names each PCG64 generator initialized from
+that seed. `capture_legacy_global` states whether execution also uses and
+captures NumPy's global MT19937 generator.
 
 ### Realized environment and runtime state
 

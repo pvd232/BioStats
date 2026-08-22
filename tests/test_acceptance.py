@@ -1,12 +1,21 @@
+"""End-to-end tests for complete MANTRA provenance chains.
+
+The fixtures publish run plans, stage results, artifacts, measurements, and
+resolved runs to an in-memory document store. The tests then exercise the
+public verifier against valid chains and deliberately broken relationships.
+"""
+
 from __future__ import annotations
 
 import hashlib
 import unittest
 from datetime import UTC, datetime
+from io import BytesIO
 from typing import Any
 
+import torch
 import yaml
-from pydantic import TypeAdapter
+from pydantic import HttpUrl, TypeAdapter
 
 from mantra_provenance.models_v4 import (
     CONTINUATION_STATE,
@@ -16,32 +25,58 @@ from mantra_provenance.models_v4 import (
     BaseSpec,
     BenchmarkResult,
     BenchmarkSpec,
+    BuildParams,
     BuildSpec,
+    BuildVariantStageParams,
+    BundleArtifactSpec,
+    CPUBackendContext,
+    CPUContext,
     DownloadSpec,
+    EvaluateParams,
     EvaluateSpec,
+    EvaluateVariantStageParams,
+    ExecutionContext,
     ExperimentSpec,
+    FutureInputRef,
+    GCEHostContext,
+    GCEMachineImageRef,
     GitFileRef,
     GitSource,
     HuggingFaceFileRef,
+    MetricCriterion,
+    NativeLibraryContext,
+    NativeThreadPoolContext,
+    NumericalRuntimeContext,
+    RemoteFileRef,
+    ReplicateSpec,
     ResolvedArtifactPointerRef,
     ResolvedBenchmarkSpecRef,
     ResolvedBuildSpec,
+    ResolvedBundleArtifact,
+    ResolvedBundleMember,
     ResolvedDownloadSpec,
     ResolvedEvaluateSpec,
     ResolvedFileRef,
     ResolvedFutureInputRef,
+    ResolvedGCEEnvironment,
+    ResolvedGCEMachineImageRef,
     ResolvedGitFileRef,
     ResolvedRun,
     ResolvedRunRef,
     ResolvedRunSpecRef,
+    ResolvedSingleFileArtifact,
     ResolvedStageRef,
+    ResolvedStoredInputRef,
     ResolvedTrainSpec,
     RunAttempt,
     RunSpec,
     RunStageRef,
+    StageArtifactRef,
     StageResultSnapshotRef,
     StorageModel,
+    StoredInputRef,
     TrainSpec,
+    TrainVariantStageParams,
     VariantSpec,
 )
 from mantra_provenance.verifier import (
@@ -50,8 +85,23 @@ from mantra_provenance.verifier import (
     verify_promoted_artifact,
     verify_run_result,
 )
+from tests.test_verifier import (
+    CPUComputeSpec,
+    DataLoaderConfiguration,
+    GCEEnvironmentSpec,
+    NumPyRandomnessSpec,
+    ParallelismSpec,
+    RandomnessContext,
+    ReproducibilitySpec,
+    SingleFileArtifactSpec,
+    SnapshotFileRef,
+    TorchDeterminismSpec,
+    TorchPrecisionSpec,
+    TrainParams,
+    continuation_state,
+)
 
-SOURCE_REPOSITORY = "https://github.com/example/mantra"
+SOURCE_REPOSITORY = HttpUrl("https://github.com/example/mantra")
 ARTIFACT_REPOSITORY = "example/mantra-runs"
 PRODUCER_SOURCE_COMMIT = "1" * 40
 PRODUCER_PLAN_COMMIT = "2" * 40
@@ -63,15 +113,34 @@ YAML_ADAPTER = TypeAdapter(Any)
 
 
 def yaml_bytes(value: object) -> bytes:
+    """Serialize one protocol record as deterministic YAML bytes."""
+
     data = YAML_ADAPTER.dump_python(value, mode="json")
-    return yaml.safe_dump(data, sort_keys=True).encode("utf-8")
+    data_s = yaml.safe_dump(data, sort_keys=True)
+    assert isinstance(data_s, str)
+    return data_s.encode("utf-8")
+
+
+def continuation_bytes() -> bytes:
+    """Serialize one valid training-continuation artifact."""
+
+    stream = BytesIO()
+    torch.save(
+        continuation_state().model_dump(mode="python"),
+        stream,
+    )
+    return stream.getvalue()
 
 
 def sha256(raw: bytes) -> str:
+    """Return the SHA-256 identity of stored bytes."""
+
     return hashlib.sha256(raw).hexdigest()
 
 
 class DocumentStore:
+    """Store immutable test documents by their complete storage identity."""
+
     def __init__(self) -> None:
         self.documents: dict[tuple[str, str, str, str, str], bytes] = {}
 
@@ -118,81 +187,89 @@ def snapshot(commit: str) -> StageResultSnapshotRef:
     )
 
 
-def environment(source_commit: str) -> dict[str, object]:
-    return {
-        "kind": "gce",
-        "machine_image": {"project": "mantra-project", "name": "mantra-image"},
-        "machine_type": "n2-standard-8",
-        "compute": {"kind": "cpu"},
-        "lockfile": git_file(source_commit, "environment.yml"),
-    }
+def environment(source_commit: str) -> GCEEnvironmentSpec:
+    return GCEEnvironmentSpec(
+        kind="gce",
+        machine_image=GCEMachineImageRef(project="mantra-project", name="mantra-image"),
+        machine_type="n2-standard-8",
+        compute=CPUComputeSpec(kind="cpu"),
+        lockfile=git_file(source_commit, "environment.yml"),
+    )
 
 
-def reproducibility() -> dict[str, object]:
-    return {
-        "determinism": {
-            "deterministic_algorithms": True,
-            "deterministic_warn_only": False,
-            "cudnn_deterministic": True,
-            "cudnn_benchmark": False,
-            "cublas_workspace_config": ":4096:8",
-        },
-        "precision": {
-            "float32_matmul_precision": "highest",
-            "cudnn_allow_tf32": False,
-            "autocast_enabled": False,
-            "autocast_dtype": None,
-        },
-        "parallelism": {
-            "process_count": 1,
-            "torch_intraop_threads": 1,
-            "torch_interop_threads": 1,
-            "dataloader_workers": 0,
-        },
-    }
+def reproducibility() -> ReproducibilitySpec:
+    return ReproducibilitySpec(
+        determinism=TorchDeterminismSpec(
+            deterministic_algorithms=True,
+            deterministic_warn_only=False,
+            cudnn_deterministic=True,
+            cudnn_benchmark=False,
+            cublas_workspace_config=":4096:8",
+        ),
+        precision=TorchPrecisionSpec(
+            float32_matmul_precision="highest",
+            cudnn_allow_tf32=False,
+            autocast_enabled=False,
+            autocast_dtype=None,
+        ),
+        parallelism=ParallelismSpec(
+            process_count=1,
+            torch_intraop_threads=1,
+            torch_interop_threads=1,
+            dataloader=DataLoaderConfiguration(
+                workers=0,
+                prefetch_factor=None,
+                persistent_workers=False,
+                in_order=True,
+            ),
+        ),
+        numpy_randomness=NumPyRandomnessSpec(
+            generators={"training": "PCG64"}, capture_legacy_global=True
+        ),
+    )
 
 
-def execution_context() -> dict[str, object]:
+def execution_context() -> ExecutionContext:
     controls = reproducibility()
-    return {
-        "host": {
-            "provider": "gce",
-            "machine_type": "n2-standard-8",
-            "zone": "us-central1-a",
-            "guest_os_name": "debian",
-            "guest_os_version": "12",
-            "kernel_release": "6.1",
-        },
-        "cpu": {
-            "architecture": "x86_64",
-            "model": "Intel Cascade Lake",
-            "instruction_features": ["avx2"],
-        },
-        "backend": {"kind": "cpu", "device": "cpu"},
-        "numerical_runtime": {
-            "python_version": "3.14.0",
-            "pytorch_version": "2.8.0",
-            "numpy_version": "2.3.0",
-            "blas": {"implementation": "openblas", "version": "0.3.30"},
-            "lapack": {"implementation": "openblas", "version": "0.3.30"},
-            "native_thread_pools": [
-                {
-                    "implementation": "openblas",
-                    "version": "0.3.30",
-                    "threads": 1,
-                }
-            ],
-        },
-        "randomness": {
-            "python_seed": 42,
-            "numpy_seed": 42,
-            "torch_seed": 42,
-            "dataloader_seed": 42,
-        },
-        "determinism": controls["determinism"],
-        "precision": controls["precision"],
-        "parallelism": controls["parallelism"],
-    }
+    return ExecutionContext(
+        host=GCEHostContext(
+            provider="gce",
+            machine_type="n2-standard-8",
+            zone="us-central1-a",
+            guest_os_name="debian",
+            guest_os_version="12",
+            kernel_release="6.1",
+        ),
+        cpu=CPUContext(
+            architecture="x86_64",
+            model="Intel Cascade Lake",
+            instruction_features=("avx2",),
+        ),
+        backend=CPUBackendContext(kind="cpu", device="cpu"),
+        numerical_runtime=NumericalRuntimeContext(
+            python_version="3.14.0",
+            pytorch_version="2.8.0",
+            numpy_version="2.3.0",
+            blas=NativeLibraryContext(implementation="openblas", version="0.3.30"),
+            lapack=NativeLibraryContext(implementation="openblas", version="0.3.30"),
+            native_thread_pools=(
+                NativeThreadPoolContext(
+                    implementation="openblas",
+                    version="0.3.30",
+                    threads=1,
+                ),
+            ),
+        ),
+        randomness=RandomnessContext(
+            python_seed=42,
+            numpy_seed=42,
+            torch_seed=42,
+            dataloader_seed=42,
+        ),
+        determinism=controls.determinism,
+        precision=controls.precision,
+        parallelism=controls.parallelism,
+    )
 
 
 def add_source_file(
@@ -213,20 +290,20 @@ def add_source_file(
 def resolved_environment(
     store: DocumentStore,
     source_commit: str,
-) -> dict[str, object]:
+) -> ResolvedGCEEnvironment:
     lock_raw = b"name: mantra\n"
     lockfile = add_source_file(store, source_commit, "environment.yml", lock_raw)
-    return {
-        "kind": "gce",
-        "machine_image": {
-            "project": "mantra-project",
-            "name": "mantra-image",
-            "id": "123456789",
-        },
-        "machine_type": "n2-standard-8",
-        "compute": {"kind": "cpu"},
-        "lockfile": lockfile,
-    }
+    return ResolvedGCEEnvironment(
+        kind="gce",
+        machine_image=ResolvedGCEMachineImageRef(
+            project="mantra-project",
+            name="mantra-image",
+            id="123456789",
+        ),
+        machine_type="n2-standard-8",
+        compute=CPUComputeSpec(kind="cpu"),
+        lockfile=lockfile,
+    )
 
 
 def add_loader(
@@ -236,7 +313,16 @@ def add_loader(
     *,
     bundle: bool = False,
 ) -> None:
-    if bundle:
+    """Publish one artifact-loader module into the simulated source commit."""
+
+    if loader_id == "continuation_state":
+        raw = (
+            b"from mantra_provenance.continuation "
+            b"import load_training_continuation\n\n"
+            b"def load(path):\n"
+            b"    return load_training_continuation(path)\n"
+        )
+    elif bundle:
         raw = (
             b"def load(path):\n"
             b"    return tuple(p.read_bytes() for p in sorted(path.rglob('*')) "
@@ -288,8 +374,7 @@ def add_plan_records(
         store.put(git_file(plan_commit, str(run_stage.spec)), yaml_bytes(spec))
 
     run_path = (
-        f"experiments/{run.experiment_id}/runs/{run.variant_id}/"
-        f"{run.run_id}/spec.yaml"
+        f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}/spec.yaml"
     )
     run_raw = yaml_bytes(run)
     run_location = git_file(plan_commit, run_path)
@@ -339,10 +424,10 @@ def make_run(
         environment=environment(source_commit),
         reproducibility=reproducibility(),
         stages=tuple(stage_refs),
-        estimator={
-            "stage_id": estimator_stage_id,
-            "artifact_name": MODEL_PARAMETERS,
-        },
+        estimator=StageArtifactRef(
+            stage_id=estimator_stage_id,
+            artifact_name=MODEL_PARAMETERS,
+        ),
     )
 
 
@@ -351,12 +436,12 @@ def add_single_artifact(
     snapshot_commit: str,
     path: str,
     raw: bytes,
-) -> dict[str, object]:
+) -> ResolvedSingleFileArtifact:
     store.put(hf_file(snapshot_commit, path), raw)
-    return {
-        "kind": "file",
-        "file": {"path": path, "sha256": sha256(raw), "bytes": len(raw)},
-    }
+    return ResolvedSingleFileArtifact(
+        kind="file",
+        file=SnapshotFileRef(path=path, sha256=sha256(raw), bytes=len(raw)),
+    )
 
 
 def add_bundle_artifact(
@@ -364,19 +449,19 @@ def add_bundle_artifact(
     snapshot_commit: str,
     root: str,
     members: dict[str, bytes],
-) -> dict[str, object]:
+) -> ResolvedBundleArtifact:
     resolved_members = []
     for relative_path in sorted(members):
         raw = members[relative_path]
         path = f"{root}/{relative_path}"
         store.put(hf_file(snapshot_commit, path), raw)
         resolved_members.append(
-            {
-                "relative_path": relative_path,
-                "file": {"path": path, "sha256": sha256(raw), "bytes": len(raw)},
-            }
+            ResolvedBundleMember(
+                relative_path=relative_path,
+                file=SnapshotFileRef(path=path, sha256=sha256(raw), bytes=len(raw)),
+            )
         )
-    return {"kind": "bundle", "members": resolved_members}
+    return ResolvedBundleArtifact(kind="bundle", members=tuple(resolved_members))
 
 
 def publish_resolved_stage(
@@ -393,7 +478,7 @@ def publish_resolved_stage(
     return ResolvedStageRef(
         stage_id=stage_id,
         snapshot=snapshot(snapshot_commit),
-        resolved_spec={"path": path, "sha256": sha256(raw), "bytes": len(raw)},
+        resolved_spec=SnapshotFileRef(path=path, sha256=sha256(raw), bytes=len(raw)),
     )
 
 
@@ -422,46 +507,46 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
     download = DownloadSpec(
         script="src/mantra/datasets/toy/download.py",
         inputs={
-            "archive": {
-                "kind": "remote",
-                "url": "https://example.com/toy-v1.tar.gz",
-                "version": "v1",
-            }
+            "archive": RemoteFileRef(
+                kind="remote",
+                url=HttpUrl("https://example.com/toy-v1.tar.gz"),
+                version="v1",
+            )
         },
         artifacts={
-            "dataset": {
-                "kind": "file",
-                "path": f"{run_root}/artifacts/datasets/toy/dataset.bin",
-                "loader": "bytes_file",
-            },
-            "split": {
-                "kind": "file",
-                "path": f"{run_root}/artifacts/datasets/toy/split.json",
-                "loader": "bytes_file",
-            },
+            "dataset": SingleFileArtifactSpec(
+                kind="file",
+                path=f"{run_root}/artifacts/datasets/toy/dataset.bin",
+                loader="bytes_file",
+            ),
+            "split": SingleFileArtifactSpec(
+                kind="file",
+                path=f"{run_root}/artifacts/datasets/toy/split.json",
+                loader="bytes_file",
+            ),
         },
     )
     train = TrainSpec(
         script="src/mantra/models/toy/train.py",
         inputs={
-            "training_dataset": {
-                "kind": "future",
-                "producer_stage_id": "download",
-                "producer_artifact": "dataset",
-            }
+            "training_dataset": FutureInputRef(
+                kind="future",
+                producer_stage_id="download",
+                producer_artifact="dataset",
+            )
         },
-        params={"epochs": 1, "batch_size": 2, "learning_rate": 0.01},
+        params=TrainParams(epochs=1, batch_size=2, learning_rate=0.01),
         artifacts={
-            MODEL_PARAMETERS: {
-                "kind": "file",
-                "path": f"{run_root}/artifacts/models/toy/model_parameters.bin",
-                "loader": "bytes_file",
-            },
-            CONTINUATION_STATE: {
-                "kind": "file",
-                "path": f"{run_root}/artifacts/models/toy/continuation_state.bin",
-                "loader": "bytes_file",
-            },
+            MODEL_PARAMETERS: SingleFileArtifactSpec(
+                kind="file",
+                path=f"{run_root}/artifacts/models/toy/model_parameters.bin",
+                loader="bytes_file",
+            ),
+            CONTINUATION_STATE: SingleFileArtifactSpec(
+                kind="file",
+                path=f"{run_root}/artifacts/models/toy/continuation_state.bin",
+                loader="continuation_state",
+            ),
         },
     )
     stage_specs: list[tuple[str, BaseSpec]] = [
@@ -480,7 +565,7 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
         experiment_id="source_data",
         factors=(),
         variant_ids=("baseline",),
-        replicates=({"replicate_id": "replicate_01", "seed": 42},),
+        replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
         metric_ids=(),
     )
     variant = VariantSpec(
@@ -488,7 +573,9 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
         variant_id="baseline",
         levels={},
         stage_params=(
-            {"kind": "train", "stage_id": "train", "params": train.params},
+            TrainVariantStageParams(
+                kind="train", stage_id="train", params=train.params
+            ),
         ),
     )
     run_reference = add_plan_records(
@@ -501,6 +588,7 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
     )
 
     add_loader(store, PRODUCER_SOURCE_COMMIT, "bytes_file")
+    add_loader(store, PRODUCER_SOURCE_COMMIT, "continuation_state")
     resolved_env = resolved_environment(store, PRODUCER_SOURCE_COMMIT)
     download_source = add_source_file(
         store,
@@ -571,7 +659,7 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
                 store,
                 train_commit,
                 str(train.artifacts[CONTINUATION_STATE].path),
-                b"producer continuation",
+                continuation_bytes(),
             ),
         },
         completed_at=datetime(2026, 8, 20, 20, 30, tzinfo=UTC),
@@ -631,11 +719,11 @@ def build_complete_fixture(
 
     dataset_pointer = ArtifactPointer(
         run=producer_run_ref,
-        artifact={"stage_id": "download", "artifact_name": "dataset"},
+        artifact=StageArtifactRef(stage_id="download", artifact_name="dataset"),
     )
     split_pointer = ArtifactPointer(
         run=producer_run_ref,
-        artifact={"stage_id": "download", "artifact_name": "split"},
+        artifact=StageArtifactRef(stage_id="download", artifact_name="split"),
     )
     dataset_pointer_path = "inputs/datasets/toy/current.pointer.yaml"
     split_pointer_path = "inputs/benchmarks/toy/test_split.pointer.yaml"
@@ -657,73 +745,73 @@ def build_complete_fixture(
     build = BuildSpec(
         script="src/mantra/priors/toy/build.py",
         inputs={
-            "dataset": {
-                "kind": "stored",
-                "pointer": resolved_dataset_pointer.stored_at,
-                "path": "inputs/datasets/toy/current.bin",
-            }
+            "dataset": StoredInputRef(
+                kind="stored",
+                pointer=resolved_dataset_pointer.stored_at,
+                path="inputs/datasets/toy/current.bin",
+            )
         },
-        params={},
+        params=BuildParams(),
         artifacts={
-            "prior": {
-                "kind": "bundle",
-                "path": f"{run_root}/artifacts/priors/toy",
-                "loader": "prior_bundle",
-            }
+            "prior": BundleArtifactSpec(
+                kind="bundle",
+                path=f"{run_root}/artifacts/priors/toy",
+                loader="prior_bundle",
+            )
         },
     )
     train = TrainSpec(
         script="src/mantra/models/toy/train.py",
         inputs={
-            "prior": {
-                "kind": "future",
-                "producer_stage_id": "build",
-                "producer_artifact": "prior",
-            }
+            "prior": FutureInputRef(
+                kind="future",
+                producer_stage_id="build",
+                producer_artifact="prior",
+            )
         },
-        params={"epochs": 2, "batch_size": 2, "learning_rate": 0.01},
+        params=TrainParams(epochs=2, batch_size=2, learning_rate=0.01),
         artifacts={
-            MODEL_PARAMETERS: {
-                "kind": "file",
-                "path": f"{run_root}/artifacts/models/toy/model_parameters.bin",
-                "loader": "bytes_file",
-            },
-            CONTINUATION_STATE: {
-                "kind": "file",
-                "path": f"{run_root}/artifacts/models/toy/continuation_state.bin",
-                "loader": "bytes_file",
-            },
+            MODEL_PARAMETERS: SingleFileArtifactSpec(
+                kind="file",
+                path=f"{run_root}/artifacts/models/toy/model_parameters.bin",
+                loader="bytes_file",
+            ),
+            CONTINUATION_STATE: SingleFileArtifactSpec(
+                kind="file",
+                path=f"{run_root}/artifacts/models/toy/continuation_state.bin",
+                loader="continuation_state",
+            ),
         },
     )
     evaluate = EvaluateSpec(
         script="src/mantra/models/toy/evaluate.py",
         inputs={
-            "model_parameters": {
-                "kind": "future",
-                "producer_stage_id": "train",
-                "producer_artifact": MODEL_PARAMETERS,
-            },
-            "evaluation_dataset": {
-                "kind": "stored",
-                "pointer": resolved_dataset_pointer.stored_at,
-                "path": "inputs/datasets/toy/evaluation.bin",
-            },
-            "test_split": {
-                "kind": "stored",
-                "pointer": resolved_split_pointer.stored_at,
-                "path": "inputs/benchmarks/toy/test_split.json",
-            },
+            "model_parameters": FutureInputRef(
+                kind="future",
+                producer_stage_id="train",
+                producer_artifact=MODEL_PARAMETERS,
+            ),
+            "evaluation_dataset": StoredInputRef(
+                kind="stored",
+                pointer=resolved_dataset_pointer.stored_at,
+                path="inputs/datasets/toy/evaluation.bin",
+            ),
+            "test_split": StoredInputRef(
+                kind="stored",
+                pointer=resolved_split_pointer.stored_at,
+                path="inputs/benchmarks/toy/test_split.json",
+            ),
         },
-        params={
-            "metric_ids": ["pearson_correlation"],
-            "split_inputs": ["test_split"],
-        },
+        params=EvaluateParams(
+            metric_ids=("pearson_correlation",),
+            split_inputs=("test_split",),
+        ),
         artifacts={
-            "predictions": {
-                "kind": "file",
-                "path": f"{run_root}/artifacts/evaluations/toy_strict/predictions.bin",
-                "loader": "bytes_file",
-            }
+            "predictions": SingleFileArtifactSpec(
+                kind="file",
+                path=f"{run_root}/artifacts/evaluations/toy_strict/predictions.bin",
+                loader="bytes_file",
+            )
         },
     )
     stage_specs: list[tuple[str, BaseSpec]] = [
@@ -746,11 +834,11 @@ def build_complete_fixture(
             evaluation_dataset=resolved_dataset_pointer.stored_at,
             splits={"test_split": resolved_split_pointer.stored_at},
             metrics=(
-                {
-                    "metric_id": "pearson_correlation",
-                    "comparison": "ge",
-                    "threshold": 0.9,
-                },
+                MetricCriterion(
+                    metric_id="pearson_correlation",
+                    comparison="ge",
+                    threshold=0.9,
+                ),
             ),
         )
         run = run.model_copy(update={"benchmark_id": benchmark.benchmark_id})
@@ -758,7 +846,7 @@ def build_complete_fixture(
         experiment_id="model_eval",
         factors=(),
         variant_ids=("baseline",),
-        replicates=({"replicate_id": "replicate_01", "seed": 42},),
+        replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
         metric_ids=("pearson_correlation",),
     )
     variant = VariantSpec(
@@ -766,13 +854,17 @@ def build_complete_fixture(
         variant_id="baseline",
         levels={},
         stage_params=(
-            {"kind": "build", "stage_id": "build", "params": build.params},
-            {"kind": "train", "stage_id": "train", "params": train.params},
-            {
-                "kind": "evaluate",
-                "stage_id": "evaluate",
-                "params": evaluate.params,
-            },
+            BuildVariantStageParams(
+                kind="build", stage_id="build", params=build.params
+            ),
+            TrainVariantStageParams(
+                kind="train", stage_id="train", params=train.params
+            ),
+            EvaluateVariantStageParams(
+                kind="evaluate",
+                stage_id="evaluate",
+                params=evaluate.params,
+            ),
         ),
     )
     run_reference = add_plan_records(
@@ -787,6 +879,7 @@ def build_complete_fixture(
 
     add_loader(store, MAIN_SOURCE_COMMIT, "prior_bundle", bundle=True)
     add_loader(store, MAIN_SOURCE_COMMIT, "bytes_file")
+    add_loader(store, MAIN_SOURCE_COMMIT, "continuation_state")
     resolved_env = resolved_environment(store, MAIN_SOURCE_COMMIT)
     build_source = add_source_file(
         store, MAIN_SOURCE_COMMIT, str(build.script), b"# build\n"
@@ -816,7 +909,9 @@ def build_complete_fixture(
         execution_context=execution_context(),
         command=("python", str(build.script), str(run.stages[0].spec)),
         inputs={
-            "dataset": {"kind": "stored", "pointer": resolved_dataset_pointer},
+            "dataset": ResolvedStoredInputRef(
+                kind="stored", pointer=resolved_dataset_pointer
+            ),
         },
         artifacts={"prior": prior_artifact},
         completed_at=datetime(2026, 8, 20, 21, 10, tzinfo=UTC),
@@ -848,7 +943,7 @@ def build_complete_fixture(
                 store,
                 train_commit,
                 str(train.artifacts[CONTINUATION_STATE].path),
-                b"optimizer rng batch state",
+                continuation_bytes(),
             ),
         },
         completed_at=datetime(2026, 8, 20, 21, 30, tzinfo=UTC),
@@ -870,11 +965,13 @@ def build_complete_fixture(
         command=("python", str(evaluate.script), str(run.stages[2].spec)),
         inputs={
             "model_parameters": ResolvedFutureInputRef(producer=train_stage),
-            "evaluation_dataset": {
-                "kind": "stored",
-                "pointer": resolved_dataset_pointer,
-            },
-            "test_split": {"kind": "stored", "pointer": resolved_split_pointer},
+            "evaluation_dataset": ResolvedStoredInputRef(
+                kind="stored",
+                pointer=resolved_dataset_pointer,
+            ),
+            "test_split": ResolvedStoredInputRef(
+                kind="stored", pointer=resolved_split_pointer
+            ),
         },
         artifacts={
             "predictions": add_single_artifact(
@@ -996,9 +1093,7 @@ def build_benchmark_fixture() -> tuple[
     )
     resolved_train = resolved_train.model_copy(
         update={
-            "inputs": {
-                "prior": ResolvedFutureInputRef(producer=confirmation_build)
-            }
+            "inputs": {"prior": ResolvedFutureInputRef(producer=confirmation_build)}
         }
     )
     confirmation_train = publish_resolved_stage(
@@ -1024,9 +1119,7 @@ def build_benchmark_fixture() -> tuple[
         update={
             "inputs": {
                 **resolved_evaluate.inputs,
-                "model_parameters": ResolvedFutureInputRef(
-                    producer=confirmation_train
-                ),
+                "model_parameters": ResolvedFutureInputRef(producer=confirmation_train),
             }
         }
     )
@@ -1130,9 +1223,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
             }
         )
         store.put(reference.stored_at, measurement_raw)
-        invalid_attempt = attempt.model_copy(
-            update={"measurement_files": (reference,)}
-        )
+        invalid_attempt = attempt.model_copy(update={"measurement_files": (reference,)})
         invalid_run = resolved_run.model_copy(update={"attempts": (invalid_attempt,)})
 
         with self.assertRaisesRegex(VerificationError, "stage completion"):
@@ -1226,9 +1317,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         reused_confirmation = result.confirmation.model_copy(
             update={"resolved_stages": resolved_run.attempts[-1].resolved_stages}
         )
-        reused_result = result.model_copy(
-            update={"confirmation": reused_confirmation}
-        )
+        reused_result = result.model_copy(update={"confirmation": reused_confirmation})
 
         with self.assertRaisesRegex(VerificationError, "new stage-result snapshots"):
             verify_benchmark_result(reused_result, fetcher=store.fetch)
@@ -1236,9 +1325,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
     def test_strict_benchmark_rejects_reused_attempt_file_snapshot(self) -> None:
         result, resolved_run, store = build_benchmark_fixture()
         reused_confirmation = result.confirmation.model_copy(
-            update={
-                "measurement_files": resolved_run.attempts[-1].measurement_files
-            }
+            update={"measurement_files": resolved_run.attempts[-1].measurement_files}
         )
 
         with self.assertRaisesRegex(
@@ -1293,16 +1380,12 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
             )
         ).model_copy(
             update={
-                "inputs": {
-                    "prior": ResolvedFutureInputRef(producer=original_build)
-                }
+                "inputs": {"prior": ResolvedFutureInputRef(producer=original_build)}
             }
         )
         tampered_train = publish_resolved_stage(
             store,
-            run_root_path=str(result.run.stored_at.path).removesuffix(
-                "/resolved.yaml"
-            ),
+            run_root_path=str(result.run.stored_at.path).removesuffix("/resolved.yaml"),
             stage_id="train",
             snapshot_commit=confirmation_train.snapshot.commit,
             resolved_spec=resolved_train,
@@ -1322,17 +1405,13 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
             update={
                 "inputs": {
                     **resolved_evaluate.inputs,
-                    "model_parameters": ResolvedFutureInputRef(
-                        producer=tampered_train
-                    ),
+                    "model_parameters": ResolvedFutureInputRef(producer=tampered_train),
                 }
             }
         )
         updated_evaluate = publish_resolved_stage(
             store,
-            run_root_path=str(result.run.stored_at.path).removesuffix(
-                "/resolved.yaml"
-            ),
+            run_root_path=str(result.run.stored_at.path).removesuffix("/resolved.yaml"),
             stage_id="evaluate",
             snapshot_commit=confirmation_evaluate.snapshot.commit,
             resolved_spec=resolved_evaluate,
@@ -1373,6 +1452,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         )
         evaluation_dataset = resolved_evaluate.inputs["evaluation_dataset"]
         self.assertEqual(evaluation_dataset.kind, "stored")
+        assert isinstance(evaluation_dataset, ResolvedStoredInputRef)
         tampered_dataset = evaluation_dataset.model_copy(
             update={
                 "pointer": evaluation_dataset.pointer.model_copy(
@@ -1390,9 +1470,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         )
         tampered_evaluate = publish_resolved_stage(
             store,
-            run_root_path=str(result.run.stored_at.path).removesuffix(
-                "/resolved.yaml"
-            ),
+            run_root_path=str(result.run.stored_at.path).removesuffix("/resolved.yaml"),
             stage_id="evaluate",
             snapshot_commit=confirmation_evaluate.snapshot.commit,
             resolved_spec=tampered_evaluate_spec,
@@ -1430,9 +1508,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         ).model_copy(
             update={
                 "inputs": {
-                    "training_dataset": ResolvedFutureInputRef(
-                        producer=train_stage
-                    )
+                    "training_dataset": ResolvedFutureInputRef(producer=train_stage)
                 }
             }
         )
@@ -1448,16 +1524,14 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         tampered_attempt = resolved_run.attempts[0].model_copy(
             update={"resolved_stages": (download_stage, tampered_train)}
         )
-        tampered_run = resolved_run.model_copy(
-            update={"attempts": (tampered_attempt,)}
-        )
+        tampered_run = resolved_run.model_copy(update={"attempts": (tampered_attempt,)})
         tampered_raw = yaml_bytes(tampered_run)
         store.put(run_reference.stored_at, tampered_raw)
         pointer = ArtifactPointer(
             run=run_reference.model_copy(
                 update={"sha256": sha256(tampered_raw), "bytes": len(tampered_raw)}
             ),
-            artifact={"stage_id": "train", "artifact_name": MODEL_PARAMETERS},
+            artifact=StageArtifactRef(stage_id="train", artifact_name=MODEL_PARAMETERS),
         )
 
         with self.assertRaisesRegex(
@@ -1470,10 +1544,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         result, _, store = build_benchmark_fixture()
         pointer = ArtifactPointer(
             run=result.run,
-            artifact={
-                "stage_id": "train",
-                "artifact_name": MODEL_PARAMETERS,
-            },
+            artifact=StageArtifactRef(stage_id="train", artifact_name=MODEL_PARAMETERS),
         )
 
         with self.assertRaisesRegex(VerificationError, "requires a benchmark result"):
