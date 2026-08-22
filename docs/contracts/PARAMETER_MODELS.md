@@ -1,5 +1,10 @@
 # Project parameter models
 
+## Status
+
+Project parameter identity and validation are implemented. Typed delivery to
+the stage callable is governed by [Stage invocation](STAGE_INVOCATION.md).
+
 A VIPER stage stores its parameters as a versioned JSON mapping. The project
 defines the fields and validation rules for that mapping with a Pydantic
 subclass.
@@ -85,5 +90,6 @@ the plan and the values received by project code identical.
 This contract proves parameter identity and validity before the stage process
 starts. The current stage interface supplies the spec path to project code.
 Project code must still load that file itself. A typed stage-context API remains
-open implementation work; [HTTP Retrieval Contract](HTTP_RETRIEVAL_CONTRACT.md)
-defines the corresponding runner-owned boundary for download stages.
+open implementation work; [Stage invocation](STAGE_INVOCATION.md) defines that
+handoff. [HTTP retrieval](HTTP_RETRIEVAL.md) applies the same handoff to verified
+response bodies.

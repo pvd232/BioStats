@@ -73,7 +73,8 @@ train, and evaluate specs inherit that contract.
 | `validate_stage_parameters(repository_root, stage_spec_path, stage)` | Runs stage validation in a dedicated trusted-local worker |
 | `validate_loaded_stage_parameters(repository_root, stage_spec_path)` | Loads a parameterized stage and runs the same worker validation |
 
-See [Project parameter models](PARAMETER_MODELS.md) for the authoring contract.
+See [Project parameter models](contracts/PARAMETER_MODELS.md) for the authoring
+contract.
 
 ## Serialization compatibility
 

@@ -14,7 +14,7 @@ both named `viper`.
 |---|---|---|
 | [v3 protocol](docs/ProvenanceS1_v3.md) | Defines the active formal and protocol contract | Sections 1–23 |
 | [application API](docs/APPLICATION_API.md) | Defines the typed Python, CLI, and agent-facing operation contract | Operations, parameters, results, errors, and discovery |
-| [project parameter models](docs/PARAMETER_MODELS.md) | Defines project-owned stage parameter schemas | Class contract, frozen identity, and enforcement points |
+| [implementation contracts](docs/contracts/README.md) | Defines each release claim from declaration through acceptance | Parameter delivery, HTTP retrieval, metrics, artifacts, attempts, benchmarks, cloud execution, and packaging |
 | [publication checklist](docs/PUBLICATION_TODO.md) | Tracks implementation and release work | Protocol, runner, package, and distribution tasks |
 | [versioning policy](docs/VERSIONING.md) | Separates software releases from serialized document schemas | Semantic package versions and document `schema_version` values |
 | [protocol](viper/protocol.py) | Defines the Pydantic models for the VIPER protocol | `RunSpec`, `ResolvedRun`, `Spec`, `ResolvedSpec`, `BenchmarkSpec` |
@@ -35,7 +35,7 @@ both named `viper`.
 | [workspace](viper/workspace.py) | Creates bounded attempt directories and exclusive run ownership | `AttemptWorkspace` |
 | [journal](viper/journal.py) | Persists synchronized attempt transitions | `DurableJournal` |
 | [package exports](viper/__init__.py) | Exposes the supported authoring, execution, identifier, protocol, and resume modules | Public package imports |
-| [supporting documents](docs/) | Contains the active protocol, publication checklist, and supporting explanations | Markdown documents and figures |
+| [supporting documents](docs/) | Contains the active protocol, implementation contracts, publication checklist, and supporting explanations | Markdown documents and figures |
 | [archive](archive/) | Retains prior model drafts and protocol documents | Reference material |
 | [v1 protocol](archive/ProvenanceS1.md)<br>[v2 protocol](archive/ProvenanceS1_v2.md) | Retains earlier protocol specifications | Reference material |
 
@@ -177,8 +177,9 @@ rejection.
 ## Current boundaries
 
 - `LocalEnvironmentSpec` powers the trusted local runner.
-- `GCEEnvironmentSpec` defines the remote environment contract. OCI execution
-  on GCE remains a release task.
+- `GCEEnvironmentSpec` defines the remote environment contract. Single-host GCE
+  execution remains a 0.1 release task; OCI confinement follows as stable
+  hardening.
 - Every internal stage binds its versioned JSON parameters to an exact
   project-owned Pydantic class. VIPER validates the class and values during
   plan freezing, preflight, and execution.
@@ -186,15 +187,16 @@ rejection.
   selects its file or bundle format and declares the exact loader path.
 - Data-use roles are assigned by the project when source artifacts enter the
   provenance graph. VIPER verifies their propagation and permitted stage
-  flows; it does not infer a dataset's scientific role from its bytes.
+  flows. The project assigns the scientific role when the artifact enters the
+  graph.
 - Each experiment metric records its role, parameters, and exact
   repository-relative implementation path.
-- VIPER prescribes no user source-tree layout. Stage scripts, metric
+- VIPER accepts any user source-tree layout. Stage scripts, metric
   implementations, and artifact loaders are selected by exact
   repository-relative paths and fixed by `RunSpec.source`.
 - Artifact loaders execute Python from the Git commit named by `RunSpec.source`.
   Verification therefore accepts only run sources trusted to execute in the
   verifier process.
 - The trusted local runner completes successful attempts from preflight through
-  terminal publication and verification. Crash recovery, cancellation,
-  preemption, OCI isolation, and GCE provisioning remain release tasks.
+  terminal publication and verification. Failed-attempt publication, retry,
+  and single-host GCE execution remain 0.1 release tasks.

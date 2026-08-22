@@ -13,22 +13,23 @@ task-scoped Git commit and a successful push.
 ## Contents
 
 1. [Release outcome](#release-outcome)
-2. [Completed foundation](#completed-foundation)
-3. [Phase 0: contract freeze](#phase-0-freeze-the-blocking-contracts)
-4. [Phase 1: public package surface](#phase-1-repair-ci-and-define-the-public-package-surface)
-5. [Phase 2: application errors and JSON](#phase-2-freeze-application-errors-and-json-encoding)
-6. [Phase 3: application API and CLI](#phase-3-implement-the-application-api-and-cli)
-7. [Phase 4: workspace, storage, and publication](#phase-4-implement-workspace-storage-and-publication-primitives)
-8. [Phase 5: project extensions](#phase-5-implement-project-extension-interfaces)
-9. [Phase 6: OCI isolation](#phase-6-implement-the-oci-isolation-worker)
-10. [Phase 7: preflight and input materialization](#phase-7-implement-preflight-and-verified-input-materialization)
-11. [Phase 8: runtime bootstrap](#phase-8-implement-the-runtime-bootstrap-and-controls)
-12. [Phase 9: durable orchestration](#phase-9-implement-durable-run-orchestration)
-13. [Phase 10: benchmark execution](#phase-10-implement-benchmark-execution-and-recomputation)
-14. [Phase 11: agent operations](#phase-11-add-agent-inspection-and-controlled-mutation)
-15. [Phase 12: internal modules](#phase-12-split-internals-at-established-dependency-boundaries)
-16. [Phase 13: documentation and release](#phase-13-complete-documentation-and-release-validation)
-17. [Current execution charter](#current-execution-charter)
+2. [Release priorities](#release-priorities)
+3. [Completed foundation](#completed-foundation)
+4. [Phase 0: contract freeze](#phase-0-freeze-the-blocking-contracts)
+5. [Phase 1: public package surface](#phase-1-repair-ci-and-define-the-public-package-surface)
+6. [Phase 2: application errors and JSON](#phase-2-freeze-application-errors-and-json-encoding)
+7. [Phase 3: application API and CLI](#phase-3-implement-the-application-api-and-cli)
+8. [Phase 4: workspace, storage, and publication](#phase-4-implement-workspace-storage-and-publication-primitives)
+9. [Phase 5: project extensions](#phase-5-implement-project-extension-interfaces)
+10. [Phase 6: OCI isolation](#phase-6-implement-the-oci-isolation-worker)
+11. [Phase 7: preflight and input materialization](#phase-7-implement-preflight-and-verified-input-materialization)
+12. [Phase 8: runtime bootstrap](#phase-8-implement-the-runtime-bootstrap-and-controls)
+13. [Phase 9: durable orchestration](#phase-9-implement-durable-run-orchestration)
+14. [Phase 10: benchmark execution](#phase-10-implement-benchmark-execution-and-recomputation)
+15. [Phase 11: agent operations](#phase-11-add-agent-inspection-and-controlled-mutation)
+16. [Phase 12: internal modules](#phase-12-split-internals-at-established-dependency-boundaries)
+17. [Phase 13: documentation and release](#phase-13-complete-documentation-and-release-validation)
+18. [Current execution charter](#current-execution-charter)
 
 ## Release outcome
 
@@ -37,22 +38,45 @@ pre-provisioned GCE host, publish its immutable results, verify its complete
 lineage, execute a benchmark confirmation, and inspect the result through the
 Python API or JSON CLI.
 
-The release path is:
+The shortest release path is:
 
 ```text
 contract freeze
--> public package surface
--> application API and CLI
--> storage and workspace primitives
--> project extension interfaces
--> OCI isolation worker
--> preflight and input materialization
--> runtime bootstrap
--> durable run orchestration
+-> typed stage invocation
+-> controlled HTTP retrieval
+-> metric and artifact closure
+-> failed attempts and retry
 -> benchmark execution
--> agent inspection
+-> single-host GCE execution
+-> project scaffold
 -> release validation
 ```
+
+## Release priorities
+
+The [implementation-contract index](contracts/README.md) owns the approved
+mechanics for every 0.1 release gate.
+
+| Priority | Work | Reason |
+|---|---|---|
+| 0.1 required | Typed stage invocation | Connects validated project parameters to the callable that receives them. |
+| 0.1 required | Controlled HTTP retrieval | Connects each declared request to the response bytes consumed by a download stage. |
+| 0.1 required | Metric and artifact closure | Fixes metric dependencies and states the exact artifact guarantee established by each check. |
+| 0.1 required | Failed attempts and retry | Preserves failures and lets a user rerun the same frozen plan safely. |
+| 0.1 required | Benchmark execution | Produces the independent confirmation already represented by the verifier. |
+| 0.1 required | Single-host GCE execution | Runs real workloads on a pre-provisioned cloud VM and verifies the realized host. |
+| 0.1 required | Distribution acceptance | Proves the installed wheel and CLI complete the documented user path. |
+| 0.1 convenience | `viper init` | Creates a runnable starter project while preserving repository-relative source paths. |
+| Stable hardening | OCI mounts and network confinement | Supports a strong information-flow claim against untrusted project code. |
+| Stable reliability | Crash adoption, publication recovery, cancellation, and preemption | Preserves remote attempts across coordinator and host failures. |
+| Later scale | Distributed execution and durable object-store publication | Supports multi-host training and long-lived remote results. |
+| Later autonomy | Epoch-completion oversight and agent mutation dry-runs | Adds supervised execution claims for highly autonomous runs. |
+| Later maintenance | Internal protocol and verifier splits | Reduces maintenance cost after public boundaries stabilize. |
+| Later interface | Additional built-ins and graphical interfaces | Lowers setup effort after the execution contract is complete. |
+
+The minimal GCE contract uses one trusted, pre-provisioned VM. It extends the
+working local coordinator to remote compute. The OCI worker supplies a separate
+confinement guarantee and is scheduled after 0.1.
 
 ## Completed foundation
 
@@ -103,16 +127,17 @@ freeze
 -> verify the terminal run
 ```
 
-The validated boundary includes 119 tests and 13 subtests, Ruff, Pyright,
+The validated boundary includes 129 tests and 13 subtests, Ruff, Pyright,
 source and wheel builds, metadata checks, and an installed-wheel capability
-smoke test. The release path still requires recovery semantics, hardened OCI
-execution, live GCE validation, benchmark execution, complete extension
-binding, and publication credentials.
+smoke test. The release path still requires failed-attempt recovery, live GCE
+validation, benchmark execution, complete extension binding, and publication
+credentials.
 
 ## Phase 0. Freeze the blocking contracts
 
-Every later phase consumes these contracts. Finish Phase 0 before adding
-application or runner modules.
+Every unfinished release increment consumes one contract from
+[`docs/contracts/`](contracts/README.md). Existing application and runner code
+must migrate through those contracts as each increment lands.
 
 ### 0.1 Artifact guarantees
 
@@ -162,30 +187,30 @@ verified file set + core artifact validator
 - [ ] Define the immutable recomputation evidence stored with a benchmark
   result.
 
-### 0.3 Execution and isolation
+### 0.3 Execution backends
 
-The release backend is an OCI container worker running on a pre-provisioned GCE
-host. A `trusted_local` backend supports development and reports host-level
-filesystem and network scope in its execution capabilities.
+The 0.1 cloud backend runs on one trusted, pre-provisioned GCE host. The OCI
+worker becomes the stable-release confinement backend.
 
-The [HTTP retrieval contract](HTTP_RETRIEVAL_CONTRACT.md) defines the frozen
+The [HTTP retrieval contract](contracts/HTTP_RETRIEVAL.md) defines the frozen
 request, resolved exchange, controlled-client, and verifier changes for
 download stages.
 
-- [ ] Create `docs/EXECUTION_SECURITY.md` with the threat model, supported GCE
-  host assumptions, privilege model, process tree, mounts, credentials, network
-  policy, timeout behavior, signal behavior, and capability matrix.
-- [ ] Replace loader-only trust with one `ExecutionPolicy` covering stage
-  entrypoints, loaders, metrics, and parameter validators.
-- [ ] Give internal-stage containers read-only source and input mounts, declared
-  writable output mounts, and disabled network access.
-- [ ] Route download-stage traffic through a runner-owned proxy that permits the
-  scheme, host, and port declared by `RemoteFileRef`.
-- [ ] Define GPU passthrough and runtime evidence for the supported GCE profile.
-- [ ] Define preflight behavior for every unavailable required capability.
-- [ ] Name one adversarial test for path escape, symlink escape, undeclared
-  writes, undeclared reads, network egress, credential access, timeout, and
-  signal propagation.
+The [cloud execution contract](contracts/CLOUD_EXECUTION.md) defines the 0.1
+GCE transport, remote runtime evidence, and live acceptance profile.
+
+- [ ] Extract the working local orchestration into a backend-neutral
+  coordinator.
+- [ ] Add the `run_gce` application and CLI operation.
+- [ ] Build and verify the bounded GCE execution bundle.
+- [ ] Transfer the bundle and invoke the remote runner through the documented
+  Google Cloud transport.
+- [ ] Record and verify realized GCE host state.
+- [ ] Pull and verify remote result revisions when requested.
+- [ ] Run one live GCE acceptance profile from the installed wheel.
+
+Phase 6 owns OCI mounts, network confinement, secrets, resource limits, and
+adversarial tests.
 
 ### 0.4 Durable attempt lifecycle
 
@@ -205,37 +230,31 @@ allocated
 -> terminal
 ```
 
-- [ ] Create `docs/ATTEMPT_LIFECYCLE.md` with the allowed transition table.
-- [ ] Define the durable journal entry written before and after every external
-  side effect.
-- [ ] Derive idempotency keys from run ID, attempt ID, operation, target, and
-  content digest.
-- [ ] Make the local journal authoritative for an active attempt.
-- [ ] Make each verified immutable snapshot authoritative for its published
-  content.
-- [ ] Make the published `ResolvedRun` authoritative for terminal run history.
-- [ ] Allocate attempt IDs under the exclusive run lock.
-- [ ] Define recovery after process death at every transition.
-- [ ] Permit recovery to adopt a remote snapshot after verifying its
-  idempotency key and complete file set.
-- [ ] Preserve a local terminal document after terminal publication failure.
-- [ ] Add `resume-publication` as the recovery operation for that document.
-- [ ] Record `preempted` and let explicit retry policy allocate the next
-  attempt.
-- [ ] Define cancellation request, worker acknowledgement, grace period, and
-  terminal outcome.
+- [ ] Implement the transition and retry rules in
+  [Attempt execution](contracts/ATTEMPT_EXECUTION.md).
+- [ ] Replace the stale-file lock with an operating-system-managed advisory
+  lock.
+- [ ] Allocate the next attempt ID from terminal history and attempt journals.
+- [ ] Publish failed attempts with available stage snapshots and logs.
+- [ ] Reconcile one abandoned nonterminal journal after lock acquisition.
+- [ ] Add explicit retry through the Python API and JSON CLI.
+- [ ] Preserve every previous attempt in the next terminal run.
+
+Phase 9 owns complete crash adoption, publication recovery, cancellation, and
+preemption.
 
 ### 0.5 Runtime information flow
 
 - [ ] Define the permitted data roles for every stage kind in one versioned
   policy.
 - [ ] Give each worker access to the declared inputs permitted for that stage.
-- [ ] Keep evaluation and benchmark inputs outside training-stage mounts and
-  contexts.
+- [ ] Keep evaluation and benchmark inputs outside training-stage contexts.
 - [ ] Bind every metric dependency to an exact input or artifact and data role.
 - [ ] Return a stable preflight failure for every prohibited dependency.
-- [ ] Add one plan-level test and one worker-context test for each prohibited
+- [ ] Add one plan-level test and one context test for each prohibited
   information flow.
+
+Phase 6 adds filesystem and network enforcement against project code.
 
 ### 0.6 Contract-freeze gate
 
@@ -554,6 +573,9 @@ python -m pytest tests/test_parameter_models.py tests/test_authoring.py tests/te
 
 ## Phase 6. Implement the OCI isolation worker
 
+This phase targets the stable confinement release. VIPER 0.1 ships the trusted,
+single-host GCE backend defined by the cloud execution contract.
+
 - [ ] Detect the OCI runtime and required GCE host capabilities.
 - [ ] Build the worker image from the frozen environment lock.
 - [ ] Mount source and inputs read-only.
@@ -567,7 +589,7 @@ python -m pytest tests/test_parameter_models.py tests/test_authoring.py tests/te
   status, signal, and timestamps.
 - [ ] Implement graceful cancellation followed by enforced termination after
   the declared grace period.
-- [ ] Run the adversarial matrix from `docs/EXECUTION_SECURITY.md`.
+- [ ] Run the adversarial matrix from `contracts/EXECUTION_CONFINEMENT.md`.
 
 **Executable gate**
 
@@ -785,6 +807,10 @@ python -m pytest tests/test_inspection.py tests/test_coordination.py -q
 
 ## Phase 12. Split internals at established dependency boundaries
 
+This phase changes internal ownership and lowers maintenance cost. Runtime
+behavior stays unchanged. Begin it after the 0.1 public surface and verifier
+rules stabilize.
+
 - [ ] Use the Phase 1 public import inventory as the compatibility contract.
 - [ ] Keep pure Pydantic protocol validation separate from retrieval, worker
   execution, and remote verification.
@@ -823,7 +849,8 @@ cross-document pass.
   models.
 - [ ] Include agent guides for schema discovery, preflight, inspection, dry-run,
   and mutation.
-- [ ] Classify `viper init` as release-blocking or post-0.1.
+- [ ] Implement and document the `viper init` starter project defined by the
+  [package release contract](contracts/PACKAGE_RELEASE.md).
 - [ ] Run link, example, prose, and rendered-document checks.
 
 ### 13.2 Deterministic release checks
@@ -839,7 +866,7 @@ cross-document pass.
 
 ### 13.3 Platform and publication checks
 
-- [ ] Run a complete live GCE execution through the OCI worker.
+- [ ] Run a complete live GCE execution through the trusted single-host backend.
 - [ ] Verify the published run from a clean client environment.
 - [ ] Add owner-approved license and author metadata.
 - [ ] Publish to TestPyPI with owner-provided credentials.

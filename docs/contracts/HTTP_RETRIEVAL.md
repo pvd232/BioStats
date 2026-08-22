@@ -1,4 +1,4 @@
-# HTTP Retrieval Contract
+# HTTP retrieval
 
 ## Status
 
@@ -33,14 +33,14 @@ establish the scientific correctness of extraction and parsing code.
 
 ## Current gap
 
-[`RemoteFileRef`](../viper/protocol.py) stores a URL and a project-supplied
-version. [`DownloadSpec`](../viper/protocol.py) passes that declaration to a
-project script. [`stage_worker.py`](../viper/stage_worker.py) launches the
+[`RemoteFileRef`](../../viper/protocol.py) stores a URL and a project-supplied
+version. [`DownloadSpec`](../../viper/protocol.py) passes that declaration to a
+project script. [`stage_worker.py`](../../viper/stage_worker.py) launches the
 script with the stage-spec path. The script may ignore the declared URL.
 
-[`ResolvedDownloadSpec`](../viper/protocol.py) currently stores the authored
+[`ResolvedDownloadSpec`](../../viper/protocol.py) currently stores the authored
 input and one timestamp. Those are the protocol's complete download-retrieval
-evidence. [`runner.py`](../viper/runner.py) assigns the stage start time to
+evidence. [`runner.py`](../../viper/runner.py) assigns the stage start time to
 `retrieved_at`, leaving the actual HTTP exchange unobserved.
 
 The current verifier establishes artifact identity after a download stage runs.
