@@ -16,3 +16,9 @@ selects the parser and validation contract for that serialized record.
 
 Releases begin at `0.1.0` while the public API is alpha. During the `0.x`
 series, each release note must call out any incompatible change explicitly.
+
+## Scheduled compatibility changes
+
+`serialize_record()` remains available in `0.1.x` and emits a
+`DeprecationWarning`. VIPER removes this alias in `0.2.0`.
+`serialize_document()` is the supported encoder.

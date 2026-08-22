@@ -28,7 +28,7 @@ both named `viper`.
 | [serialization](viper/serialization.py) | Encodes protocol documents and parses duplicate-key-safe YAML | `serialize_document()`, `parse_yaml_bytes()`, `load_stage_spec()`, `load_resolved_stage()` |
 | [examples](examples/) | Supplies a user-project extension tree and loadable protocol records | Project code plus download and build records |
 | [identifiers](viper/ids.py) | Defines run and human-readable identifier types | `RunId`, `HumanId` |
-| [inspection](viper/inspection.py) | Compares complete frozen plans through stable machine-readable paths | `plan_diff()` |
+| [inspection](viper/inspection.py) | Reads durable attempt state and compares frozen plans, verified runs, and lineage through stable machine-readable paths | `attempt_status()`, `plan_diff()`, `compare_runs()`, `lineage()` |
 | [metrics](viper/metrics.py) | Defines project metric decorators, stateful metrics, comparison, and measurement output | `metric()`, `StatefulMetric`, `MeasurementSink` |
 | [worker](viper/worker.py) | Executes one project command through an execution backend | `WorkerRequest`, `execute_worker()` |
 | [workspace](viper/workspace.py) | Creates bounded attempt directories and exclusive run ownership | `AttemptWorkspace` |

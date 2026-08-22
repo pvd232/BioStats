@@ -29,4 +29,10 @@ jobs:
       - name: Smoke-test the built wheel
         run: |
           python -m pip install --force-reinstall --no-deps dist/*.whl
-          python -c "from viper.protocol import RunSpec; print(RunSpec.__name__)"
+          python -I -c "import viper; assert all(getattr(viper, name) for name in viper.__all__)"
+          python -I -c "import importlib; modules = ('application', 'authoring', 'ids', 'inspection', 'journal', 'local_store', 'materialization', 'metrics', 'preflight', 'protocol', 'resume', 'runner', 'runtime', 'serialization', 'stage_execution', 'stage_worker', 'verifier', 'worker', 'workspace'); assert all(importlib.import_module(f'viper.{name}') for name in modules)"
+          python -I -c "from viper import application; assert all(getattr(application, name) for name in application.__all__)"
+          python -I -c "from viper.application import CapabilitiesRequest, get_capabilities; assert 'run_local' in get_capabilities(CapabilitiesRequest()).operations"
+          viper --json capabilities
+          viper status --help
+          viper compare-runs --help

@@ -263,8 +263,8 @@ python -m pytest tests/test_protocol.py tests/test_verifier.py tests/test_execut
 - [ ] Add explicit `__all__` declarations to each supported public module.
 - [ ] Keep root `viper` exports limited to supported modules and convenience
   names.
-- [ ] Add installed-wheel import tests for every listed public name.
-- [ ] Add application and runner exports in the commits that create those
+- [x] Add installed-wheel import tests for every listed public name.
+- [x] Add application and runner exports in the commits that create those
   modules.
 
 ### 1.2 Serialization terminology
@@ -272,19 +272,19 @@ python -m pytest tests/test_protocol.py tests/test_verifier.py tests/test_execut
 `serialize_record()` appears in the current README and therefore receives a
 compatibility path.
 
-- [ ] Add `serialize_document()` as the canonical public name.
-- [ ] Retain `serialize_record()` as a deprecated alias through the 0.1 release.
-- [ ] Emit one documented deprecation warning from the alias.
-- [ ] Test identical bytes from both names.
-- [ ] Schedule alias removal through the version policy.
+- [x] Add `serialize_document()` as the canonical public name.
+- [x] Retain `serialize_record()` as a deprecated alias through the 0.1 release.
+- [x] Emit one documented deprecation warning from the alias.
+- [x] Test identical bytes from both names.
+- [x] Schedule alias removal through the version policy.
 
 ### 1.3 Continuous integration
 
-- [ ] Replace the stale `viper.records` wheel import in
+- [x] Replace the stale `viper.records` wheel import in
   [CI](../.github/workflows/ci.yml) with a supported public import.
 - [ ] Run the CI matrix for every Python version advertised by
   [package metadata](../pyproject.toml).
-- [ ] Keep Ruff, Pyright, pytest, build, metadata, and installed-wheel checks in
+- [x] Keep Ruff, Pyright, pytest, build, metadata, and installed-wheel checks in
   every matrix entry where the dependency set supports them.
 - [ ] Require successful remote CI for the exact release commit.
 
@@ -749,13 +749,14 @@ python -m pytest tests/test_benchmark_execution.py tests/test_benchmark_verifica
 
 ### 11.1 Immutable inspection
 
-- [ ] Implement `plan_diff()` from two frozen plans.
-- [ ] Implement upstream `lineage()` from supplied immutable records.
-- [ ] Implement `compare_runs()` from two verified terminal runs.
-- [ ] Return validated JSON models with stable field names and ordering.
+- [x] Implement `plan_diff()` from two frozen plans.
+- [x] Implement upstream `lineage()` from supplied immutable records.
+- [x] Implement `compare_runs()` from two verified terminal runs.
+- [x] Return validated JSON models with stable field names and ordering.
 
 ### 11.2 Active coordination
 
+- [x] Expose read-only `status()` for one local durable attempt journal.
 - [ ] Implement `status()` from a coordinator identity, workspace identity, and
   access policy.
 - [ ] Derive the next permitted operation from the durable attempt state.

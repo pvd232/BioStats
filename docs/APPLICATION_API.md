@@ -17,6 +17,8 @@ calls the same function, and renders its result.
 | `run_local(request)` | `viper run-local` | Verified terminal run and attempt journal paths |
 | `plan_diff(request)` | `viper plan-diff` | Ordered leaf differences between two complete frozen plans |
 | `lineage(request)` | `viper lineage` | Verified stages, inputs, artifacts, and their directed relationships |
+| `status(request)` | `viper status` | Latest durable attempt state and permitted successor states |
+| `compare_runs(request)` | `viper compare-runs` | Ordered differences between two verified terminal runs |
 | `verify_run(request)` | `viper verify-run` | Verified run, attempt, stage, and measurement summary |
 | `verify_benchmark(request)` | `viper verify-benchmark` | Verified benchmark and confirmation summary |
 | `verify_pointer(request)` | `viper verify-pointer` | Verified artifact file count |
@@ -147,6 +149,19 @@ applicable values from each plan.
 
 Expected errors: `invalid_document`.
 
+## Read attempt status
+
+```python
+status(request: StatusRequest) -> StatusSuccess
+```
+
+`StatusRequest.path` selects one durable attempt journal. The result returns
+the entry count, latest state, event, timestamp, event details, terminal flag,
+and the states accepted by the next journal append. VIPER validates transition
+order when each entry is written.
+
+Expected errors: `invalid_document`, `not_found`, `io_failed`.
+
 ## Inspect run lineage
 
 ```python
@@ -167,6 +182,32 @@ Each directed edge has one relation:
 - `produces`: stage to artifact;
 - `selects`: artifact or promoted selection to stage input;
 - `consumes`: stage input to consuming stage.
+
+Expected errors: `invalid_document`, `verification_failed`.
+
+## Compare verified runs
+
+```python
+compare_runs(
+    request: CompareRunsRequest,
+    *,
+    left_fetcher: StorageFetcher | None = None,
+    right_fetcher: StorageFetcher | None = None,
+) -> CompareRunsSuccess
+```
+
+The request supplies two terminal run paths and the source repositories
+permitted to execute their frozen metric and loader code. VIPER verifies each
+run before comparison. The comparison covers:
+
+- terminal run and attempt fields;
+- run, experiment, variant, and benchmark specifications;
+- ordered stage specifications;
+- resolved stage results and artifact identities; and
+- recorded measurements.
+
+Each `RunChange` contains a stable dotted `path`, a `kind` of `added`,
+`removed`, or `changed`, and the applicable value from each run.
 
 Expected errors: `invalid_document`, `verification_failed`.
 
@@ -244,6 +285,9 @@ viper --json preflight experiments/example/runs/baseline/<run_id>/spec.yaml
 viper --json run-local experiments/example/runs/baseline/<run_id>/spec.yaml
 viper --json plan-diff <left-spec.yaml> <right-spec.yaml>
 viper --json lineage <resolved.yaml> --trust-loader-source <repository>
+viper --json status <journal.jsonl>
+viper --json compare-runs <left-resolved.yaml> <right-resolved.yaml> \
+  --trust-loader-source <repository>
 ```
 
 JSON mode writes one UTF-8 document with one trailing newline. Completed

@@ -168,6 +168,21 @@ state unchanged.
 4. `compare_runs()` compares two verified terminal runs after plan, input,
    artifact, and measurement verification.
 
-Implementation begins with `plan_diff()` and `lineage()`. They have a read-only
-authority surface and let an agent explain why two plans differ and where each
-run input originated.
+All four operations are implemented. `status()` reads one local durable
+attempt journal. The coordinator identity, access policy, and mutation dry-run
+contracts remain in the release roadmap.
+
+## Checklist audit
+
+| Gate | Executable evidence | Result |
+| --- | --- | --- |
+| Schema and capability discovery | `tests/test_application.py::test_application_schema_and_capability_discovery` | Passed |
+| JSON command success and failure | `tests/test_cli.py::CommandLineTests::test_cli_json_success_contract` and `test_cli_json_failure_contract` | Passed |
+| Metric freeze, execution, and recomputation | `tests/test_metric_interface.py`, the metric assertions in `tests/test_runner_acceptance.py`, and recomputation cases in `tests/test_verifier_acceptance.py` | Passed |
+| Complete preflight reporting | `tests/test_preflight.py::test_preflight_reports_all_plan_failures` | Passed |
+| Two-stage publication and verification | `tests/test_runner_acceptance.py::test_two_stage_local_run_writes_and_verifies_terminal_result` | Passed |
+| Tampered artifact rejection | The tamper assertion in `test_two_stage_local_run_writes_and_verifies_terminal_result` | Passed |
+| Installed distribution | Isolated module imports, application exports, capability discovery, and command help in `.github/workflows/ci.yml` | Passed locally; remote matrix pending |
+
+The audit added focused serialization compatibility coverage, enforced journal
+transitions, and isolated installed-wheel imports from the repository checkout.
