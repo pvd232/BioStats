@@ -2068,7 +2068,7 @@ InternalInputRef = Annotated[
 A download stage consumes one versioned external source. Build, embed, and
 train stages consume stored or same-run artifacts.
 
-### Planned stage specifications
+### Stage specifications
 
 ```python
 class DownloadSpec(BaseSpec):
@@ -2076,14 +2076,22 @@ class DownloadSpec(BaseSpec):
     inputs: dict[InputName, RemoteFileRef] = Field(min_length=1, max_length=1)
 
 
-class InternalSpec(BaseSpec):
-    inputs: dict[InputName, InternalInputRef] = Field(min_length=1)
-
-
 class ParameterSet(BaseModel):
     model_config = ConfigDict(extra="allow", frozen=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     schema_version: Literal[1] = 1
+
+
+class ParameterModelRef(ProtocolModel):
+    path: PythonRepoRelPath
+    symbol: PythonSymbol
+    sha256: SHA256
+    bytes: int = Field(gt=0)
+
+
+class InternalSpec(BaseSpec):
+    inputs: dict[InputName, InternalInputRef] = Field(min_length=1)
+    parameter_model: ParameterModelRef
 
 
 class BuildParams(ParameterSet):
@@ -2131,11 +2139,22 @@ Spec = Annotated[
 ]
 ```
 
-Each parameter class preserves a versioned JSON mapping. A project may
-validate its own mapping with a local Pydantic model before constructing the
-core record. The exact serialized values are fixed by the selected
-`VariantSpec` and checked against the loaded stage spec as defined in Section
-16.
+Each core parameter class preserves a versioned JSON mapping. Every internal
+stage selects a project-owned Pydantic subclass through `parameter_model`.
+The subclass may declare fields, types, defaults, constraints, and
+cross-field validators for that stage implementation.
+
+`ParameterModelRef` binds the class to one repository-relative file, top-level
+class symbol, SHA-256 digest, and byte count. `RunSpec.source` supplies the
+repository and commit. Together, these values identify the exact validator.
+
+VIPER verifies the local file against the selected source commit and invokes
+the class in a dedicated worker during plan freezing, preflight, and stage
+execution. Run verification retrieves the same source bytes and checks their
+identity and declared class symbol. The selected `VariantSpec` and stage spec
+must contain the same serialized parameter mapping. Validation uses strict
+types, and the class output must equal that frozen mapping. Every effective
+default therefore appears explicitly in `params`.
 
 Within one stage spec:
 

@@ -56,6 +56,24 @@ from viper.application import ValidateStageRequest, validate_stage
 from viper.protocol import RunSpec
 ```
 
+## Project parameter models
+
+`viper.protocol.ParameterModelRef` identifies one project-owned Pydantic class
+by repository-relative path, top-level symbol, SHA-256 digest, and byte count.
+Every `InternalSpec` requires this reference.
+
+`viper.parameter_models` exposes:
+
+| Function | Result |
+| --- | --- |
+| `verify_parameter_model_bytes(reference, raw)` | Confirms the frozen byte identity |
+| `load_parameter_model(path, symbol, expected_base)` | Loads the selected class and checks its stage-specific base |
+| `validate_parameters(path, reference, params, expected_base)` | Returns the class-validated JSON mapping |
+| `validate_stage_parameters(repository_root, stage_spec_path, stage)` | Runs stage validation in a dedicated trusted-local worker |
+| `validate_loaded_stage_parameters(repository_root, stage_spec_path)` | Loads an internal stage and runs the same worker validation |
+
+See [Project parameter models](PARAMETER_MODELS.md) for the authoring contract.
+
 ## Serialization compatibility
 
 `viper.serialization.serialize_document()` is the canonical encoder.

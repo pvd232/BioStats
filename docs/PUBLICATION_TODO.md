@@ -525,18 +525,20 @@ ordinary project code.
 
 ### 5.4 Parameter validation
 
-- [ ] Keep the universal stage parameter classes fieldless and extensible.
-- [ ] Let projects bind a concrete Pydantic parameter model to a stage kind.
-- [ ] Resolve parameter classes from the frozen source snapshot.
-- [ ] Execute project validators through the worker interface.
-- [ ] Record validator implementation identity in the frozen plan.
-- [ ] Validate stage parameters during authoring and preflight.
-- [ ] Add trust, import, validation, and tampering tests.
+- [x] Keep the universal stage parameter classes fieldless and extensible.
+- [x] Require each internal stage to bind a concrete project Pydantic class.
+- [x] Resolve parameter classes from the frozen source snapshot.
+- [x] Execute project validators through the trusted-local worker interface.
+- [x] Record path, symbol, SHA-256, and byte count in the frozen stage spec.
+- [x] Validate stage parameters during authoring, preflight, and execution.
+- [x] Require strict types and exact equality between validated and frozen values.
+- [x] Verify parameter-model identity during terminal run verification.
+- [x] Add import, base-class, value-validation, worker, and tampering tests.
 
 **Executable gate**
 
 ```text
-python -m pytest tests/test_entrypoints.py tests/test_artifact_loaders.py tests/test_metrics.py tests/test_parameter_models.py -q
+python -m pytest tests/test_parameter_models.py tests/test_authoring.py tests/test_preflight.py tests/test_verifier.py tests/test_runner_acceptance.py -q
 ```
 
 **Commit boundaries**

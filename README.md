@@ -12,10 +12,11 @@ both named `viper`.
 
 | File or directory | Role | Principal interface |
 |---|---|---|
-| [v3 protocol](docs/ProvenanceS1_v3.md) | Defines the active formal and record contract | Sections 1–23 |
+| [v3 protocol](docs/ProvenanceS1_v3.md) | Defines the active formal and protocol contract | Sections 1–23 |
 | [application API](docs/APPLICATION_API.md) | Defines the typed Python, CLI, and agent-facing operation contract | Operations, parameters, results, errors, and discovery |
+| [project parameter models](docs/PARAMETER_MODELS.md) | Defines project-owned stage parameter schemas | Class contract, frozen identity, and enforcement points |
 | [publication checklist](docs/PUBLICATION_TODO.md) | Tracks implementation and release work | Protocol, runner, package, and distribution tasks |
-| [versioning policy](docs/VERSIONING.md) | Separates software releases from serialized record schemas | Semantic package versions and record `schema_version` values |
+| [versioning policy](docs/VERSIONING.md) | Separates software releases from serialized document schemas | Semantic package versions and document `schema_version` values |
 | [protocol](viper/protocol.py) | Defines the Pydantic models for the VIPER protocol | `RunSpec`, `ResolvedRun`, `Spec`, `ResolvedSpec`, `BenchmarkSpec` |
 | [verifier](viper/verifier.py) | Retrieves referenced files and checks cross-record relationships | `verify_run_result()`, `verify_benchmark_result()` |
 | [training resume](viper/resume.py) | Captures, serializes, restores, and validates optimizer, generator, and stateful-loader state | `capture_resume_state()`, `restore_resume_state()` |
@@ -33,7 +34,7 @@ both named `viper`.
 | [worker](viper/worker.py) | Executes one project command through an execution backend | `WorkerRequest`, `execute_worker()` |
 | [workspace](viper/workspace.py) | Creates bounded attempt directories and exclusive run ownership | `AttemptWorkspace` |
 | [journal](viper/journal.py) | Persists synchronized attempt transitions | `DurableJournal` |
-| [package exports](viper/__init__.py) | Exposes the supported authoring, stage-execution, identifier, record, and resume modules | Public package imports |
+| [package exports](viper/__init__.py) | Exposes the supported authoring, execution, identifier, protocol, and resume modules | Public package imports |
 | [supporting documents](docs/) | Contains the active protocol, publication checklist, and supporting explanations | Markdown documents and figures |
 | [archive](archive/) | Retains prior model drafts and protocol documents | Reference material |
 | [v1 protocol](archive/ProvenanceS1.md)<br>[v2 protocol](archive/ProvenanceS1_v2.md) | Retains earlier protocol specifications | Reference material |
@@ -41,7 +42,7 @@ both named `viper`.
 The focused model, verifier, and acceptance checks live in the
 [repository test directory](tests/).
 
-## Record and verification flow
+## Protocol and verification flow
 
 The [protocol models](viper/protocol.py) divide requested state from realized state. A
 `RunSpec` and its ordered stage specs form the frozen run plan. Each completed
@@ -178,8 +179,9 @@ rejection.
 - `LocalEnvironmentSpec` powers the trusted local runner.
 - `GCEEnvironmentSpec` defines the remote environment contract. OCI execution
   on GCE remains a release task.
-- Stage parameter bases preserve versioned JSON values. Projects may apply a
-  local typed model before constructing the core parameter record.
+- Every internal stage binds its versioned JSON parameters to an exact
+  project-owned Pydantic class. VIPER validates the class and values during
+  plan freezing, preflight, and execution.
 - Evaluation reserves the logical artifact name `predictions`. The project
   selects its file or bundle format and declares the exact loader path.
 - Data-use roles are assigned by the project when source artifacts enter the
