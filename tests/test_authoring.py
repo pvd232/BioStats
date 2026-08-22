@@ -27,7 +27,7 @@ from viper.protocol import (
     TrainVariantStageParams,
     VariantSpec,
 )
-from viper.serialization import parse_yaml_bytes, serialize_record
+from viper.serialization import parse_yaml_bytes, serialize_document
 
 RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 RUN_ROOT = f"experiments/e001_strand/runs/baseline/{RUN_ID}"
@@ -133,7 +133,7 @@ class RunPlanAuthoringTests(unittest.TestCase):
             root = Path(directory).resolve()
             draft_stage = root / "drafts/train.yaml"
             draft_stage.parent.mkdir(parents=True)
-            draft_stage.write_bytes(serialize_record(training_spec()))
+            draft_stage.write_bytes(serialize_document(training_spec()))
             draft = RunPlanDraft.model_validate(
                 {
                     "run_id": RUN_ID,

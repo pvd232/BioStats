@@ -88,6 +88,25 @@ def build_parser() -> argparse.ArgumentParser:
     plan_diff.add_argument("--left-repository-root", type=Path, default=Path.cwd())
     plan_diff.add_argument("--right-repository-root", type=Path, default=Path.cwd())
 
+    status = commands.add_parser(
+        "status",
+        help="read the latest durable state of one local attempt",
+    )
+    status.add_argument("path", type=Path)
+
+    compare_runs = commands.add_parser(
+        "compare-runs",
+        help="compare all connected evidence from two verified runs",
+    )
+    compare_runs.add_argument("left_path", type=Path)
+    compare_runs.add_argument("right_path", type=Path)
+    compare_runs.add_argument(
+        "--trust-loader-source",
+        action="append",
+        required=True,
+        help="source repository URL approved to supply executable loaders",
+    )
+
     for name, help_text in (
         ("verify-run", "verify one terminal resolved run"),
         ("verify-benchmark", "verify one benchmark result"),
@@ -126,6 +145,8 @@ def _operation_and_payload(
         "run-local": "run_local",
         "plan-diff": "plan_diff",
         "lineage": "lineage",
+        "status": "status",
+        "compare-runs": "compare_runs",
         "verify-run": "verify_run",
         "verify-benchmark": "verify_benchmark",
         "verify-pointer": "verify_pointer",
@@ -179,6 +200,15 @@ def _human_success(result: SuccessModel) -> str:
             f"verified lineage with {len(getattr(result, 'nodes'))} nodes and "
             f"{len(getattr(result, 'edges'))} edges"
         )
+    if result.operation == "status":
+        state = getattr(result, "state")
+        entries = getattr(result, "entry_count")
+        return f"attempt state {state or 'empty'} after {entries} journal entries"
+    if result.operation == "compare_runs":
+        changes = getattr(result, "changes")
+        if not changes:
+            return "verified runs are identical"
+        return "\n".join(f"{change.kind}: {change.path}" for change in changes)
     if result.operation == "verify_run":
         return f"verified run {getattr(result, 'run_id')}"
     if result.operation == "verify_benchmark":

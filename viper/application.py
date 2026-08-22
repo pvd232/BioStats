@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -12,9 +13,18 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from .authoring import freeze_run_plan, load_run_plan_draft
 from .ids import RunId, StageId
-from .inspection import InspectionError, LineageEdge, LineageNode, PlanChange
+from .inspection import (
+    InspectionError,
+    LineageEdge,
+    LineageNode,
+    PlanChange,
+    RunChange,
+)
+from .inspection import attempt_status as inspect_attempt_status
+from .inspection import compare_runs as compare_verified_runs
 from .inspection import lineage as build_lineage
 from .inspection import plan_diff as compare_frozen_plans
+from .journal import AttemptState
 from .preflight import PreflightCheck, preflight_local_plan
 from .protocol import (
     ArtifactPointer,
@@ -47,6 +57,8 @@ OperationName = Literal[
     "run_local",
     "plan_diff",
     "lineage",
+    "status",
+    "compare_runs",
     "verify_run",
     "verify_benchmark",
     "verify_pointer",
@@ -233,6 +245,24 @@ class PlanDiffSuccess(SuccessModel):
     changes: tuple[PlanChange, ...]
 
 
+class StatusRequest(PathRequest):
+    """Select one durable local attempt journal."""
+
+
+class StatusSuccess(SuccessModel):
+    """Return the latest durable attempt state and its valid successors."""
+
+    operation: Literal["status"] = "status"  # pyright: ignore[reportIncompatibleVariableOverride]
+    path: Path
+    entry_count: int
+    state: AttemptState | None
+    event: str | None
+    recorded_at: datetime | None
+    details: dict[str, Any]
+    next_states: tuple[AttemptState, ...]
+    terminal: bool
+
+
 class VerificationRequest(PathRequest):
     """Select a document and source repositories trusted to supply code."""
 
@@ -265,6 +295,24 @@ class LineageSuccess(SuccessModel):
     run_id: RunId
     nodes: tuple[LineageNode, ...]
     edges: tuple[LineageEdge, ...]
+
+
+class CompareRunsRequest(ApplicationModel):
+    """Select two terminal runs and the repositories trusted to supply code."""
+
+    left_path: Path
+    right_path: Path
+    trusted_loader_repositories: frozenset[str] = Field(min_length=1)
+
+
+class CompareRunsSuccess(SuccessModel):
+    """Return every connected-evidence difference between two verified runs."""
+
+    operation: Literal["compare_runs"] = "compare_runs"  # pyright: ignore[reportIncompatibleVariableOverride]
+    left_run_id: RunId
+    right_run_id: RunId
+    identical: bool
+    changes: tuple[RunChange, ...]
 
 
 class VerifyBenchmarkRequest(VerificationRequest):
@@ -330,8 +378,12 @@ SCHEMA_REGISTRY: dict[str, Any] = {
     "FreezeRunSuccess": FreezeRunSuccess,
     "LineageRequest": LineageRequest,
     "LineageSuccess": LineageSuccess,
+    "CompareRunsRequest": CompareRunsRequest,
+    "CompareRunsSuccess": CompareRunsSuccess,
     "PlanDiffRequest": PlanDiffRequest,
     "PlanDiffSuccess": PlanDiffSuccess,
+    "StatusRequest": StatusRequest,
+    "StatusSuccess": StatusSuccess,
     "PreflightRequest": PreflightRequest,
     "PreflightSuccess": PreflightSuccess,
     "ResolvedRun": ResolvedRun,
@@ -366,6 +418,8 @@ OPERATIONS: tuple[OperationName, ...] = (
     "run_local",
     "plan_diff",
     "lineage",
+    "status",
+    "compare_runs",
     "verify_run",
     "verify_benchmark",
     "verify_pointer",
@@ -565,6 +619,24 @@ def plan_diff(request: PlanDiffRequest) -> PlanDiffSuccess:
     )
 
 
+def status(request: StatusRequest) -> StatusSuccess:
+    """Return the latest durable state recorded by one attempt journal."""
+    try:
+        result = inspect_attempt_status(request.path)
+    except (OSError, ValueError) as exc:
+        raise _document_error("status", request.path, exc) from exc
+    return StatusSuccess(
+        path=result.journal,
+        entry_count=result.entry_count,
+        state=result.state,
+        event=result.event,
+        recorded_at=result.recorded_at,
+        details=result.details,
+        next_states=result.next_states,
+        terminal=result.terminal,
+    )
+
+
 def _policy(repositories: frozenset[str]) -> VerificationPolicy:
     """Construct the verifier policy carried by one application request."""
     return VerificationPolicy(trusted_loader_repositories=repositories)
@@ -634,6 +706,64 @@ def lineage(
         run_id=result.run_id,
         nodes=result.nodes,
         edges=result.edges,
+    )
+
+
+def compare_runs(
+    request: CompareRunsRequest,
+    *,
+    left_fetcher: StorageFetcher | None = None,
+    right_fetcher: StorageFetcher | None = None,
+) -> CompareRunsSuccess:
+    """Verify two terminal runs and compare all of their connected evidence."""
+    try:
+        left_resolved = _load_model(request.left_path, ResolvedRun)
+        right_resolved = _load_model(request.right_path, ResolvedRun)
+        assert isinstance(left_resolved, ResolvedRun)
+        assert isinstance(right_resolved, ResolvedRun)
+        policy = _policy(request.trusted_loader_repositories)
+        left = verify_run_result(
+            left_resolved,
+            policy=policy,
+            fetcher=left_fetcher,
+        )
+        right = verify_run_result(
+            right_resolved,
+            policy=policy,
+            fetcher=right_fetcher,
+        )
+    except VerificationError as exc:
+        raise ViperError(
+            ViperFailure(
+                operation="compare_runs",
+                origin="application",
+                code="verification_failed",
+                message="run verification failed before comparison",
+                details={
+                    "left_path": request.left_path.as_posix(),
+                    "right_path": request.right_path.as_posix(),
+                },
+            )
+        ) from exc
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        raise ViperError(
+            ViperFailure(
+                operation="compare_runs",
+                origin="application",
+                code="invalid_document",
+                message="terminal runs could not be loaded",
+                details={
+                    "left_path": request.left_path.as_posix(),
+                    "right_path": request.right_path.as_posix(),
+                },
+            )
+        ) from exc
+    result = compare_verified_runs(left, right)
+    return CompareRunsSuccess(
+        left_run_id=result.left_run_id,
+        right_run_id=result.right_run_id,
+        identical=result.identical,
+        changes=result.changes,
     )
 
 
@@ -742,6 +872,8 @@ REQUEST_REGISTRY: dict[OperationName, RequestType] = {
     "run_local": RunLocalRequest,
     "plan_diff": PlanDiffRequest,
     "lineage": LineageRequest,
+    "status": StatusRequest,
+    "compare_runs": CompareRunsRequest,
     "verify_run": VerifyRunRequest,
     "verify_benchmark": VerifyBenchmarkRequest,
     "verify_pointer": VerifyPointerRequest,
@@ -759,6 +891,8 @@ HANDLER_REGISTRY: dict[OperationName, Handler] = {
     "run_local": run_local,
     "plan_diff": plan_diff,
     "lineage": lineage,
+    "status": status,
+    "compare_runs": compare_runs,
     "verify_run": verify_run,
     "verify_benchmark": verify_benchmark,
     "verify_pointer": verify_pointer,
@@ -812,6 +946,8 @@ def result_json_bytes(result: ApplicationModel) -> bytes:
 __all__ = [
     "CapabilitiesRequest",
     "CapabilitiesSuccess",
+    "CompareRunsRequest",
+    "CompareRunsSuccess",
     "ExecuteStageRequest",
     "ExecuteStageSuccess",
     "FreezeRunRequest",
@@ -826,6 +962,8 @@ __all__ = [
     "RunLocalSuccess",
     "SchemaRequest",
     "SchemaSuccess",
+    "StatusRequest",
+    "StatusSuccess",
     "ValidateResolvedStageRequest",
     "ValidateResolvedStageSuccess",
     "ValidateRunSpecRequest",
@@ -840,6 +978,7 @@ __all__ = [
     "VerifyRunSuccess",
     "ViperError",
     "ViperFailure",
+    "compare_runs",
     "dispatch",
     "execute_stage",
     "freeze_run",
@@ -850,6 +989,7 @@ __all__ = [
     "preflight",
     "result_json_bytes",
     "run_local",
+    "status",
     "validate_resolved_stage",
     "validate_run_spec",
     "validate_stage",

@@ -3,12 +3,15 @@
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 
 from viper.cli import main
+from viper.journal import DurableJournal
 
 
 class CommandLineTests(unittest.TestCase):
@@ -71,3 +74,23 @@ class CommandLineTests(unittest.TestCase):
         result = json.loads(process.stdout)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["ready"], False)
+
+    def test_status_command_reads_attempt_journal(self) -> None:
+        """Return one attempt's latest durable state through the JSON command."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "journal.jsonl"
+            DurableJournal(path).append(
+                "allocated",
+                "attempt allocated",
+                recorded_at=datetime(2026, 8, 22, tzinfo=UTC),
+            )
+            process = subprocess.run(
+                [sys.executable, "-m", "viper.cli", "--json", "status", str(path)],
+                check=False,
+                capture_output=True,
+            )
+
+        self.assertEqual(process.returncode, 0)
+        result = json.loads(process.stdout)
+        self.assertEqual(result["state"], "allocated")
+        self.assertEqual(result["next_states"], ["preflighting", "terminal"])

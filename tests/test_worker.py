@@ -45,6 +45,16 @@ def test_journal_persists_ordered_attempt_transitions(tmp_path: Path) -> None:
     assert journal.latest().state == "preflighting"  # type: ignore[union-attr]
 
 
+def test_journal_rejects_invalid_attempt_transition(tmp_path: Path) -> None:
+    """Reject a durable state change outside the coordinator state machine."""
+    journal = DurableJournal(tmp_path / "control" / "journal.jsonl")
+    now = datetime.now(UTC)
+    journal.append("allocated", "attempt allocated", recorded_at=now)
+
+    with pytest.raises(ValueError, match="allocated -> publishing_stage"):
+        journal.append("publishing_stage", "invalid publication", recorded_at=now)
+
+
 def test_trusted_local_worker_receives_context_path(tmp_path: Path) -> None:
     """Supply the versioned context path through the worker environment."""
     context = tmp_path / "control" / "context.json"

@@ -20,6 +20,17 @@ AttemptState = Literal[
     "terminal",
 ]
 
+ATTEMPT_STATE_TRANSITIONS: dict[AttemptState, tuple[AttemptState, ...]] = {
+    "allocated": ("preflighting", "terminal"),
+    "preflighting": ("running_stage", "terminal"),
+    "running_stage": ("publishing_stage", "terminal"),
+    "publishing_stage": ("running_stage", "closing_attempt", "terminal"),
+    "closing_attempt": ("publishing_attempt_files", "terminal"),
+    "publishing_attempt_files": ("publishing_terminal_run", "terminal"),
+    "publishing_terminal_run": ("terminal",),
+    "terminal": (),
+}
+
 
 class JournalEntry(BaseModel):
     """Record one durable attempt transition or external-effect result."""
@@ -64,6 +75,12 @@ class DurableJournal:
     ) -> JournalEntry:
         """Append and synchronize one validated journal entry."""
         entries = self.read()
+        if not entries and state != "allocated":
+            raise ValueError("the first journal state must be allocated")
+        if entries and state not in ATTEMPT_STATE_TRANSITIONS[entries[-1].state]:
+            raise ValueError(
+                f"invalid attempt transition: {entries[-1].state} -> {state}"
+            )
         entry = JournalEntry(
             sequence=len(entries) + 1,
             state=state,
@@ -82,3 +99,11 @@ class DurableJournal:
         """Return the latest durable entry for recovery decisions."""
         entries = self.read()
         return entries[-1] if entries else None
+
+
+__all__ = [
+    "ATTEMPT_STATE_TRANSITIONS",
+    "AttemptState",
+    "DurableJournal",
+    "JournalEntry",
+]

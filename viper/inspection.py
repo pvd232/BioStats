@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from .ids import RunId
+from .journal import ATTEMPT_STATE_TRANSITIONS, AttemptState, DurableJournal
 from .protocol import FutureInputRef, InternalSpec, RunSpec, StoredInputRef
 from .serialization import load_stage_spec, parse_yaml_bytes
 from .verifier import VerifiedRunResult
@@ -38,6 +40,43 @@ class PlanDiff(BaseModel):
     right_run_id: RunId
     identical: bool
     changes: tuple[PlanChange, ...]
+
+
+class RunChange(BaseModel):
+    """Describe one changed value between two verified terminal runs."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str
+    kind: Literal["added", "removed", "changed"]
+    left: Any = None
+    right: Any = None
+
+
+class RunComparison(BaseModel):
+    """Return the complete ordered difference between two verified runs."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    left_run_id: RunId
+    right_run_id: RunId
+    identical: bool
+    changes: tuple[RunChange, ...]
+
+
+class AttemptJournalStatus(BaseModel):
+    """Summarize the latest durable state of one local run attempt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    journal: Path
+    entry_count: int
+    state: AttemptState | None
+    event: str | None
+    recorded_at: datetime | None
+    details: dict[str, Any]
+    next_states: tuple[AttemptState, ...]
+    terminal: bool
 
 
 class LineageNode(BaseModel):
@@ -154,6 +193,101 @@ def plan_diff(
     )
 
 
+def attempt_status(journal_path: Path) -> AttemptJournalStatus:
+    """Read one attempt journal and report its latest durable transition."""
+    if not journal_path.is_file():
+        raise FileNotFoundError(journal_path)
+    entries = DurableJournal(journal_path).read()
+    if not entries:
+        return AttemptJournalStatus(
+            journal=journal_path,
+            entry_count=0,
+            state=None,
+            event=None,
+            recorded_at=None,
+            details={},
+            next_states=("allocated",),
+            terminal=False,
+        )
+    latest = entries[-1]
+    return AttemptJournalStatus(
+        journal=journal_path,
+        entry_count=len(entries),
+        state=latest.state,
+        event=latest.event,
+        recorded_at=latest.recorded_at,
+        details=latest.details,
+        next_states=ATTEMPT_STATE_TRANSITIONS[latest.state],
+        terminal=latest.state == "terminal",
+    )
+
+
+def _verified_run_document(verified: VerifiedRunResult) -> dict[str, Any]:
+    """Convert one verified terminal run into a stable comparison document."""
+    plan = verified.plan
+    measurements = sorted(
+        (measurement.model_dump(mode="json") for measurement in verified.measurements),
+        key=lambda measurement: (
+            measurement["attempt_id"],
+            measurement["stage_id"],
+            measurement["metric_id"],
+            -1 if measurement["epoch"] is None else measurement["epoch"],
+            -1 if measurement["step"] is None else measurement["step"],
+            measurement["measured_at"],
+        ),
+    )
+    return {
+        "terminal_run": verified.result.model_dump(mode="json"),
+        "run_spec": plan.run.model_dump(mode="json"),
+        "experiment_spec": plan.experiment.model_dump(mode="json"),
+        "variant_spec": plan.variant.model_dump(mode="json"),
+        "benchmark_spec": (
+            None if plan.benchmark is None else plan.benchmark.model_dump(mode="json")
+        ),
+        "stage_specs": {
+            str(stage_id): plan.stages[stage_id].model_dump(mode="json")
+            for stage_id in sorted(plan.stages, key=str)
+        },
+        "resolved_stages": {
+            str(stage_id): verified.resolved_stages[stage_id].model_dump(mode="json")
+            for stage_id in sorted(verified.resolved_stages, key=str)
+        },
+        "measurements": measurements,
+    }
+
+
+def compare_runs(
+    left: VerifiedRunResult,
+    right: VerifiedRunResult,
+) -> RunComparison:
+    """Compare every connected value in two verified terminal runs."""
+    left_values = _flatten(_verified_run_document(left))
+    right_values = _flatten(_verified_run_document(right))
+    changes: list[RunChange] = []
+    for path in sorted(left_values.keys() | right_values.keys()):
+        left_value = left_values.get(path, _MISSING)
+        right_value = right_values.get(path, _MISSING)
+        if left_value is _MISSING:
+            changes.append(RunChange(path=path, kind="added", right=right_value))
+        elif right_value is _MISSING:
+            changes.append(RunChange(path=path, kind="removed", left=left_value))
+        elif left_value != right_value:
+            changes.append(
+                RunChange(
+                    path=path,
+                    kind="changed",
+                    left=left_value,
+                    right=right_value,
+                )
+            )
+    return RunComparison(
+        left_run_id=left.plan.run.run_id,
+        right_run_id=right.plan.run.run_id,
+        identical=not changes,
+        changes=tuple(changes),
+    )
+
+
 def lineage(verified: VerifiedRunResult) -> RunLineage:
     """Build a stable lineage graph from one completely verified run result."""
     nodes: dict[str, LineageNode] = {}
@@ -240,12 +374,17 @@ def lineage(verified: VerifiedRunResult) -> RunLineage:
 
 
 __all__ = [
+    "AttemptJournalStatus",
     "InspectionError",
     "LineageEdge",
     "LineageNode",
     "PlanChange",
     "PlanDiff",
+    "RunChange",
+    "RunComparison",
     "RunLineage",
+    "attempt_status",
+    "compare_runs",
     "lineage",
     "plan_diff",
 ]

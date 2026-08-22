@@ -3,10 +3,25 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, datetime
 from pathlib import Path
 
-from viper.inspection import InspectionError, lineage, plan_diff
-from viper.protocol import ExperimentSpec, RunSpec, VariantSpec
+from viper.inspection import (
+    InspectionError,
+    attempt_status,
+    compare_runs,
+    lineage,
+    plan_diff,
+)
+from viper.journal import DurableJournal
+from viper.protocol import (
+    ExperimentSpec,
+    GitFileRef,
+    ResolvedRun,
+    ResolvedRunSpecRef,
+    RunSpec,
+    VariantSpec,
+)
 from viper.serialization import load_stage_spec, parse_yaml_bytes, serialize_document
 from viper.verifier import VerifiedRunPlan, VerifiedRunResult
 
@@ -96,6 +111,53 @@ def _write_plan(root: Path, *, seed: int) -> Path:
     return run_path
 
 
+def _verified_result(root: Path, run_path: Path) -> VerifiedRunResult:
+    """Build the connected verified value used by inspection unit tests."""
+    run = RunSpec.model_validate(parse_yaml_bytes(run_path.read_bytes()))
+    stage = load_stage_spec(root / RUN_ROOT / "stages/download/spec.yaml")
+    resolved_run = ResolvedRun.model_construct(
+        schema_version=1,
+        spec=ResolvedRunSpecRef(
+            sha256="b" * 64,
+            bytes=1,
+            stored_at=GitFileRef.model_validate(
+                {
+                    "repository": "https://github.com/example/project",
+                    "commit": COMMIT,
+                    "path": f"{RUN_ROOT}/spec.yaml",
+                }
+            ),
+        ),
+        status="succeeded",
+        attempts=(),
+        successful_attempt_id=1,
+        completed_at=datetime(2026, 8, 22, tzinfo=UTC),
+    )
+    return VerifiedRunResult(
+        result=resolved_run,
+        plan=VerifiedRunPlan(
+            run=run,
+            experiment=ExperimentSpec.model_construct(
+                experiment_id="inspection",
+                factors=(),
+                variant_ids=("baseline",),
+                replicates=(),
+                metrics=(),
+            ),
+            variant=VariantSpec.model_construct(
+                experiment_id="inspection",
+                variant_id="baseline",
+                levels={},
+                stage_params=(),
+            ),
+            benchmark=None,
+            stages={run.stages[0].stage_id: stage},
+        ),
+        resolved_stages={},
+        measurements=(),
+    )
+
+
 def test_plan_diff_compares_run_and_stage_values(tmp_path: Path) -> None:
     """Return one stable leaf change when the global seed differs."""
     left_root = tmp_path / "left"
@@ -128,30 +190,7 @@ def test_plan_diff_rejects_stage_bytes_outside_run_spec(tmp_path: Path) -> None:
 def test_lineage_returns_stable_stage_and_artifact_edges(tmp_path: Path) -> None:
     """Represent each declared artifact as an output of its verified stage."""
     run_path = _write_plan(tmp_path, seed=42)
-    run = RunSpec.model_validate(parse_yaml_bytes(run_path.read_bytes()))
-    stage = load_stage_spec(tmp_path / RUN_ROOT / "stages/download/spec.yaml")
-    verified = VerifiedRunResult(
-        plan=VerifiedRunPlan(
-            run=run,
-            experiment=ExperimentSpec.model_construct(
-                experiment_id="inspection",
-                factors=(),
-                variant_ids=("baseline",),
-                replicates=(),
-                metrics=(),
-            ),
-            variant=VariantSpec.model_construct(
-                experiment_id="inspection",
-                variant_id="baseline",
-                levels={},
-                stage_params=(),
-            ),
-            benchmark=None,
-            stages={run.stages[0].stage_id: stage},
-        ),
-        resolved_stages={},
-        measurements=(),
-    )
+    verified = _verified_result(tmp_path, run_path)
 
     result = lineage(verified)
 
@@ -165,3 +204,37 @@ def test_lineage_returns_stable_stage_and_artifact_edges(tmp_path: Path) -> None
         ("stage:download", "artifact:download:dataset"),
         ("stage:download", "artifact:download:split"),
     )
+
+
+def test_attempt_status_returns_latest_state_and_valid_successors(
+    tmp_path: Path,
+) -> None:
+    """Report the durable state and transitions available from that state."""
+    journal_path = tmp_path / "control" / "journal.jsonl"
+    journal = DurableJournal(journal_path)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
+    journal.append("allocated", "attempt allocated", recorded_at=now)
+    journal.append("preflighting", "preflight passed", recorded_at=now)
+
+    result = attempt_status(journal_path)
+
+    assert result.entry_count == 2
+    assert result.state == "preflighting"
+    assert result.event == "preflight passed"
+    assert result.next_states == ("running_stage", "terminal")
+    assert result.terminal is False
+
+
+def test_compare_runs_reports_verified_evidence_changes(tmp_path: Path) -> None:
+    """Return the exact connected-evidence change between two verified runs."""
+    left_root = tmp_path / "left"
+    right_root = tmp_path / "right"
+    left = _verified_result(left_root, _write_plan(left_root, seed=42))
+    right = _verified_result(right_root, _write_plan(right_root, seed=43))
+
+    result = compare_runs(left, right)
+
+    assert result.identical is False
+    assert tuple(change.path for change in result.changes) == ("run_spec.seed",)
+    assert result.changes[0].left == 42
+    assert result.changes[0].right == 43

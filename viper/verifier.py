@@ -249,6 +249,7 @@ class VerifiedRunPlan:
 class VerifiedRunResult:
     """A verified terminal run and its connected records."""
 
+    result: ResolvedRun
     plan: VerifiedRunPlan
     resolved_stages: dict[StageId, ResolvedBaseSpec]
     measurements: tuple[Measurement, ...]
@@ -1640,6 +1641,7 @@ def verify_run_result(
             raise VerificationError("successful run has no selected estimator artifact")
 
     return VerifiedRunResult(
+        result=resolved_run,
         plan=plan,
         resolved_stages=successful_stages,
         measurements=tuple(all_measurements),

@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures import resume_state
+from viper.application import CompareRunsRequest
+from viper.application import compare_runs as compare_runs_application
 from viper.authoring import RunPlanDraft, StageDraft, freeze_run_plan
 from viper.journal import DurableJournal
 from viper.local_store import LocalArtifactStore
@@ -290,6 +292,20 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         "terminal",
     )
 
+    store = LocalArtifactStore(root)
+    fetcher = LocalRunFetcher(root, store, REPOSITORY)
+    comparison = compare_runs_application(
+        CompareRunsRequest(
+            left_path=result.resolved_run_path,
+            right_path=result.resolved_run_path,
+            trusted_loader_repositories=frozenset({REPOSITORY}),
+        ),
+        left_fetcher=fetcher,
+        right_fetcher=fetcher,
+    )
+    assert comparison.identical is True
+    assert comparison.changes == ()
+
     first_snapshot = result.resolved_run.attempts[0].resolved_stages[0].snapshot
     assert first_snapshot.kind == "local"
     stored_artifact = (
@@ -299,7 +315,6 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         / f"{RUN_ROOT}/artifacts/datasets/tiny/prior.bin"
     )
     stored_artifact.write_bytes(b"tampered")
-    store = LocalArtifactStore(root)
     with pytest.raises(VerificationError, match="byte-count mismatch"):
         verify_run_result(
             result.resolved_run,

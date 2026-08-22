@@ -1,19 +1,23 @@
 """Tests for the typed VIPER application boundary."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from viper.application import (
     CapabilitiesRequest,
     SchemaRequest,
+    StatusRequest,
     ValidateStageRequest,
     ViperFailure,
     dispatch,
     get_capabilities,
     get_schema,
     result_json_bytes,
+    status,
     validate_stage,
 )
+from viper.journal import DurableJournal
 
 
 def test_application_schema_and_capability_discovery() -> None:
@@ -28,6 +32,8 @@ def test_application_schema_and_capability_discovery() -> None:
     assert "run_local" in capabilities.operations
     assert "plan_diff" in capabilities.operations
     assert "lineage" in capabilities.operations
+    assert "status" in capabilities.operations
+    assert "compare_runs" in capabilities.operations
     assert capabilities.execution_backends == ("trusted_local",)
 
 
@@ -61,3 +67,19 @@ def test_result_json_is_deterministic_and_newline_terminated() -> None:
     assert first == second
     assert first.endswith(b"\n")
     assert json.loads(first)["operation"] == "get_capabilities"
+
+
+def test_status_returns_latest_durable_attempt_state(tmp_path: Path) -> None:
+    """Expose a local attempt journal through the typed application boundary."""
+    journal_path = tmp_path / "journal.jsonl"
+    journal = DurableJournal(journal_path)
+    journal.append(
+        "allocated",
+        "attempt allocated",
+        recorded_at=datetime(2026, 8, 22, tzinfo=UTC),
+    )
+
+    result = status(StatusRequest(path=journal_path))
+
+    assert result.state == "allocated"
+    assert result.next_states == ("preflighting", "terminal")
