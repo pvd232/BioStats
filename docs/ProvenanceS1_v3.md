@@ -3022,7 +3022,7 @@ Pointer filenames use:
 SelectionName = HumanId
 ```
 
-Each selection name is scoped by its dataset, prior, or model identity.
+This is the suggested project layout that we have found to be effective at Viper.
 
 ```text
 repository/
@@ -3105,9 +3105,7 @@ snapshot and are not stage entrypoints.
 
 The run directory is the durable output root. Artifact files, measurements,
 logs, resolved records, and benchmark results use stable repository-relative
-paths. Immutable artifact-repository commits distinguish files produced by
-different attempts. A separate root `out/` directory is therefore outside the
-protocol layout.
+paths.
 
 A single-file artifact occupies its declared file path. A bundle artifact
 occupies its declared directory root, and its loader defines the required
