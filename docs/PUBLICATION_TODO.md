@@ -49,12 +49,14 @@ repository.
 
 Complete this interface before implementing the run-level loop. It prevents the
 CLI, Python callers, and agent integrations from acquiring separate behavior.
+The required interface is defined in the [application API](APPLICATION_API.md).
 
 - [ ] Define machine-readable success and failure records. Each failure must
   identify the failed operation, stable error code, affected record or path,
   and concrete cause.
 - [ ] Add a small Python application API whose functions accept validated
-  request records and return validated result records.
+  request records, return validated success records, and raise typed expected
+  failures.
 - [ ] Route every CLI command through the application API and add JSON output
   without removing concise human output.
 - [ ] Add schema discovery for every authored and resolved record accepted by

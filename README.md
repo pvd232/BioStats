@@ -13,6 +13,7 @@ both named `viper`.
 | File or directory | Role | Principal interface |
 |---|---|---|
 | [v3 protocol](docs/ProvenanceS1_v3.md) | Defines the active formal and record contract | Sections 1–23 |
+| [application API](docs/APPLICATION_API.md) | Defines the typed Python, CLI, and agent-facing operation contract | Requests, successes, failures, operations, and discovery |
 | [publication checklist](docs/PUBLICATION_TODO.md) | Tracks implementation and release work | Protocol, runner, package, and distribution tasks |
 | [versioning policy](docs/VERSIONING.md) | Separates software releases from serialized record schemas | Semantic package versions and record `schema_version` values |
 | [records](viper/records.py) | Validates protocol records and their internal invariants | `RunSpec`, `ResolvedRun`, `Spec`, `ResolvedSpec`, `BenchmarkSpec` |
