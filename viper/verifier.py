@@ -37,9 +37,12 @@ from .protocol import (
     EvaluateSpec,
     ExperimentSpec,
     FutureInputRef,
+    GCEEnvironmentSpec,
     GitFileRef,
     HuggingFaceFileRef,
     InternalSpec,
+    LocalFileRef,
+    LocalStageResultSnapshotRef,
     Measurement,
     RepoRelPath,
     ResolvedArtifact,
@@ -48,6 +51,7 @@ from .protocol import (
     ResolvedDownloadSpec,
     ResolvedFileRef,
     ResolvedFutureInputRef,
+    ResolvedGCEEnvironment,
     ResolvedInternalSpec,
     ResolvedRun,
     ResolvedRunSpecRef,
@@ -340,12 +344,24 @@ def fetch_huggingface_file_bytes(location: HuggingFaceFileRef) -> bytes:
         ) from exc
 
 
+def fetch_local_file_bytes(location: LocalFileRef) -> bytes:
+    """Read one file from a repository-local immutable store revision."""
+    repository_root = Path.cwd().resolve()
+    revision_root = (repository_root / location.store / location.commit).resolve()
+    path = (revision_root / location.path).resolve()
+    if not path.is_relative_to(revision_root) or not path.is_file():
+        raise VerificationError("local immutable file could not be retrieved")
+    return path.read_bytes()
+
+
 def fetch_storage_bytes(location: StorageModel) -> bytes:
     """Dispatch an immutable storage reference to its retrieval backend."""
     if isinstance(location, GitFileRef):
         return fetch_git_file_bytes(location)
     if isinstance(location, HuggingFaceFileRef):
         return fetch_huggingface_file_bytes(location)
+    if isinstance(location, LocalFileRef):
+        return fetch_local_file_bytes(location)
     raise TypeError(f"unsupported storage reference: {type(location).__name__}")
 
 
@@ -383,19 +399,26 @@ def read_resolved_file(
 
 
 def read_snapshot_file(
-    snapshot: StageResultSnapshotRef,
+    snapshot: StageResultSnapshotRef | LocalStageResultSnapshotRef,
     reference: SnapshotFileRef,
     *,
     fetcher: StorageFetcher | None = None,
 ) -> bytes:
     """Retrieve and verify one file from a stage-result snapshot."""
     retrieve = fetch_storage_bytes if fetcher is None else fetcher
-    location = HuggingFaceFileRef(
-        repository=snapshot.repository,
-        commit=snapshot.commit,
-        path=reference.path,
-        repo_type=snapshot.repo_type,
-    )
+    if isinstance(snapshot, StageResultSnapshotRef):
+        location: StorageModel = HuggingFaceFileRef(
+            repository=snapshot.repository,
+            commit=snapshot.commit,
+            path=reference.path,
+            repo_type=snapshot.repo_type,
+        )
+    else:
+        location = LocalFileRef(
+            store=snapshot.store,
+            commit=snapshot.commit,
+            path=reference.path,
+        )
     raw = retrieve(location)
 
     resolved_reference = ResolvedFileRef(
@@ -404,6 +427,34 @@ def read_snapshot_file(
         stored_at=location,
     )
     return verify_resolved_file_bytes(resolved_reference, raw)
+
+
+def _snapshot_identity(
+    snapshot: StageResultSnapshotRef | LocalStageResultSnapshotRef,
+) -> tuple[str, ...]:
+    """Return a backend-qualified identity for one immutable stage snapshot."""
+    if isinstance(snapshot, StageResultSnapshotRef):
+        return (
+            snapshot.kind,
+            snapshot.repository,
+            snapshot.commit,
+            snapshot.repo_type,
+        )
+    return (snapshot.kind, snapshot.store, snapshot.commit)
+
+
+def _artifact_revision_identity(location: StorageModel) -> tuple[str, ...] | None:
+    """Return the immutable output revision containing one stored file."""
+    if isinstance(location, HuggingFaceFileRef):
+        return (
+            location.kind,
+            location.repository,
+            location.commit,
+            location.repo_type,
+        )
+    if isinstance(location, LocalFileRef):
+        return (location.kind, location.store, location.commit)
+    return None
 
 
 def verify_snapshot_artifact(
@@ -1105,15 +1156,24 @@ def verify_attempt_stages(
 
         requested_environment = stage_spec.environment or run.environment
         resolved_environment = resolved_spec.environment
-        if (
-            resolved_environment.machine_image.project
-            != requested_environment.machine_image.project
-            or resolved_environment.machine_image.name
-            != requested_environment.machine_image.name
-            or resolved_environment.machine_type != requested_environment.machine_type
+        environment_differs = (
+            resolved_environment.kind != requested_environment.kind
             or resolved_environment.compute != requested_environment.compute
             or resolved_environment.lockfile.stored_at != requested_environment.lockfile
+        )
+        if isinstance(resolved_environment, ResolvedGCEEnvironment) and isinstance(
+            requested_environment,
+            GCEEnvironmentSpec,
         ):
+            environment_differs = environment_differs or (
+                resolved_environment.machine_image.project
+                != requested_environment.machine_image.project
+                or resolved_environment.machine_image.name
+                != requested_environment.machine_image.name
+                or resolved_environment.machine_type
+                != requested_environment.machine_type
+            )
+        if environment_differs:
             raise VerificationError(
                 f"stage {stage_reference.stage_id!r} realized a different "
                 "environment than requested"
@@ -1224,13 +1284,9 @@ def verify_attempt_files(
 ) -> tuple[Measurement, ...]:
     """Verify an attempt's measurements and logs against their file identities."""
     attempt_file_snapshots = {
-        (
-            reference.stored_at.repository,
-            reference.stored_at.commit,
-            reference.stored_at.repo_type,
-        )
+        identity
         for reference in (*attempt.measurement_files, *attempt.log_files)
-        if isinstance(reference.stored_at, HuggingFaceFileRef)
+        if (identity := _artifact_revision_identity(reference.stored_at)) is not None
     }
     if len(attempt_file_snapshots) > 1:
         raise VerificationError(
@@ -1249,7 +1305,7 @@ def verify_attempt_files(
     root = run_root(run)
 
     for reference in attempt.measurement_files:
-        if not isinstance(reference.stored_at, HuggingFaceFileRef):
+        if not isinstance(reference.stored_at, (HuggingFaceFileRef, LocalFileRef)):
             raise VerificationError(
                 "measurement files must use immutable artifact storage"
             )
@@ -1334,7 +1390,7 @@ def verify_attempt_files(
                     )
 
     for reference in attempt.log_files:
-        if not isinstance(reference.stored_at, HuggingFaceFileRef):
+        if not isinstance(reference.stored_at, (HuggingFaceFileRef, LocalFileRef)):
             raise VerificationError("log files must use immutable artifact storage")
         log_pattern = re.compile(
             rf"^{re.escape(root)}/logs/{attempt.attempt_id}\."
@@ -1375,17 +1431,12 @@ def verify_run_result(
     plan = verify_run_plan(resolved_run, fetcher=fetcher)
     all_measurements: list[Measurement] = []
     successful_stages: dict[StageId, ResolvedBaseSpec] = {}
-    stage_result_snapshots: set[tuple[str, str, str]] = set()
-    attempt_file_snapshots: set[tuple[str, str, str]] = set()
+    stage_result_snapshots: set[tuple[str, ...]] = set()
+    attempt_file_snapshots: set[tuple[str, ...]] = set()
 
     for attempt in resolved_run.attempts:
         current_stage_result_snapshots = {
-            (
-                stage.snapshot.repository,
-                stage.snapshot.commit,
-                stage.snapshot.repo_type,
-            )
-            for stage in attempt.resolved_stages
+            _snapshot_identity(stage.snapshot) for stage in attempt.resolved_stages
         }
         if stage_result_snapshots & current_stage_result_snapshots:
             raise VerificationError(
@@ -1394,13 +1445,10 @@ def verify_run_result(
         stage_result_snapshots.update(current_stage_result_snapshots)
 
         current_attempt_file_snapshots = {
-            (
-                reference.stored_at.repository,
-                reference.stored_at.commit,
-                reference.stored_at.repo_type,
-            )
+            identity
             for reference in (*attempt.measurement_files, *attempt.log_files)
-            if isinstance(reference.stored_at, HuggingFaceFileRef)
+            if (identity := _artifact_revision_identity(reference.stored_at))
+            is not None
         }
         if attempt_file_snapshots & current_attempt_file_snapshots:
             raise VerificationError(
@@ -1890,20 +1938,12 @@ def verify_benchmark_result(
         raise VerificationError("benchmark confirmation must use a new attempt ID")
 
     original_snapshots = {
-        (
-            stage.snapshot.repository,
-            stage.snapshot.commit,
-            stage.snapshot.repo_type,
-        )
+        _snapshot_identity(stage.snapshot)
         for attempt in resolved_run.attempts
         for stage in attempt.resolved_stages
     }
     confirmation_snapshots = {
-        (
-            stage.snapshot.repository,
-            stage.snapshot.commit,
-            stage.snapshot.repo_type,
-        )
+        _snapshot_identity(stage.snapshot)
         for stage in result.confirmation.resolved_stages
     }
     if original_snapshots & confirmation_snapshots:
@@ -1912,26 +1952,18 @@ def verify_benchmark_result(
         )
 
     original_attempt_file_snapshots = {
-        (
-            reference.stored_at.repository,
-            reference.stored_at.commit,
-            reference.stored_at.repo_type,
-        )
+        identity
         for attempt in resolved_run.attempts
         for reference in (*attempt.measurement_files, *attempt.log_files)
-        if isinstance(reference.stored_at, HuggingFaceFileRef)
+        if (identity := _artifact_revision_identity(reference.stored_at)) is not None
     }
     confirmation_attempt_file_snapshots = {
-        (
-            reference.stored_at.repository,
-            reference.stored_at.commit,
-            reference.stored_at.repo_type,
-        )
+        identity
         for reference in (
             *result.confirmation.measurement_files,
             *result.confirmation.log_files,
         )
-        if isinstance(reference.stored_at, HuggingFaceFileRef)
+        if (identity := _artifact_revision_identity(reference.stored_at)) is not None
     }
     if original_attempt_file_snapshots & confirmation_attempt_file_snapshots:
         raise VerificationError(

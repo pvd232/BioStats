@@ -172,7 +172,30 @@ class StageResultSnapshotRef(ProtocolModel):
     repo_type: Literal["model", "dataset", "space"]
 
 
-StorageModel = GitFileRef | HuggingFaceFileRef
+class LocalFileRef(ProtocolModel):
+    """A file in one immutable revision of a repository-local VIPER store."""
+
+    kind: Literal["local"] = "local"
+    store: RepoRelPath = ".viper/store"
+    commit: SHA256
+    path: RepoRelPath
+
+
+class LocalStageResultSnapshotRef(ProtocolModel):
+    """One immutable stage-result revision in a repository-local VIPER store."""
+
+    kind: Literal["local"] = "local"
+    store: RepoRelPath = ".viper/store"
+    commit: SHA256
+
+
+StageResultSnapshot = Annotated[
+    StageResultSnapshotRef | LocalStageResultSnapshotRef,
+    Field(discriminator="kind"),
+]
+
+
+StorageModel = GitFileRef | HuggingFaceFileRef | LocalFileRef
 
 StorageRef = Annotated[
     StorageModel,
@@ -323,6 +346,33 @@ class ResolvedGCEEnvironment(ProtocolModel):
     machine_type: NonEmptyStr
     compute: ComputeSpec
     lockfile: ResolvedGitFileRef
+
+
+class LocalEnvironmentSpec(ProtocolModel):
+    """Declare a local development environment fixed by one lockfile."""
+
+    kind: Literal["local"] = "local"
+    compute: CPUComputeSpec = Field(default_factory=CPUComputeSpec)
+    lockfile: GitFileRef
+
+
+class ResolvedLocalEnvironment(ProtocolModel):
+    """Record the local development environment used by one stage."""
+
+    kind: Literal["local"] = "local"
+    compute: CPUComputeSpec = Field(default_factory=CPUComputeSpec)
+    lockfile: ResolvedGitFileRef
+
+
+EnvironmentSpec = Annotated[
+    GCEEnvironmentSpec | LocalEnvironmentSpec,
+    Field(discriminator="kind"),
+]
+
+ResolvedEnvironment = Annotated[
+    ResolvedGCEEnvironment | ResolvedLocalEnvironment,
+    Field(discriminator="kind"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -682,7 +732,7 @@ class ResolvedStageRef(ProtocolModel):
     """Binds one completed stage to its immutable stage-result snapshot."""
 
     stage_id: StageId
-    snapshot: StageResultSnapshotRef
+    snapshot: StageResultSnapshot
     resolved_spec: SnapshotFileRef
 
 
@@ -722,7 +772,7 @@ class RunAttempt(ProtocolModel):
             raise ValueError("attempt completion must be after attempt start")
 
         unique = set()
-        snapshots: set[StageResultSnapshotRef] = set()
+        snapshots: set[StageResultSnapshotRef | LocalStageResultSnapshotRef] = set()
         for stage in self.resolved_stages:
             if stage.stage_id in unique:
                 raise ValueError("resolved stage IDs must be unique")
@@ -769,7 +819,7 @@ class RunSpec(ProtocolModel):
 
     seed: RNGSeed
     source: GitSource
-    environment: GCEEnvironmentSpec
+    environment: EnvironmentSpec
     reproducibility: ReproducibilitySpec
 
     stages: tuple[RunStageRef, ...] = Field(min_length=1)
@@ -918,6 +968,21 @@ class GCEHostContext(ProtocolModel):
     kernel_release: NonEmptyStr
 
 
+class LocalHostContext(ProtocolModel):
+    """Record the operating system observed by a local development worker."""
+
+    provider: Literal["local"] = "local"
+    operating_system: NonEmptyStr
+    release: NonEmptyStr
+    architecture: NonEmptyStr
+
+
+HostContext = Annotated[
+    GCEHostContext | LocalHostContext,
+    Field(discriminator="provider"),
+]
+
+
 class CPUContext(ProtocolModel):
     """Record the CPU available to the execution.
 
@@ -1030,7 +1095,7 @@ class ExecutionContext(ProtocolModel):
     conditions under which it ran.
     """
 
-    host: GCEHostContext
+    host: HostContext
     cpu: CPUContext
     backend: ComputeBackendContext
     numerical_runtime: NumericalRuntimeContext
@@ -1122,7 +1187,7 @@ class BaseSpec(ProtocolModel):
 
     script: PythonRepoRelPath
 
-    environment: GCEEnvironmentSpec | None = None
+    environment: EnvironmentSpec | None = None
     metric_ids: tuple[MetricId, ...] = ()
 
     artifacts: dict[ArtifactName, ArtifactSpec] = Field(min_length=1)
@@ -1560,7 +1625,7 @@ class ResolvedBaseSpec(ProtocolModel):
     spec: BaseSpec
     source: ResolvedGitFileRef
 
-    environment: ResolvedGCEEnvironment
+    environment: ResolvedEnvironment
     execution_context: ExecutionContext
 
     command: tuple[str, ...] = Field(min_length=1)
@@ -1613,21 +1678,28 @@ class ResolvedBaseSpec(ProtocolModel):
 
         requested_environment = self.spec.environment
         if requested_environment is not None:
-            resolved_image = self.environment.machine_image
-            requested_image = requested_environment.machine_image
+            if self.environment.kind != requested_environment.kind:
+                raise ValueError("resolved environment kind must match its request")
 
-            if (
-                resolved_image.project != requested_image.project
-                or resolved_image.name != requested_image.name
+            if isinstance(self.environment, ResolvedGCEEnvironment) and isinstance(
+                requested_environment,
+                GCEEnvironmentSpec,
             ):
-                raise ValueError(
-                    "resolved machine image must match the stage environment override"
-                )
-
-            if self.environment.machine_type != requested_environment.machine_type:
-                raise ValueError(
-                    "resolved machine type must match the stage environment override"
-                )
+                resolved_image = self.environment.machine_image
+                requested_image = requested_environment.machine_image
+                if (
+                    resolved_image.project != requested_image.project
+                    or resolved_image.name != requested_image.name
+                ):
+                    raise ValueError(
+                        "resolved machine image must match the stage "
+                        "environment override"
+                    )
+                if self.environment.machine_type != requested_environment.machine_type:
+                    raise ValueError(
+                        "resolved machine type must match the stage "
+                        "environment override"
+                    )
 
             if self.environment.compute != requested_environment.compute:
                 raise ValueError(
@@ -1646,10 +1718,17 @@ class ResolvedBaseSpec(ProtocolModel):
                     "resolved lockfile must match the stage environment override"
                 )
 
-        if self.environment.machine_type != self.execution_context.host.machine_type:
-            raise ValueError(
-                "resolved machine type must match the observed host machine type"
-            )
+        host = self.execution_context.host
+        if self.environment.kind != host.provider:
+            raise ValueError("resolved environment kind must match the observed host")
+        if isinstance(self.environment, ResolvedGCEEnvironment) and isinstance(
+            host,
+            GCEHostContext,
+        ):
+            if self.environment.machine_type != host.machine_type:
+                raise ValueError(
+                    "resolved machine type must match the observed host machine type"
+                )
 
         compute = self.environment.compute
         backend = self.execution_context.backend

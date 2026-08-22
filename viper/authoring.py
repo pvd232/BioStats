@@ -14,8 +14,8 @@ from .ids import ExperimentId, ReplicateId, RunId, StageId, VariantId
 from .protocol import (
     BenchmarkId,
     BenchmarkSpec,
+    EnvironmentSpec,
     ExperimentSpec,
-    GCEEnvironmentSpec,
     GitSource,
     ReproducibilitySpec,
     RNGSeed,
@@ -52,7 +52,7 @@ class RunPlanDraft(BaseModel):
     benchmark_id: BenchmarkId | None = None
     seed: RNGSeed
     source: GitSource
-    environment: GCEEnvironmentSpec
+    environment: EnvironmentSpec
     reproducibility: ReproducibilitySpec
     stages: tuple[StageDraft, ...] = Field(min_length=1)
     estimator: StageArtifactRef
