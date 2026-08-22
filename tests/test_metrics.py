@@ -3,11 +3,10 @@
 import unittest
 
 import torch
-
-from mantra.metrics.evaluation.pearson_correlation.compute import (
+from example_project.metrics.evaluation.pearson_correlation.compute import (
     compute as pearson_correlation,
 )
-from mantra.metrics.training.mean_squared_error.compute import (
+from example_project.metrics.training.mean_squared_error.compute import (
     compute as mean_squared_error,
 )
 

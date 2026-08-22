@@ -1,1 +1,1 @@
-"""Tests for the MANTRA provenance prototype."""
+"""Tests for the VIPER provenance prototype."""

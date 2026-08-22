@@ -5,13 +5,13 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from viper.authoring import serialize_protocol_model
-from viper.execution import execute_stage_process
 from viper.records import (
     DownloadSpec,
     ResolvedSingleFileArtifact,
     RunStageRef,
 )
+from viper.serialization import serialize_record
+from viper.stage_execution import execute_stage_process
 
 RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 RUN_ROOT = f"experiments/e001_download/runs/baseline/{RUN_ID}"
@@ -26,7 +26,7 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
         spec = DownloadSpec.model_validate(
             {
                 "kind": "download",
-                "script": "src/mantra/datasets/tiny/download.py",
+                "script": "jobs/ingest_tiny.py",
                 "inputs": {
                     "source": {
                         "kind": "remote",
@@ -38,7 +38,7 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
                     "dataset": {
                         "kind": "file",
                         "path": artifact_path,
-                        "loader": "bytes_file",
+                        "loader": "project/loaders/bytes_file.py",
                     }
                 },
             }
@@ -56,7 +56,7 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
             )
             stage_path = root / f"{RUN_ROOT}/stages/download/spec.yaml"
             stage_path.parent.mkdir(parents=True)
-            stage_raw = serialize_protocol_model(spec)
+            stage_raw = serialize_record(spec)
             stage_path.write_bytes(stage_raw)
             reference = RunStageRef(
                 stage_id="download",

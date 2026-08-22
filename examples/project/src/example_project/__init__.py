@@ -1,1 +1,1 @@
-"""Scientific entrypoints, artifact loaders, and metrics for MANTRA runs."""
+"""Example user-owned entrypoints, artifact loaders, and metrics."""

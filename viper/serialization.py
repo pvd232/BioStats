@@ -1,4 +1,4 @@
-"""Duplicate-key-safe YAML loading for stage and resolved-stage specs."""
+"""Serialize VIPER records and parse duplicate-key-safe YAML documents."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import TypeAdapter
+from pydantic import BaseModel, TypeAdapter
 from yaml.nodes import MappingNode
 from yaml.resolver import BaseResolver
 
@@ -45,7 +45,19 @@ _SPEC_ADAPTER = TypeAdapter(Spec)
 _RESOLVED_SPEC_ADAPTER = TypeAdapter(ResolvedSpec)
 
 
-def load_yaml_bytes(raw: bytes) -> Any:
+def serialize_record(record: BaseModel) -> bytes:
+    """Serialize one validated record as deterministic UTF-8 YAML bytes."""
+    value = record.model_dump(mode="json")
+    rendered = yaml.safe_dump(
+        value,
+        allow_unicode=True,
+        sort_keys=False,
+    )
+    assert isinstance(rendered, str)
+    return rendered.encode("utf-8")
+
+
+def parse_yaml_bytes(raw: bytes) -> Any:
     """Parse YAML bytes while rejecting duplicate mapping keys."""
     if not isinstance(raw, bytes):
         raise TypeError("YAML content must be bytes")
@@ -53,14 +65,15 @@ def load_yaml_bytes(raw: bytes) -> Any:
 
 
 def _load_yaml(path: Path) -> Any:
-    return load_yaml_bytes(path.read_bytes())
+    """Read and parse one YAML file."""
+    return parse_yaml_bytes(path.read_bytes())
 
 
-def load_spec(path: str | Path) -> Spec:
-    """Load and validate a MANTRA stage spec."""
+def load_stage_spec(path: str | Path) -> Spec:
+    """Load and validate a VIPER stage spec."""
     return _SPEC_ADAPTER.validate_python(_load_yaml(Path(path)))
 
 
-def load_resolved_spec(path: str | Path) -> ResolvedSpec:
-    """Load and validate an immutable MANTRA resolved spec."""
+def load_resolved_stage(path: str | Path) -> ResolvedSpec:
+    """Load and validate an immutable VIPER resolved spec."""
     return _RESOLVED_SPEC_ADAPTER.validate_python(_load_yaml(Path(path)))

@@ -1,1 +1,1 @@
-"""Load verified artifact files into values consumed by MANTRA stages."""
+"""Example user-owned loaders for verified artifact files."""

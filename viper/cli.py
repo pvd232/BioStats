@@ -8,20 +8,20 @@ from pathlib import Path
 from pydantic import TypeAdapter
 
 from .authoring import freeze_run_plan, load_run_plan_draft
-from .execution import execute_stage_process
 from .records import ArtifactPointer, BenchmarkResult, ResolvedRun, RunSpec
+from .serialization import load_resolved_stage, load_stage_spec, parse_yaml_bytes
+from .stage_execution import execute_stage_process
 from .verifier import (
     VerificationPolicy,
     verify_benchmark_result,
     verify_promoted_artifact,
     verify_run_result,
 )
-from .yaml_io import load_resolved_spec, load_spec, load_yaml_bytes
 
 
 def _load_model(path: Path, model_type: type[object]) -> object:
     """Load one duplicate-key-safe YAML document through a Pydantic model."""
-    return TypeAdapter(model_type).validate_python(load_yaml_bytes(path.read_bytes()))
+    return TypeAdapter(model_type).validate_python(parse_yaml_bytes(path.read_bytes()))
 
 
 def _policy(repositories: list[str]) -> VerificationPolicy:
@@ -30,8 +30,8 @@ def _policy(repositories: list[str]) -> VerificationPolicy:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the MANTRA command-line parser and its subcommands."""
-    parser = argparse.ArgumentParser(prog="mantra")
+    """Build the VIPER command-line parser and its subcommands."""
+    parser = argparse.ArgumentParser(prog="viper")
     commands = parser.add_subparsers(dest="command", required=True)
 
     validate_stage = commands.add_parser(
@@ -89,12 +89,12 @@ def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
 
     if arguments.command == "validate-stage":
-        stage = load_spec(arguments.path)
+        stage = load_stage_spec(arguments.path)
         print(f"valid {stage.kind} stage")
         return 0
 
     if arguments.command == "validate-resolved-stage":
-        stage = load_resolved_spec(arguments.path)
+        stage = load_resolved_stage(arguments.path)
         print(f"valid resolved {stage.kind} stage")
         return 0
 
@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if reference is None:
             raise ValueError(f"run plan has no stage {arguments.stage_id!r}")
-        stage = load_spec(arguments.repository_root / reference.spec)
+        stage = load_stage_spec(arguments.repository_root / reference.spec)
         result = execute_stage_process(arguments.repository_root, reference, stage)
         file_count = sum(
             1 if artifact.kind == "file" else len(artifact.members)

@@ -13,7 +13,7 @@ artifacts:
     kind: file
 command:
   - python
-  - src/mantra/datasets/toy/download.py
+  - pipelines/download.py
   - experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA/stages/download/spec.yaml
 completed_at: "2026-08-20T20:10:00Z"
 environment:
@@ -95,17 +95,17 @@ source:
   stored_at:
     commit: "1111111111111111111111111111111111111111"
     kind: git
-    path: src/mantra/datasets/toy/download.py
+    path: pipelines/download.py
     repository: https://github.com/example/mantra
 spec:
   artifacts:
     dataset:
       kind: file
-      loader: bytes_file
+      loader: project/loaders/bytes_file.py
       path: experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA/artifacts/datasets/toy/dataset.bin
     split:
       kind: file
-      loader: bytes_file
+      loader: project/loaders/bytes_file.py
       path: experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA/artifacts/datasets/toy/split.json
   environment: null
   inputs:
@@ -115,4 +115,4 @@ spec:
       version: v1
   kind: download
   schema_version: 1
-  script: src/mantra/datasets/toy/download.py
+  script: pipelines/download.py

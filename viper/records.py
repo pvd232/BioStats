@@ -1,4 +1,4 @@
-"""Pydantic models for the active MANTRA provenance protocol.
+"""Pydantic records for the active VIPER provenance protocol.
 
 The model graph separates execution requests, resolved data artifacts,
 the exact Git source tree, requested environments, observed execution
@@ -50,6 +50,13 @@ def validate_repo_rel_path(value: str) -> str:
     return value
 
 
+def validate_python_file_path(value: str) -> str:
+    """Require a path that identifies a Python source file."""
+    if not value.endswith(".py"):
+        raise ValueError("expected repository-relative Python file path")
+    return value
+
+
 def repo_file_paths_overlap(left: str, right: str) -> bool:
     """Return whether either file path equals or sits below the other."""
     return left == right or left.startswith(f"{right}/") or right.startswith(f"{left}/")
@@ -60,6 +67,11 @@ def repo_file_paths_overlap(left: str, right: str) -> bool:
 # ---------------------------------------------------------------------------
 
 RepoRelPath = Annotated[str, AfterValidator(validate_repo_rel_path)]
+PythonRepoRelPath = Annotated[
+    str,
+    AfterValidator(validate_repo_rel_path),
+    AfterValidator(validate_python_file_path),
+]
 SHA256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 GitCommit = Annotated[
@@ -67,17 +79,17 @@ GitCommit = Annotated[
     Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"),
 ]
 ArtifactName = HumanId
-ArtifactLoaderId = HumanId
+ArtifactLoaderPath = PythonRepoRelPath
 BenchmarkId = HumanId
 EvaluationId = HumanId
 SelectionName = HumanId
 RNGSeed = Annotated[int, Field(ge=0, le=2**32 - 1)]
+DataRole = Literal["training", "validation", "evaluation", "benchmark"]
 
 PARAMETERS: ArtifactName = "parameters"
 RESUME_STATE: ArtifactName = "resume_state"
-CHECKPOINT_PARAMETERS_INPUT: InputName = "checkpoint_parameters"
-CHECKPOINT_RESUME_INPUT: InputName = "checkpoint_resume_state"
-EVALUATION_PARAMETERS_INPUT: InputName = "parameters"
+PARAMETERS_INPUT: InputName = "parameters"
+RESUME_STATE_INPUT: InputName = "resume_state"
 EVALUATION_DATASET_INPUT: InputName = "evaluation_dataset"
 PREDICTIONS: ArtifactName = "predictions"
 
@@ -404,7 +416,7 @@ class ReproducibilitySpec(ProtocolModel):
 
 
 # ---------------------------------------------------------------------------
-# Training continuation state
+# Training resume state
 # ---------------------------------------------------------------------------
 
 
@@ -507,16 +519,8 @@ class MetricSpec(ProtocolModel):
     schema_version: Literal[1] = 1
     metric_id: MetricId
     kind: MetricKind
-    implementation: RepoRelPath
+    implementation: PythonRepoRelPath
     params: MetricParams
-
-    @model_validator(mode="after")
-    def validate_implementation_path(self) -> MetricSpec:
-        """Require the implementation to occupy its canonical identity path."""
-        expected = f"src/mantra/metrics/{self.kind}/{self.metric_id}/compute.py"
-        if self.implementation != expected:
-            raise ValueError("metric implementation must match its kind and metric ID")
-        return self
 
 
 class Measurement(ProtocolModel):
@@ -1009,6 +1013,7 @@ class StoredInputRef(ProtocolModel):
     kind: Literal["stored"] = "stored"
     pointer: ArtifactPointerRef
     path: RepoRelPath
+    data_role: DataRole
 
     @model_validator(mode="after")
     def validate_materialization_path(self) -> StoredInputRef:
@@ -1052,7 +1057,8 @@ class SingleFileArtifactSpec(ProtocolModel):
 
     kind: Literal["file"] = "file"
     path: RepoRelPath
-    loader: ArtifactLoaderId
+    loader: ArtifactLoaderPath
+    data_role: DataRole
 
 
 class BundleArtifactSpec(ProtocolModel):
@@ -1060,7 +1066,8 @@ class BundleArtifactSpec(ProtocolModel):
 
     kind: Literal["bundle"] = "bundle"
     path: RepoRelPath
-    loader: ArtifactLoaderId
+    loader: ArtifactLoaderPath
+    data_role: DataRole
 
 
 ArtifactSpec = Annotated[
@@ -1075,7 +1082,7 @@ class BaseSpec(ProtocolModel):
     kind: str
     schema_version: Literal[1] = 1
 
-    script: RepoRelPath
+    script: PythonRepoRelPath
 
     environment: GCEEnvironmentSpec | None = None
     metric_ids: tuple[MetricId, ...] = ()
@@ -1084,41 +1091,28 @@ class BaseSpec(ProtocolModel):
 
     @model_validator(mode="after")
     def validate_artifact_paths(self) -> BaseSpec:
-        """Enforce canonical script, artifact, and metric declarations."""
+        """Enforce entrypoint, artifact, and metric declarations."""
         if len(set(self.metric_ids)) != len(self.metric_ids):
             raise ValueError("stage metric IDs must be unique")
 
-        stage_paths = {
-            "download": ("datasets", "download.py", "datasets"),
-            "build": ("priors", "build.py", "priors"),
-            "embed": ("models", "embed.py", "models"),
-            "train": ("models", "train.py", "models"),
-            "evaluate": ("models", "evaluate.py", "evaluations"),
+        artifact_categories = {
+            "download": "datasets",
+            "build": "priors",
+            "embed": "models",
+            "train": "models",
+            "evaluate": "evaluations",
         }
-        stage_path = stage_paths.get(self.kind)
-        if stage_path is None:
-            raise ValueError("stage kind has no canonical path contract")
-        source_category, operation, artifact_category = stage_path
+        artifact_category = artifact_categories.get(self.kind)
+        if artifact_category is None:
+            raise ValueError("stage kind has no artifact category contract")
 
         checkpoint_artifacts = {PARAMETERS, RESUME_STATE}
         if self.kind != "train" and checkpoint_artifacts & set(self.artifacts):
             raise ValueError(
-                "parameters and resume_state are reserved for "
-                "training stages"
+                "parameters and resume_state are reserved for training stages"
             )
         if self.kind != "evaluate" and PREDICTIONS in self.artifacts:
             raise ValueError("predictions is reserved for evaluation stages")
-
-        script_parts = self.script.split("/")
-        if (
-            len(script_parts) != 5
-            or script_parts[:3] != ["src", "mantra", source_category]
-            or re.fullmatch(r"[a-z][a-z0-9_]*", script_parts[3]) is None
-            or script_parts[4] != operation
-        ):
-            raise ValueError(
-                "stage script must use its canonical category, entity ID, and operation"
-            )
 
         artifact_roots: dict[RepoRelPath, ArtifactName] = {}
 
@@ -1136,11 +1130,6 @@ class BaseSpec(ProtocolModel):
                 raise ValueError(
                     f"artifact {name!r} path must use a run artifact category "
                     "and entity ID"
-                )
-
-            if self.kind != "evaluate" and parts[7] != script_parts[3]:
-                raise ValueError(
-                    f"artifact {name!r} entity ID must match the stage script"
                 )
 
             if repo_file_paths_overlap(artifact.path, self.script):
@@ -1251,7 +1240,7 @@ class TrainSpec(InternalSpec):
 
     @model_validator(mode="after")
     def validate_terminal_checkpoint(self) -> TrainSpec:
-        """Enforce the canonical terminal checkpoint and continuation inputs."""
+        """Enforce the canonical terminal checkpoint and resume inputs."""
         required_artifacts = {PARAMETERS, RESUME_STATE}
         missing_artifacts = required_artifacts - set(self.artifacts)
         if missing_artifacts:
@@ -1260,8 +1249,8 @@ class TrainSpec(InternalSpec):
                 f"training stages must declare terminal checkpoint artifacts: {missing}"
             )
 
-        model_input = self.inputs.get(CHECKPOINT_PARAMETERS_INPUT)
-        state_input = self.inputs.get(CHECKPOINT_RESUME_INPUT)
+        model_input = self.inputs.get(PARAMETERS_INPUT)
+        state_input = self.inputs.get(RESUME_STATE_INPUT)
 
         if (model_input is None) != (state_input is None):
             raise ValueError("checkpoint inputs must be declared together")
@@ -1285,13 +1274,9 @@ class TrainSpec(InternalSpec):
                     "checkpoint inputs must select one checkpoint-producing stage"
                 )
             if model_input.producer_artifact != PARAMETERS:
-                raise ValueError(
-                    "checkpoint_parameters must select parameters"
-                )
+                raise ValueError("parameters input must select parameters")
             if state_input.producer_artifact != RESUME_STATE:
-                raise ValueError(
-                    "checkpoint_resume_state must select resume_state"
-                )
+                raise ValueError("resume_state input must select resume_state")
 
         return self
 
@@ -1315,7 +1300,7 @@ class EvaluateSpec(InternalSpec):
         if len(set(self.split_inputs)) != len(self.split_inputs):
             raise ValueError("evaluation split input names must be unique")
 
-        model_input = self.inputs.get(EVALUATION_PARAMETERS_INPUT)
+        model_input = self.inputs.get(PARAMETERS_INPUT)
         if model_input is None:
             raise ValueError("evaluation requires a parameters input")
 
@@ -1326,8 +1311,12 @@ class EvaluateSpec(InternalSpec):
             raise ValueError("evaluation_dataset must be a stored input")
         if dataset_input.pointer.path.split("/")[1] != "datasets":
             raise ValueError("evaluation_dataset must use inputs/datasets")
+        if dataset_input.data_role not in {"evaluation", "benchmark"}:
+            raise ValueError(
+                "evaluation_dataset data_role must be evaluation or benchmark"
+            )
 
-        reserved_inputs = {EVALUATION_PARAMETERS_INPUT, EVALUATION_DATASET_INPUT}
+        reserved_inputs = {PARAMETERS_INPUT, EVALUATION_DATASET_INPUT}
         if reserved_inputs & set(self.split_inputs):
             raise ValueError(
                 "evaluation split inputs must differ from reserved input names"
@@ -1348,33 +1337,35 @@ class EvaluateSpec(InternalSpec):
                 raise ValueError(
                     f"evaluation split input {split_name!r} must use inputs/benchmarks"
                 )
+            if split_input.data_role != dataset_input.data_role:
+                raise ValueError(
+                    f"evaluation split input {split_name!r} data_role must match "
+                    "evaluation_dataset"
+                )
 
         if model_input.kind == "future":
             if model_input.producer_artifact != PARAMETERS:
                 raise ValueError("same-run evaluation must consume parameters")
-        elif model_input.pointer.path.split("/")[1] != "models":
-            raise ValueError("stored evaluation model must use inputs/models")
+        else:
+            if model_input.pointer.path.split("/")[1] != "models":
+                raise ValueError("stored evaluation model must use inputs/models")
+            if model_input.data_role not in {"training", "validation"}:
+                raise ValueError(
+                    "stored evaluation parameters data_role must be training or "
+                    "validation"
+                )
 
         prediction = self.artifacts.get(PREDICTIONS)
         if prediction is None:
             raise ValueError("evaluation must declare a predictions artifact")
 
-        if prediction.kind != "file":
-            raise ValueError("predictions must be a single-file artifact")
-
-        prediction_parts = prediction.path.split("/")
-        if (
-            len(prediction_parts) != 9
-            or prediction_parts[7] != self.evaluation_id
-            or prediction_parts[8] != "predictions.h5ad"
+        if any(
+            artifact.data_role != dataset_input.data_role
+            for artifact in self.artifacts.values()
         ):
             raise ValueError(
-                "predictions must use artifacts/evaluations/"
-                "<evaluation_id>/predictions.h5ad"
+                "evaluation artifact data_role must match evaluation_dataset"
             )
-
-        if prediction.loader != "predictions_h5ad":
-            raise ValueError("predictions must use the predictions_h5ad loader")
 
         if any(
             artifact.path.split("/")[7] != self.evaluation_id

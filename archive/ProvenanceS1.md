@@ -2298,8 +2298,8 @@ tracked files or untracked files before input materialization.
 
 ## 22. Implementation order
 
-The checked items are implemented in [the authoritative models](records.py),
-[the identifier definitions](ids.py), and [the focused model tests](../tests/test_records.py).
+The checked items are implemented in [the authoritative models](../viper/records.py),
+[the identifier definitions](../viper/ids.py), and [the focused model tests](../tests/test_records.py).
 
 ### Artifact and input foundation
 

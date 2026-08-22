@@ -1,6 +1,6 @@
 # Full-Batch Training on GPU-Resident Data: Architecture, Determinism, and Exact Continuation
 
-*Related papers: [Part I — From Source Code to Silicon](E2E_execution.md) and [Part II — From Training Data to Updated Weights](E2E_ML_training.md).*
+*Related papers: [Part I — From Source Code to Silicon](E2E_execution.md) and [Part II — From Training Data to Updated Weights](../archive/E2E_ML_training.md).*
 
 ## Abstract
 

@@ -1,11 +1,11 @@
-"""MANTRA artifact provenance protocol."""
+"""VIPER execution and artifact provenance engine."""
 
-from . import authoring, continuation, execution, ids, records
+from . import authoring, ids, records, resume, stage_execution
 
 __all__ = [
     "authoring",
-    "continuation",
-    "execution",
     "ids",
     "records",
+    "resume",
+    "stage_execution",
 ]

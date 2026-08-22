@@ -1,4 +1,4 @@
-"""End-to-end tests for complete MANTRA provenance chains.
+"""End-to-end tests for complete VIPER provenance chains.
 
 The fixtures publish run plans, stage results, artifacts, measurements, and
 resolved runs to an in-memory document store. The tests then exercise the
@@ -17,9 +17,10 @@ import torch
 import yaml
 from pydantic import HttpUrl, TypeAdapter
 
+from tests.fixtures import metric_spec, resume_state, verification_policy
 from viper.records import (
-    RESUME_STATE,
     PARAMETERS,
+    RESUME_STATE,
     ArtifactPointer,
     ArtifactPointerRef,
     BaseSpec,
@@ -97,10 +98,9 @@ from viper.verifier import (
     verify_promoted_artifact,
     verify_run_result,
 )
-from tests.fixtures import resume_state, metric_spec, verification_policy
 
-SOURCE_REPOSITORY = HttpUrl("https://github.com/example/mantra")
-ARTIFACT_REPOSITORY = "example/mantra-runs"
+SOURCE_REPOSITORY = HttpUrl("https://github.com/example/viper-project")
+ARTIFACT_REPOSITORY = "example/viper-runs"
 PRODUCER_SOURCE_COMMIT = "1" * 40
 PRODUCER_PLAN_COMMIT = "2" * 40
 PRODUCER_RESULT_COMMIT = "3" * 40
@@ -111,6 +111,11 @@ YAML_ADAPTER = TypeAdapter(Any)
 POLICY = verification_policy(SOURCE_REPOSITORY)
 
 
+def loader_path(name: str) -> str:
+    """Return one exact user-repository artifact-loader path."""
+    return f"project/loaders/{name}.py"
+
+
 def yaml_bytes(value: object) -> bytes:
     """Serialize one protocol record as deterministic YAML bytes."""
     data = YAML_ADAPTER.dump_python(value, mode="json")
@@ -119,8 +124,8 @@ def yaml_bytes(value: object) -> bytes:
     return data_s.encode("utf-8")
 
 
-def continuation_bytes() -> bytes:
-    """Serialize one valid training-continuation artifact."""
+def resume_state_bytes() -> bytes:
+    """Serialize one valid training resume-state artifact."""
     stream = BytesIO()
     torch.save(
         resume_state().model_dump(mode="python"),
@@ -194,7 +199,7 @@ def environment(source_commit: str) -> GCEEnvironmentSpec:
     """Build the shared requested execution environment."""
     return GCEEnvironmentSpec(
         kind="gce",
-        machine_image=GCEMachineImageRef(project="mantra-project", name="mantra-image"),
+        machine_image=GCEMachineImageRef(project="viper-project", name="viper-image"),
         machine_type="n2-standard-8",
         compute=CPUComputeSpec(kind="cpu"),
         lockfile=git_file(source_commit, "environment.yml"),
@@ -304,8 +309,8 @@ def resolved_environment(
     return ResolvedGCEEnvironment(
         kind="gce",
         machine_image=ResolvedGCEMachineImageRef(
-            project="mantra-project",
-            name="mantra-image",
+            project="viper-project",
+            name="viper-image",
             id="123456789",
         ),
         machine_type="n2-standard-8",
@@ -340,7 +345,7 @@ def add_loader(
     store.put(
         git_file(
             source_commit,
-            f"src/mantra/artifact_loaders/{loader_id}.py",
+            loader_path(loader_id),
         ),
         raw,
     )
@@ -525,7 +530,7 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
     """Publish a complete upstream run for stored-input verification."""
     run_root = "experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA"
     download = DownloadSpec(
-        script="src/mantra/datasets/toy/download.py",
+        script="pipelines/download.py",
         inputs={
             "archive": RemoteFileRef(
                 kind="remote",
@@ -537,17 +542,17 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
             "dataset": SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/datasets/toy/dataset.bin",
-                loader="bytes_file",
+                loader=loader_path("bytes_file"),
             ),
             "split": SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/datasets/toy/split.json",
-                loader="bytes_file",
+                loader=loader_path("bytes_file"),
             ),
         },
     )
     train = TrainSpec(
-        script="src/mantra/models/toy/train.py",
+        script="training/fit.py",
         inputs={
             "training_dataset": FutureInputRef(
                 kind="future",
@@ -562,12 +567,12 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
             PARAMETERS: SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/models/toy/parameters.bin",
-                loader="bytes_file",
+                loader=loader_path("bytes_file"),
             ),
             RESUME_STATE: SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/models/toy/resume_state.bin",
-                loader="resume_state",
+                loader=loader_path("resume_state"),
             ),
         },
     )
@@ -681,7 +686,7 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
                 store,
                 train_commit,
                 str(train.artifacts[RESUME_STATE].path),
-                continuation_bytes(),
+                resume_state_bytes(),
             ),
         },
         completed_at=datetime(2026, 8, 20, 20, 30, tzinfo=UTC),
@@ -766,7 +771,7 @@ def build_complete_fixture(
     run_id = "01ARZ3NDEKTSV4RRFFQ69G5FAB"
     run_root = f"experiments/model_eval/runs/baseline/{run_id}"
     build = BuildSpec(
-        script="src/mantra/priors/toy/build.py",
+        script="features/build_prior.py",
         inputs={
             "dataset": StoredInputRef(
                 kind="stored",
@@ -779,12 +784,12 @@ def build_complete_fixture(
             "prior": BundleArtifactSpec(
                 kind="bundle",
                 path=f"{run_root}/artifacts/priors/toy",
-                loader="prior_bundle",
+                loader=loader_path("prior_bundle"),
             )
         },
     )
     train = TrainSpec(
-        script="src/mantra/models/toy/train.py",
+        script="training/fit.py",
         inputs={
             "prior": FutureInputRef(
                 kind="future",
@@ -799,17 +804,17 @@ def build_complete_fixture(
             PARAMETERS: SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/models/toy/parameters.bin",
-                loader="bytes_file",
+                loader=loader_path("bytes_file"),
             ),
             RESUME_STATE: SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/models/toy/resume_state.bin",
-                loader="resume_state",
+                loader=loader_path("resume_state"),
             ),
         },
     )
     evaluate = EvaluateSpec(
-        script="src/mantra/models/toy/evaluate.py",
+        script="evaluation/predict.py",
         evaluation_id="toy_predictions",
         metric_ids=("pearson_correlation",),
         split_inputs=("test_split",),
@@ -835,9 +840,9 @@ def build_complete_fixture(
             "predictions": SingleFileArtifactSpec(
                 kind="file",
                 path=(
-                    f"{run_root}/artifacts/evaluations/toy_predictions/predictions.h5ad"
+                    f"{run_root}/artifacts/evaluations/toy_predictions/predictions.json"
                 ),
-                loader="predictions_h5ad",
+                loader=loader_path("json_file"),
             )
         },
     )
@@ -908,7 +913,7 @@ def build_complete_fixture(
     add_loader(store, MAIN_SOURCE_COMMIT, "prior_bundle", bundle=True)
     add_loader(store, MAIN_SOURCE_COMMIT, "bytes_file")
     add_loader(store, MAIN_SOURCE_COMMIT, "resume_state")
-    add_loader(store, MAIN_SOURCE_COMMIT, "predictions_h5ad")
+    add_loader(store, MAIN_SOURCE_COMMIT, "json_file")
     resolved_env = resolved_environment(store, MAIN_SOURCE_COMMIT)
     build_source = add_source_file(
         store, MAIN_SOURCE_COMMIT, str(build.script), b"# build\n"
@@ -972,7 +977,7 @@ def build_complete_fixture(
                 store,
                 train_commit,
                 str(train.artifacts[RESUME_STATE].path),
-                continuation_bytes(),
+                resume_state_bytes(),
             ),
         },
         completed_at=datetime(2026, 8, 20, 21, 30, tzinfo=UTC),

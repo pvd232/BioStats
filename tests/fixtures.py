@@ -25,11 +25,11 @@ def verification_policy(*repositories: object) -> VerificationPolicy:
 
 
 def metric_spec(metric_id: str, kind: MetricKind) -> MetricSpec:
-    """Build one metric bound to its canonical implementation path."""
+    """Build one metric bound to an exact user-repository implementation path."""
     return MetricSpec(
         metric_id=metric_id,
         kind=kind,
-        implementation=f"src/mantra/metrics/{kind}/{metric_id}/compute.py",
+        implementation=f"project/metrics/{kind}/{metric_id}.py",
         params=MetricParams(),
     )
 
@@ -40,7 +40,7 @@ def resume_state(
     prefetch_factor: int | None = None,
     persistent_workers: bool = False,
 ) -> ResumeState:
-    """Build a valid serialized continuation state for verifier tests."""
+    """Build a valid serialized resume state for verifier tests."""
     return ResumeState(
         optimizer_state={"state": {}, "param_groups": []},
         main_process_rng=MainProcessRNGState(

@@ -1,6 +1,6 @@
 # Versioning policy
 
-MANTRA provenance uses semantic package versions of the form
+VIPER provenance uses semantic package versions of the form
 `major.minor.patch`.
 
 - Increase `major` when a released Python API or serialized protocol contract

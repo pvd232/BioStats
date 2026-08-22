@@ -10,9 +10,9 @@ import yaml
 from pydantic import ValidationError
 
 from viper.records import (
-    RESUME_STATE,
     PARAMETERS,
     PREDICTIONS,
+    RESUME_STATE,
     CUDABackendContext,
     EvaluateParams,
     EvaluateSpec,
@@ -26,12 +26,12 @@ from viper.records import (
     TrainSpec,
     VariantSpec,
 )
-from viper.yaml_io import load_resolved_spec, load_spec
+from viper.serialization import load_resolved_stage, load_stage_spec
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64
 GIT_COMMIT = "a" * 40
-REPOSITORY = "https://github.com/example/mantra"
+REPOSITORY = "https://github.com/example/viper-project"
 RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 RUN_ROOT = f"experiments/e001_strand/runs/baseline/{RUN_ID}"
 
@@ -51,8 +51,8 @@ def environment(*, compute: dict | None = None) -> dict:
     return {
         "kind": "gce",
         "machine_image": {
-            "project": "mantra-project",
-            "name": "mantra-image",
+            "project": "viper-project",
+            "name": "viper-image",
         },
         "machine_type": "n2-standard-8",
         "compute": compute or {"kind": "cpu"},
@@ -101,7 +101,7 @@ def artifact(path: str, loader: str) -> dict:
     return {
         "kind": "file",
         "path": path,
-        "loader": loader,
+        "loader": f"project/loaders/{loader}.py",
     }
 
 
@@ -118,7 +118,7 @@ def train_payload() -> dict:
     """Build a valid training-stage request payload."""
     return {
         "kind": "train",
-        "script": "src/mantra/models/strand/train.py",
+        "script": "project/training/fit.py",
         "inputs": {
             "training_dataset": stored_input(
                 "inputs/datasets/replogle/dataset.h5ad",
@@ -233,7 +233,7 @@ class RunPlanTests(unittest.TestCase):
         """Verify that attempt file storage locations are unique."""
         location = {
             "kind": "huggingface",
-            "repository": "example/mantra-runs",
+            "repository": "example/viper-runs",
             "commit": GIT_COMMIT,
             "path": f"{RUN_ROOT}/logs/1.train.stdout.log",
             "repo_type": "dataset",
@@ -260,7 +260,7 @@ class ParameterContractTests(unittest.TestCase):
     """Verify extensible stage and metric parameter records."""
 
     def test_training_parameters_preserve_project_defined_json_fields(self) -> None:
-        """Preserve project-defined values without a MANTRA plugin registration."""
+        """Preserve project-defined values without a VIPER plugin registration."""
         params = TrainParams.model_validate(
             {
                 "schema_version": 1,
@@ -285,18 +285,26 @@ class ParameterContractTests(unittest.TestCase):
                 }
             )
 
-    def test_metric_implementation_path_follows_role_and_identity(self) -> None:
-        """Bind a metric to its canonical source path."""
+    def test_metric_implementation_accepts_user_repository_path(self) -> None:
+        """Bind a metric to any exact Python file in the user repository."""
         metric = MetricSpec(
             metric_id="pearson_correlation",
             kind="evaluation",
-            implementation=(
-                "src/mantra/metrics/evaluation/pearson_correlation/compute.py"
-            ),
+            implementation="analysis/quality/correlation.py",
             params=MetricParams.model_validate({"dim": 1}),
         )
 
         self.assertEqual(metric.params.model_dump()["dim"], 1)
+
+    def test_metric_implementation_requires_python_file(self) -> None:
+        """Reject a metric path that does not identify a Python file."""
+        with self.assertRaisesRegex(ValidationError, "Python file"):
+            MetricSpec(
+                metric_id="pearson_correlation",
+                kind="evaluation",
+                implementation="analysis/quality/correlation.yaml",
+                params=MetricParams(),
+            )
 
 
 class RuntimeInvariantTests(unittest.TestCase):
@@ -329,22 +337,26 @@ class TrainingCheckpointTests(unittest.TestCase):
     def test_repository_paths_reject_control_characters(self) -> None:
         """Verify that repository paths reject control characters."""
         payload = train_payload()
-        payload["script"] = "src/mantra/models/strand/train.py\nother"
+        payload["script"] = "project/training/fit.py\nother"
 
         with self.assertRaisesRegex(ValidationError, "control character"):
             TrainSpec.model_validate(payload)
 
-    def test_stage_paths_use_protocol_roots(self) -> None:
-        """Verify that stage paths use protocol roots."""
-        invalid_script = train_payload()
-        invalid_script["script"] = "tools/train.py"
-        with self.assertRaisesRegex(ValidationError, "canonical category"):
-            TrainSpec.model_validate(invalid_script)
+    def test_stage_source_path_is_repository_agnostic(self) -> None:
+        """Accept any repository-relative Python entrypoint selected by the author."""
+        payload = train_payload()
+        payload["script"] = "unconventional/layout/run_training.py"
 
-        wrong_script_category = train_payload()
-        wrong_script_category["script"] = "src/mantra/priors/strand/train.py"
-        with self.assertRaisesRegex(ValidationError, "canonical category"):
-            TrainSpec.model_validate(wrong_script_category)
+        spec = TrainSpec.model_validate(payload)
+
+        self.assertEqual(spec.script, "unconventional/layout/run_training.py")
+
+    def test_protocol_managed_paths_use_protocol_roots(self) -> None:
+        """Keep inputs and outputs under their protocol-managed roots."""
+        invalid_script = train_payload()
+        invalid_script["script"] = "project/training/spec.yaml"
+        with self.assertRaisesRegex(ValidationError, "Python file"):
+            TrainSpec.model_validate(invalid_script)
 
         invalid_input = train_payload()
         invalid_input["inputs"]["training_dataset"]["path"] = "data/train.h5ad"
@@ -386,22 +398,23 @@ class TrainingCheckpointTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValidationError, "must not"):
                     TrainSpec.model_validate(payload)
 
-    def test_artifact_entity_matches_stage_script_entity(self) -> None:
-        """Verify that artifact entity matches stage script entity."""
+    def test_artifact_identity_is_independent_of_script_directory(self) -> None:
+        """Allow protocol artifact identity to differ from source-code layout."""
         payload = train_payload()
         payload["artifacts"][PARAMETERS]["path"] = (
             f"{RUN_ROOT}/artifacts/models/other/parameters.safetensors"
         )
 
-        with self.assertRaisesRegex(ValidationError, "must match the stage script"):
-            TrainSpec.model_validate(payload)
+        spec = TrainSpec.model_validate(payload)
+
+        self.assertIn("/models/other/", spec.artifacts[PARAMETERS].path)
 
     def test_reserved_artifact_names_are_stage_specific(self) -> None:
         """Verify that reserved artifact names are stage specific."""
         payload = train_payload()
         payload["artifacts"][PREDICTIONS] = artifact(
-            f"{RUN_ROOT}/artifacts/evaluations/invalid/predictions.h5ad",
-            "predictions_h5ad",
+            f"{RUN_ROOT}/artifacts/evaluations/invalid/predictions.json",
+            "json_file",
         )
 
         with self.assertRaisesRegex(ValidationError, "reserved for evaluation"):
@@ -420,12 +433,12 @@ class TrainingCheckpointTests(unittest.TestCase):
         payload = train_payload()
         payload["inputs"].update(
             {
-                "checkpoint_parameters": {
+                "parameters": {
                     "kind": "future",
                     "producer_stage_id": "train_01",
                     "producer_artifact": PARAMETERS,
                 },
-                "checkpoint_resume_state": {
+                "resume_state": {
                     "kind": "future",
                     "producer_stage_id": "train_01",
                     "producer_artifact": RESUME_STATE,
@@ -434,7 +447,7 @@ class TrainingCheckpointTests(unittest.TestCase):
         )
 
         spec = TrainSpec.model_validate(payload)
-        checkpoint = spec.inputs["checkpoint_parameters"]
+        checkpoint = spec.inputs["parameters"]
         assert isinstance(checkpoint, FutureInputRef)
         self.assertEqual(
             checkpoint.producer_stage_id,
@@ -444,7 +457,7 @@ class TrainingCheckpointTests(unittest.TestCase):
     def test_checkpoint_inputs_must_occur_together(self) -> None:
         """Verify that checkpoint inputs must occur together."""
         payload = train_payload()
-        payload["inputs"]["checkpoint_parameters"] = {
+        payload["inputs"]["parameters"] = {
             "kind": "future",
             "producer_stage_id": "train_01",
             "producer_artifact": PARAMETERS,
@@ -458,12 +471,12 @@ class TrainingCheckpointTests(unittest.TestCase):
         payload = train_payload()
         payload["inputs"].update(
             {
-                "checkpoint_parameters": {
+                "parameters": {
                     "kind": "future",
                     "producer_stage_id": "train_01",
                     "producer_artifact": PARAMETERS,
                 },
-                "checkpoint_resume_state": {
+                "resume_state": {
                     "kind": "future",
                     "producer_stage_id": "train_02",
                     "producer_artifact": RESUME_STATE,
@@ -479,11 +492,11 @@ class TrainingCheckpointTests(unittest.TestCase):
         payload = train_payload()
         payload["inputs"].update(
             {
-                "checkpoint_parameters": stored_input(
+                "parameters": stored_input(
                     "inputs/priors/strand/parameters.safetensors",
                     "inputs/priors/strand/parameters.pointer.yaml",
                 ),
-                "checkpoint_resume_state": stored_input(
+                "resume_state": stored_input(
                     "inputs/priors/strand/resume_state.pt",
                     "inputs/priors/strand/resume_state.pointer.yaml",
                 ),
@@ -502,7 +515,7 @@ class EvaluationTests(unittest.TestCase):
         spec = EvaluateSpec.model_validate(
             {
                 "kind": "evaluate",
-                "script": "src/mantra/models/strand/evaluate.py",
+                "script": "project/evaluation/predict.py",
                 "evaluation_id": "strand_predictions",
                 "metric_ids": ["pearson_correlation"],
                 "split_inputs": ["perturbation_split"],
@@ -524,8 +537,8 @@ class EvaluationTests(unittest.TestCase):
                 "params": {},
                 "artifacts": {
                     PREDICTIONS: artifact(
-                        f"{RUN_ROOT}/artifacts/evaluations/strand_predictions/predictions.h5ad",
-                        "predictions_h5ad",
+                        f"{RUN_ROOT}/artifacts/evaluations/strand_predictions/predictions.json",
+                        "json_file",
                     )
                 },
             }
@@ -533,11 +546,50 @@ class EvaluationTests(unittest.TestCase):
 
         self.assertIn(PREDICTIONS, spec.artifacts)
 
+    def test_predictions_may_use_a_project_defined_bundle_format(self) -> None:
+        """Accept a prediction bundle with an exact project-owned loader path."""
+        payload = {
+            "kind": "evaluate",
+            "script": "evaluation/predict.py",
+            "evaluation_id": "structured_predictions",
+            "metric_ids": ["accuracy"],
+            "split_inputs": ["test_split"],
+            "inputs": {
+                "parameters": {
+                    "kind": "future",
+                    "producer_stage_id": "train",
+                    "producer_artifact": PARAMETERS,
+                },
+                "evaluation_dataset": stored_input(
+                    "inputs/datasets/test/data.bin",
+                    "inputs/datasets/test/current.pointer.yaml",
+                ),
+                "test_split": stored_input(
+                    "inputs/benchmarks/test/split.json",
+                    "inputs/benchmarks/test/current.pointer.yaml",
+                ),
+            },
+            "params": {},
+            "artifacts": {
+                PREDICTIONS: {
+                    "kind": "bundle",
+                    "path": (
+                        f"{RUN_ROOT}/artifacts/evaluations/structured_predictions"
+                    ),
+                    "loader": "custom_code/load_prediction_bundle.py",
+                }
+            },
+        }
+
+        spec = EvaluateSpec.model_validate(payload)
+
+        self.assertEqual(spec.artifacts[PREDICTIONS].kind, "bundle")
+
     def test_evaluation_inputs_use_role_specific_paths(self) -> None:
         """Verify that evaluation inputs use role specific paths."""
         payload = {
             "kind": "evaluate",
-            "script": "src/mantra/models/strand/evaluate.py",
+            "script": "project/evaluation/predict.py",
             "evaluation_id": "strand_predictions",
             "metric_ids": ["pearson_correlation"],
             "split_inputs": ["split"],
@@ -558,8 +610,8 @@ class EvaluationTests(unittest.TestCase):
             "params": {},
             "artifacts": {
                 PREDICTIONS: artifact(
-                    f"{RUN_ROOT}/artifacts/evaluations/strand_predictions/predictions.h5ad",
-                    "predictions_h5ad",
+                    f"{RUN_ROOT}/artifacts/evaluations/strand_predictions/predictions.json",
+                    "json_file",
                 )
             },
         }
@@ -593,7 +645,7 @@ class EvaluationTests(unittest.TestCase):
         """Verify that evaluation rejects training checkpoint outputs."""
         payload = {
             "kind": "evaluate",
-            "script": "src/mantra/models/strand/evaluate.py",
+            "script": "project/evaluation/predict.py",
             "evaluation_id": "strand_predictions",
             "metric_ids": ["pearson_correlation"],
             "split_inputs": ["split"],
@@ -614,8 +666,8 @@ class EvaluationTests(unittest.TestCase):
             "params": {},
             "artifacts": {
                 PREDICTIONS: artifact(
-                    f"{RUN_ROOT}/artifacts/evaluations/strand_predictions/predictions.h5ad",
-                    "predictions_h5ad",
+                    f"{RUN_ROOT}/artifacts/evaluations/strand_predictions/predictions.json",
+                    "json_file",
                 ),
                 PARAMETERS: artifact(
                     f"{RUN_ROOT}/artifacts/evaluations/strand_predictions/parameters.safetensors",
@@ -727,14 +779,12 @@ class YAMLLoadingTests(unittest.TestCase):
     def test_active_examples_load_through_v4_unions(self) -> None:
         """Verify that active examples load through v4 unions."""
         examples = (
-            ("stages/download/spec.yaml", load_spec),
-            ("stages/build/spec.yaml", load_spec),
-            ("stages/download/resolved.yaml", load_resolved_spec),
-            ("stages/build/resolved.yaml", load_resolved_spec),
+            ("stages/download/spec.yaml", load_stage_spec),
+            ("stages/build/spec.yaml", load_stage_spec),
+            ("stages/download/resolved.yaml", load_resolved_stage),
+            ("stages/build/resolved.yaml", load_resolved_stage),
         )
-        example_root = (
-            Path(__file__).parents[1] / "viper" / "examples" / "provenance"
-        )
+        example_root = Path(__file__).parents[1] / "examples" / "provenance"
 
         for filename, loader in examples:
             with self.subTest(filename=filename):
@@ -748,7 +798,7 @@ class YAMLLoadingTests(unittest.TestCase):
             assert isinstance(dumped, str)
             path.write_text(dumped, encoding="utf-8")
 
-            loaded = load_spec(path)
+            loaded = load_stage_spec(path)
 
         self.assertIsInstance(loaded, TrainSpec)
 
@@ -759,7 +809,7 @@ class YAMLLoadingTests(unittest.TestCase):
             path.write_text("kind: train\nkind: evaluate\n", encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "duplicate YAML key"):
-                load_spec(path)
+                load_stage_spec(path)
 
     def test_unhashable_yaml_keys_are_rejected_as_validation_errors(self) -> None:
         """Verify that unhashable yaml keys are rejected as validation errors."""
@@ -768,7 +818,7 @@ class YAMLLoadingTests(unittest.TestCase):
             path.write_text("? [kind, train]\n: invalid\n", encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "mapping keys must be scalar"):
-                load_spec(path)
+                load_stage_spec(path)
 
 
 if __name__ == "__main__":

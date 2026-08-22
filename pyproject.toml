@@ -3,10 +3,10 @@ requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mantra-provenance"
+name = "viper-provenance"
 version = "0.1.0"
-description = "Artifact provenance models for MANTRA"
-readme = "viper/README.md"
+description = "Reproducible execution and artifact provenance for computational experiments"
+readme = "README.md"
 requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -16,10 +16,10 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
-    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "anndata>=0.12,<1",
     "huggingface_hub>=1,<2",
     "numpy>=2,<3",
     "pydantic>=2.12,<3",
@@ -43,10 +43,10 @@ release = [
 Repository = "https://github.com/pvd232/BioStats"
 
 [project.scripts]
-mantra = "viper.cli:main"
+viper = "viper.cli:main"
 
 [tool.ruff]
-exclude = ["viper/archive"]
+exclude = ["archive"]
 target-version = "py311"
 
 [tool.ruff.lint]
@@ -56,15 +56,11 @@ select = ["D", "E", "F", "I", "UP"]
 convention = "google"
 
 [tool.pytest.ini_options]
-pythonpath = [".", "src"]
+pythonpath = [".", "examples/project/src"]
 
 [tool.setuptools]
 include-package-data = false
 
-[tool.setuptools.package-data]
-viper = ["README.md"]
-
 [tool.setuptools.packages.find]
-where = [".", "src"]
-include = ["viper*", "mantra*"]
-exclude = ["viper.archive*"]
+where = ["."]
+include = ["viper*"]

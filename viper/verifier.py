@@ -1,4 +1,4 @@
-"""Cross-file verification for MANTRA provenance records."""
+"""Cross-file verification for VIPER provenance records."""
 
 from __future__ import annotations
 
@@ -20,12 +20,11 @@ from pydantic import TypeAdapter
 
 from .ids import InputName, StageId
 from .records import (
-    CHECKPOINT_PARAMETERS_INPUT,
-    CHECKPOINT_RESUME_INPUT,
-    RESUME_STATE,
-    EVALUATION_PARAMETERS_INPUT,
     PARAMETERS,
+    PARAMETERS_INPUT,
     PREDICTIONS,
+    RESUME_STATE,
+    RESUME_STATE_INPUT,
     ArtifactName,
     ArtifactPointer,
     ArtifactSpec,
@@ -33,6 +32,7 @@ from .records import (
     BenchmarkResult,
     BenchmarkSpec,
     BuildSpec,
+    DataRole,
     EmbedSpec,
     EvaluateSpec,
     ExperimentSpec,
@@ -55,6 +55,7 @@ from .records import (
     ResolvedSpec,
     ResolvedStageRef,
     ResolvedStoredInputRef,
+    ResumeState,
     RunAttempt,
     RunSpec,
     SnapshotFileRef,
@@ -62,12 +63,11 @@ from .records import (
     StageResultSnapshotRef,
     StorageModel,
     StoredInputRef,
-    ResumeState,
     TrainSpec,
     VariantSpec,
     repo_file_paths_overlap,
 )
-from .yaml_io import load_yaml_bytes
+from .serialization import parse_yaml_bytes
 
 StorageFetcher = Callable[[StorageModel], bytes]
 SPEC_ADAPTER = TypeAdapter(Spec)
@@ -131,6 +131,7 @@ class VerifiedArtifact:
 
     artifact: ResolvedArtifact
     files: tuple[VerifiedSnapshotFile, ...]
+    data_role: DataRole | None = None
 
 
 @dataclass(frozen=True)
@@ -138,6 +139,7 @@ class VerifiedInput:
     """A verified artifact and the local path where a stage consumes it."""
 
     path: RepoRelPath
+    data_role: DataRole
     artifact: ResolvedArtifact
     files: tuple[VerifiedSnapshotFile, ...]
 
@@ -202,7 +204,7 @@ def fetch_git_file_bytes(
                 "Git could not retrieve the referenced file"
             ) from exc
 
-    with tempfile.TemporaryDirectory(prefix="mantra-provenance-git-") as checkout:
+    with tempfile.TemporaryDirectory(prefix="viper-provenance-git-") as checkout:
         init_arguments = ["init", "--quiet"]
         if len(location.commit) == 64:
             init_arguments.append("--object-format=sha256")
@@ -323,6 +325,7 @@ def verify_snapshot_artifact(
     stage: ResolvedStageRef,
     artifact: ResolvedArtifact,
     *,
+    data_role: DataRole | None = None,
     fetcher: StorageFetcher | None = None,
 ) -> VerifiedArtifact:
     """Verify every file representing one artifact in a stage snapshot."""
@@ -344,7 +347,7 @@ def verify_snapshot_artifact(
         )
         for reference in references
     )
-    return VerifiedArtifact(artifact=artifact, files=files)
+    return VerifiedArtifact(artifact=artifact, files=files, data_role=data_role)
 
 
 def load_verified_artifact(
@@ -367,11 +370,12 @@ def load_verified_artifact(
     loader_location = GitFileRef(
         repository=run.source.repository,
         commit=run.source.commit,
-        path=f"src/mantra/artifact_loaders/{declaration.loader}.py",
+        path=declaration.loader,
     )
     loader_raw = retrieve(loader_location)
 
-    module = ModuleType(f"mantra_artifact_loader_{declaration.loader}")
+    loader_digest = hashlib.sha256(declaration.loader.encode()).hexdigest()
+    module = ModuleType(f"viper_artifact_loader_{loader_digest}")
     module.__file__ = str(loader_location.path)
     try:
         exec(compile(loader_raw, module.__file__, "exec"), module.__dict__)
@@ -386,7 +390,7 @@ def load_verified_artifact(
             f"artifact loader {declaration.loader!r} does not define load(path)"
         )
 
-    with tempfile.TemporaryDirectory(prefix="mantra-artifact-") as directory:
+    with tempfile.TemporaryDirectory(prefix="viper-artifact-") as directory:
         root = Path(directory)
         target_path = (
             declaration.path if materialization_path is None else materialization_path
@@ -425,22 +429,20 @@ def load_verified_artifact(
             return loaded
 
         try:
-            continuation = ResumeState.model_validate(loaded)
+            resume_state = ResumeState.model_validate(loaded)
         except ValueError as exc:
             raise VerificationError(
-                "resume_state loader returned an invalid "
-                "ResumeState"
+                "resume_state loader returned an invalid ResumeState"
             ) from exc
 
         expected_configuration = run.reproducibility.parallelism.dataloader
-        if continuation.dataloader.configuration != expected_configuration:
+        if resume_state.dataloader.configuration != expected_configuration:
             raise VerificationError(
-                "resume_state DataLoader configuration does not match "
-                "the run plan"
+                "resume_state DataLoader configuration does not match the run plan"
             )
 
         expected_numpy = run.reproducibility.numpy_randomness
-        saved_numpy = continuation.main_process_rng.numpy
+        saved_numpy = resume_state.main_process_rng.numpy
 
         if set(saved_numpy.generators) != set(expected_numpy.generators):
             raise VerificationError(
@@ -453,7 +455,7 @@ def load_verified_artifact(
                 "resume_state legacy NumPy state does not match the run plan"
             )
 
-        return continuation
+        return resume_state
 
 
 def verify_run_spec(
@@ -465,7 +467,7 @@ def verify_run_spec(
     raw = read_resolved_file(resolved_run.spec, fetcher=fetcher)
 
     try:
-        file_run = RunSpec.model_validate(load_yaml_bytes(raw))
+        file_run = RunSpec.model_validate(parse_yaml_bytes(raw))
     except (yaml.YAMLError, ValueError) as exc:
         raise VerificationError("resolved run spec is not a valid RunSpec") from exc
 
@@ -503,7 +505,7 @@ def verify_experiment_and_variant(
 
     try:
         experiment = ExperimentSpec.model_validate(
-            load_yaml_bytes(retrieve(experiment_location))
+            parse_yaml_bytes(retrieve(experiment_location))
         )
     except (yaml.YAMLError, ValueError) as exc:
         raise VerificationError(
@@ -512,7 +514,7 @@ def verify_experiment_and_variant(
 
     try:
         variant = VariantSpec.model_validate(
-            load_yaml_bytes(retrieve(variant_location))
+            parse_yaml_bytes(retrieve(variant_location))
         )
     except (yaml.YAMLError, ValueError) as exc:
         raise VerificationError(
@@ -593,7 +595,7 @@ def verify_benchmark_spec(
         path=f"benchmarks/{run.benchmark_id}.spec.yaml",
     )
     try:
-        benchmark = BenchmarkSpec.model_validate(load_yaml_bytes(retrieve(location)))
+        benchmark = BenchmarkSpec.model_validate(parse_yaml_bytes(retrieve(location)))
     except (yaml.YAMLError, ValueError) as exc:
         raise VerificationError(
             "benchmark file is not a valid BenchmarkSpec document"
@@ -693,7 +695,7 @@ def verify_run_plan_relationships(
         raise VerificationError("benchmark runs require exactly one evaluation stage")
 
     evaluation = evaluation_stages[0]
-    model_input = evaluation.inputs[EVALUATION_PARAMETERS_INPUT]
+    model_input = evaluation.inputs[PARAMETERS_INPUT]
     if not isinstance(model_input, FutureInputRef):
         raise VerificationError(
             "benchmark evaluation model must select the run estimator"
@@ -770,16 +772,11 @@ def verify_stage_plan(
         raw = verify_resolved_file_bytes(stage_reference, retrieve(location))
 
         try:
-            spec = SPEC_ADAPTER.validate_python(load_yaml_bytes(raw))
+            spec = SPEC_ADAPTER.validate_python(parse_yaml_bytes(raw))
         except (yaml.YAMLError, ValueError) as exc:
             raise VerificationError(
                 f"stage {stage.stage_id!r} file is not a valid stage spec"
             ) from exc
-
-        if not str(spec.script).startswith("src/mantra/"):
-            raise VerificationError(
-                f"stage {stage.stage_id!r} script must be beneath src/mantra"
-            )
 
         artifact_root = f"{run_root(run)}/artifacts/"
         for artifact_name, artifact in spec.artifacts.items():
@@ -936,7 +933,7 @@ def verify_attempt_stages(
             fetcher=fetcher,
         )
         try:
-            resolved_spec = RESOLVED_SPEC_ADAPTER.validate_python(load_yaml_bytes(raw))
+            resolved_spec = RESOLVED_SPEC_ADAPTER.validate_python(parse_yaml_bytes(raw))
         except (yaml.YAMLError, ValueError) as exc:
             raise VerificationError(
                 f"stage {stage_reference.stage_id!r} file is not a valid "
@@ -1362,7 +1359,7 @@ def verify_promoted_artifact(
     """Follow a promoted artifact pointer through its completed producer run."""
     resolved_run_raw = read_resolved_file(pointer.run, fetcher=fetcher)
     try:
-        resolved_run = ResolvedRun.model_validate(load_yaml_bytes(resolved_run_raw))
+        resolved_run = ResolvedRun.model_validate(parse_yaml_bytes(resolved_run_raw))
     except (yaml.YAMLError, ValueError) as exc:
         raise VerificationError(
             "artifact pointer run is not a valid ResolvedRun document"
@@ -1399,7 +1396,7 @@ def verify_promoted_artifact(
         )
         try:
             benchmark_result = BenchmarkResult.model_validate(
-                load_yaml_bytes(benchmark_result_raw)
+                parse_yaml_bytes(benchmark_result_raw)
             )
         except (yaml.YAMLError, ValueError) as exc:
             raise VerificationError(
@@ -1465,14 +1462,14 @@ def verify_stored_input_selections(
 ) -> None:
     """Verify relationships among stored pointers consumed by one stage."""
     if isinstance(stage_spec, TrainSpec):
-        model_input = stage_spec.inputs.get(CHECKPOINT_PARAMETERS_INPUT)
-        state_input = stage_spec.inputs.get(CHECKPOINT_RESUME_INPUT)
+        model_input = stage_spec.inputs.get(PARAMETERS_INPUT)
+        state_input = stage_spec.inputs.get(RESUME_STATE_INPUT)
         if isinstance(model_input, StoredInputRef) and isinstance(
             state_input,
             StoredInputRef,
         ):
-            model_pointer = pointers[CHECKPOINT_PARAMETERS_INPUT]
-            state_pointer = pointers[CHECKPOINT_RESUME_INPUT]
+            model_pointer = pointers[PARAMETERS_INPUT]
+            state_pointer = pointers[RESUME_STATE_INPUT]
             if model_pointer.run != state_pointer.run:
                 raise VerificationError(
                     f"stored checkpoint inputs of stage {stage_id!r} must select "
@@ -1495,9 +1492,9 @@ def verify_stored_input_selections(
                 )
 
     if isinstance(stage_spec, EvaluateSpec):
-        model_input = stage_spec.inputs[EVALUATION_PARAMETERS_INPUT]
+        model_input = stage_spec.inputs[PARAMETERS_INPUT]
         if isinstance(model_input, StoredInputRef):
-            model_pointer = pointers[EVALUATION_PARAMETERS_INPUT]
+            model_pointer = pointers[PARAMETERS_INPUT]
             if model_pointer.artifact.artifact_name != PARAMETERS:
                 raise VerificationError(
                     f"stored evaluation model input of stage {stage_id!r} must "
@@ -1543,7 +1540,7 @@ def verify_stored_inputs(
                 fetcher=fetcher,
             )
             try:
-                pointer = ArtifactPointer.model_validate(load_yaml_bytes(pointer_raw))
+                pointer = ArtifactPointer.model_validate(parse_yaml_bytes(pointer_raw))
             except (yaml.YAMLError, ValueError) as exc:
                 raise VerificationError(
                     f"stored input {input_name!r} of stage {stage_id!r} pointer "
@@ -1720,7 +1717,7 @@ def verify_benchmark_result(
     """Verify benchmark parity and metric criteria across two executions."""
     benchmark_raw = read_resolved_file(result.benchmark, fetcher=fetcher)
     try:
-        benchmark = BenchmarkSpec.model_validate(load_yaml_bytes(benchmark_raw))
+        benchmark = BenchmarkSpec.model_validate(parse_yaml_bytes(benchmark_raw))
     except (yaml.YAMLError, ValueError) as exc:
         raise VerificationError(
             "benchmark result does not reference a valid BenchmarkSpec"
@@ -1728,7 +1725,7 @@ def verify_benchmark_result(
 
     run_raw = read_resolved_file(result.run, fetcher=fetcher)
     try:
-        resolved_run = ResolvedRun.model_validate(load_yaml_bytes(run_raw))
+        resolved_run = ResolvedRun.model_validate(parse_yaml_bytes(run_raw))
     except (yaml.YAMLError, ValueError) as exc:
         raise VerificationError(
             "benchmark result does not reference a valid ResolvedRun"

@@ -2,7 +2,7 @@
 
 > Historical handoff: this document records the implementation state on
 > 2026-08-17. The active contract is
-> [ProvenanceS1_v3.md](ProvenanceS1_v3.md), and the active package interface
+> [ProvenanceS1_v3.md](../docs/ProvenanceS1_v3.md), and the active package interface
 > is documented in the [package README](../README.md). The manifest-based steps
 > below belong to the earlier contract recorded here.
 
@@ -10,7 +10,7 @@
 
 Stage 1 external verification is complete through Step 15.5. The next task is
 Step 15.6, stored-input verification. The authoritative checklist is in the
-[Stage 1 protocol](../ProvenanceS1.md#deterministic-dummy-data-completion-pass).
+[Stage 1 protocol](ProvenanceS1.md#deterministic-dummy-data-completion-pass).
 
 ## Completed today
 
@@ -20,9 +20,9 @@ verifier Steps 15.1 through 15.5.
 ### Step 11 — metrics and measurements
 
 - Wrote the first two PyTorch metric functions:
-  - [`compute()`](../../src/mantra/metrics/training/mean_squared_error/compute.py), which validates compatible real
+  - [`compute()`](../examples/project/src/example_project/metrics/training/mean_squared_error/compute.py), which validates compatible real
     tensors and returns mean squared error;
-  - [`compute()`](../../src/mantra/metrics/evaluation/pearson_correlation/compute.py), which computes
+  - [`compute()`](../examples/project/src/example_project/metrics/evaluation/pearson_correlation/compute.py), which computes
     Pearson correlation along a selected tensor dimension using float64
     arithmetic and rejects constant comparison vectors.
 - Added `Measurement`, including run, attempt, stage, and metric IDs; a finite
@@ -104,7 +104,7 @@ verifier Steps 15.1 through 15.5.
 
 ### Step 15.5 — resolved stages
 
-- Implemented [`verify_resolved_stages()`](../verifier.py), which:
+- Implemented [`verify_resolved_stages()`](../viper/verifier.py), which:
   - identifies the successful attempt;
   - checks resolved-stage order against the run plan;
   - retrieves and validates each resolved-stage document;
@@ -112,12 +112,12 @@ verifier Steps 15.1 through 15.5.
   - checks its source repository and commit against `RunSpec.source`;
   - checks that stage completion occurred inside the successful attempt; and
   - retrieves and verifies the source entry point, lockfile, and output bytes.
-- Updated the [Stage 1 protocol](../ProvenanceS1.md) to match the implemented
+- Updated the [Stage 1 protocol](ProvenanceS1.md) to match the implemented
   class names, snapshot boundary, validators, verifier behavior, and checklist
   status.
 - Added focused model and verifier tests in
-  [`test_records.py`](../../tests/test_records.py) and
-  [`test_verifier.py`](../../tests/test_verifier.py).
+  [`test_records.py`](../tests/test_records.py) and
+  [`test_verifier.py`](../tests/test_verifier.py).
 
 ## Decisions that remain fixed
 
@@ -195,8 +195,8 @@ git diff --check
 
 ## Files changed in today's implementation
 
-- [`records.py`](../records.py)
-- [`verifier.py`](../verifier.py)
-- [`ProvenanceS1.md`](../ProvenanceS1.md)
-- [`test_records.py`](../../tests/test_records.py)
-- [`test_verifier.py`](../../tests/test_verifier.py)
+- [`records.py`](../viper/records.py)
+- [`verifier.py`](../viper/verifier.py)
+- [`ProvenanceS1.md`](ProvenanceS1.md)
+- [`test_records.py`](../tests/test_records.py)
+- [`test_verifier.py`](../tests/test_verifier.py)

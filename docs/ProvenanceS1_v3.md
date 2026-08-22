@@ -569,7 +569,7 @@ stages of the run
 ωₘ ──→ yₘ
 ```
 
-MANTRA permits replay from a training state when a later stage or attempt may
+VIPER permits replay from a training state when a later stage or attempt may
 consume that state as its initial state. A training stage is the maximal
 contiguous sequence of updates ending at the next permitted replay state.
 
@@ -665,7 +665,7 @@ sₖ⁽ᴺᵏ⁾
 │
 └── resume_state
     └── (oₖ⁽ᴺᵏ⁾, rₖ⁽ᴺᵏ⁾, bₖ⁽ᴺᵏ⁾)
-        └── combined with parameters for exact continuation
+        └── combined with parameters for exact resumption
 ```
 
 The `resume_state` artifact loads as:
@@ -739,7 +739,7 @@ and the presence of `legacy_global` to match `NumPyRandomnessSpec`.
 This is the coarsest artifact partition satisfying the two required uses:
 
 - Evaluation loads `parameters`.
-- Exact continuation loads `parameters` and `resume_state`.
+- Exact resumption loads `parameters` and `resume_state`.
 
 ## 9. File representation of an artifact
 
@@ -967,6 +967,7 @@ The records below use these shared types:
 |---|---|
 | `HumanId` | A lowercase identifier matching `^[a-z][a-z0-9_]*$`. |
 | `RepoRelPath` | A normalized POSIX path relative to the repository root that contains no empty or dot segments, parent traversal, backslashes, or control characters. |
+| `PythonRepoRelPath` | A `RepoRelPath` ending in `.py`. |
 | `SHA256` | A 64-character lowercase hexadecimal digest. |
 | `GitCommit` | A 40- or 64-character lowercase hexadecimal commit ID. |
 | `NonEmptyStr` | A string containing at least one character. |
@@ -1044,19 +1045,19 @@ The verifier retrieves that file and requires equality with
 
 ```python
 ArtifactName = HumanId
-ArtifactLoaderId = HumanId
+ArtifactLoaderPath = PythonRepoRelPath
 
 
 class SingleFileArtifactSpec(ProtocolModel):
     kind: Literal["file"] = "file"
     path: RepoRelPath
-    loader: ArtifactLoaderId
+    loader: ArtifactLoaderPath
 
 
 class BundleArtifactSpec(ProtocolModel):
     kind: Literal["bundle"] = "bundle"
     path: RepoRelPath
-    loader: ArtifactLoaderId
+    loader: ArtifactLoaderPath
 
 
 ArtifactSpec = Annotated[
@@ -1068,8 +1069,9 @@ ArtifactSpec = Annotated[
 class BaseSpec(ProtocolModel):
     kind: str
     schema_version: Literal[1] = 1
-    script: RepoRelPath
+    script: PythonRepoRelPath
     environment: GCEEnvironmentSpec | None = None
+    metric_ids: tuple[MetricId, ...] = ()
     artifacts: dict[ArtifactName, ArtifactSpec] = Field(min_length=1)
 ```
 
@@ -1084,29 +1086,14 @@ experiments/<experiment_id>/runs/<variant_id>/<run_id>/artifacts/
 The artifact category is `datasets` for a download stage, `priors` for a build
 stage, `models` for an embed or train stage, and `evaluations` for an evaluate
 stage. A single-file artifact includes a filename after `<entity_id>`. A bundle
-root may equal the identity directory or a directory beneath it. For download,
-build, embed, and train stages, the artifact entity ID equals the entity ID in
-the stage entrypoint path. A benchmark evaluation uses its benchmark ID as the
-artifact entity ID.
+root may equal the identity directory or a directory beneath it.
 
-The stage entrypoints are:
+`BaseSpec.script`, `MetricSpec.implementation`, and `ArtifactSpec.loader` each
+identify one Python file by its exact repository-relative path. VIPER assigns
+no package name or source-directory layout to the user repository.
+`RunSpec.source` fixes the repository revision containing each file.
 
-```text
-DownloadSpec → src/mantra/datasets/<dataset_id>/download.py
-BuildSpec    → src/mantra/priors/<prior_id>/build.py
-EmbedSpec    → src/mantra/models/<model_id>/embed.py
-TrainSpec    → src/mantra/models/<model_id>/train.py
-EvaluateSpec → src/mantra/models/<model_id>/evaluate.py
-```
-
-An artifact loader is a Python file at:
-
-```text
-src/mantra/artifact_loaders/<loader_id>.py
-```
-
-`RunSpec.source` identifies the exact repository revision containing the loader.
-The loader defines:
+An artifact loader defines:
 
 ```python
 def load(path: Path) -> object:
@@ -1809,7 +1796,7 @@ class MetricSpec(ProtocolModel):
     schema_version: Literal[1] = 1
     metric_id: MetricId
     kind: Literal["training", "evaluation", "diagnostic"]
-    implementation: RepoRelPath
+    implementation: PythonRepoRelPath
     params: MetricParams
 
 
@@ -1824,14 +1811,10 @@ class ExperimentSpec(ProtocolModel):
 
 Factor IDs are unique. Level IDs are unique within each factor. Variant IDs,
 replicate IDs, replicate seeds, and `MetricSpec.metric_id` values are unique
-within the experiment. Each metric implementation occupies:
-
-```text
-src/mantra/metrics/<kind>/<metric_id>/compute.py
-```
-
-`RunSpec.source` fixes the implementation bytes. The verifier retrieves the
-file and requires one top-level `compute` function.
+within the experiment. `MetricSpec.implementation` identifies the metric's
+Python file by its exact repository-relative path. `RunSpec.source` fixes its
+bytes. The verifier retrieves the file and requires one top-level `compute`
+function.
 
 The experiment file and its variant files occur at:
 
@@ -2055,8 +2038,7 @@ Spec = Annotated[
 ]
 ```
 
-Each parameter class preserves a versioned JSON mapping. MANTRA requires no
-package extension or parameter-plugin registration. A project may optionally
+Each parameter class preserves a versioned JSON mapping. A project may
 validate its own mapping with a local Pydantic model before constructing the
 core record. The exact serialized values are fixed by the selected
 `VariantSpec` and checked against the loaded stage spec as defined in Section
@@ -2206,19 +2188,19 @@ A training stage that continues from an earlier checkpoint declares two
 reserved inputs:
 
 ```python
-CHECKPOINT_PARAMETERS_INPUT: InputName = "checkpoint_parameters"
-CHECKPOINT_RESUME_INPUT: InputName = "checkpoint_resume_state"
+PARAMETERS_INPUT: InputName = "parameters"
+RESUME_STATE_INPUT: InputName = "resume_state"
 ```
 
 The two inputs must occur together and must have the same input kind. For
-same-run continuation, they satisfy:
+same-run resumption, they satisfy:
 
 ```text
-TrainSpec.inputs[checkpoint_parameters]
+TrainSpec.inputs[parameters]
 ├── producer_stage_id = producer stage ID
 └── producer_artifact = parameters
 
-TrainSpec.inputs[checkpoint_resume_state]
+TrainSpec.inputs[resume_state]
 ├── producer_stage_id = producer stage ID
 └── producer_artifact = resume_state
 ```
@@ -2271,13 +2253,13 @@ snapshot has been published and verified.
 
 ### Continuation
 
-For same-run continuation from $\omega_k$ to $\omega_\ell$, the external
+For same-run resumption from $\omega_k$ to $\omega_\ell$, the external
 verifier requires $k<\ell$ and:
 
 ```text
-ResolvedTrainSpec.inputs[checkpoint_parameters].producer
+ResolvedTrainSpec.inputs[parameters].producer
 ==
-ResolvedTrainSpec.inputs[checkpoint_resume_state].producer
+ResolvedTrainSpec.inputs[resume_state].producer
 ==
 ResolvedStageRef for ωₖ
 ```
@@ -2318,7 +2300,7 @@ s_\ell^{(0)}
 s_k^{(N_k)}.
 $$
 
-For stored continuation from an earlier run, both `ArtifactPointer` records
+For stored resumption from an earlier run, both `ArtifactPointer` records
 must select the same resolved run, successful attempt, and producer stage. One
 pointer selects `parameters`; the other selects `resume_state`.
 
@@ -2358,7 +2340,7 @@ external verifier
 ├── verifies both artifacts belong to one producer snapshot
 ├── verifies every referenced file
 ├── verifies both artifact-loader identities
-└── verifies the continuation-input and estimator selectors
+└── verifies the resume-input and estimator selectors
 
 replay executor
 ├── invokes both artifact loaders
@@ -2377,7 +2359,7 @@ defined above.
 The reserved names are:
 
 ```python
-EVALUATION_PARAMETERS_INPUT: InputName = "parameters"
+PARAMETERS_INPUT: InputName = "parameters"
 EVALUATION_DATASET_INPUT: InputName = "evaluation_dataset"
 PREDICTIONS: ArtifactName = "predictions"
 ```
@@ -2440,18 +2422,15 @@ set(ExperimentSpec.metrics.metric_id)
 ```
 
 Every measurement produced by the evaluation stage uses one of those metric
-IDs. `predictions` is one file at:
+IDs. The `predictions` declaration may be a file or bundle beneath:
 
 ```text
-artifacts/evaluations/<evaluation_id>/predictions.h5ad
+artifacts/evaluations/<evaluation_id>/
 ```
 
-The file uses the `predictions_h5ad` loader. Its `AnnData.X` matrix contains
-the predicted expression values, observation identities select prediction
-profiles, `obs["perturbation_id"]` identifies each perturbation, and variable
-identities select genes. AnnData defines this annotated matrix structure and
-its H5AD representation in the [AnnData API](https://anndata.readthedocs.io/en/stable/generated/anndata.AnnData.html)
-and [H5AD reader](https://anndata.readthedocs.io/en/stable/generated/anndata.io.read_h5ad.html).
+Its declared loader reconstructs the prediction value from the verified file
+set. The project selects the physical format and defines its schema in that
+loader.
 
 The resolved artifact and stage-result snapshot verify the prediction bytes.
 Metric values remain `Measurement` records.
@@ -2756,18 +2735,18 @@ $D_i$ equals a stage-result snapshot. Measurement rows identify completed
 stages. Log paths identify completed stages or the next interrupted stage of a
 non-successful attempt.
 
-### Training-continuation verification
+### Training-resume verification
 
 For a training stage initialized from a checkpoint, the verifier establishes:
 
 ```text
-checkpoint_parameters producer
-== checkpoint_resume_state producer
+parameters producer
+== resume_state producer
 
-checkpoint_parameters artifact
+parameters artifact
 == parameters
 
-checkpoint_resume_state artifact
+resume_state artifact
 == resume_state
 ```
 
@@ -2926,38 +2905,7 @@ Each selection name is scoped by its dataset, prior, or model identity.
 
 ```text
 repository/
-├── README.md
-├── pyproject.toml
-├── environment.yml
-├── .gitignore
-├── docs/
-├── tools/
-├── src/
-│   └── mantra/
-│       ├── datasets/
-│       │   └── <dataset_id>/
-│       │       └── download.py
-│       ├── priors/
-│       │   └── <prior_id>/
-│       │       └── build.py
-│       ├── models/
-│       │   └── <model_id>/
-│       │       ├── embed.py
-│       │       ├── train.py
-│       │       └── evaluate.py
-│       ├── metrics/
-│       │   ├── training/
-│       │   │   └── <metric_id>/
-│       │   │       └── compute.py
-│       │   ├── evaluation/
-│       │   │   └── <metric_id>/
-│       │   │       └── compute.py
-│       │   └── diagnostic/
-│       │       └── <metric_id>/
-│       │           └── compute.py
-│       └── artifact_loaders/
-│           └── <loader_id>.py
-├── tests/
+├── <user-owned files and directories>
 ├── inputs/
 │   ├── benchmarks/
 │   │   └── <benchmark_id>/
@@ -3003,7 +2951,7 @@ repository/
                     │   │       └── resume_state.pt
                     │   └── evaluations/
                     │       └── <evaluation_id>/
-                    │           └── predictions.h5ad
+                    │           └── <prediction file or bundle>
                     ├── measurements/
                     │   └── <stage_id>.<metric_id>.jsonl
                     └── logs/
@@ -3011,26 +2959,28 @@ repository/
                         └── <attempt_id>.<stage_id>.stderr.log
 ```
 
-`BaseSpec.script` identifies a stage entrypoint beneath the corresponding
-identity directory in `src/mantra/`. For example:
+VIPER assigns no layout to the user-owned portion of the repository. Each
+`BaseSpec.script`, `MetricSpec.implementation`, and `ArtifactSpec.loader`
+records its selected Python file as a `PythonRepoRelPath`. For example, all of these
+layouts are valid:
 
 ```text
-src/mantra/priors/depmap/build.py
-src/mantra/models/strand/train.py
-src/mantra/models/strand/evaluate.py
+src/my_project/training/fit.py
+pipelines/evaluate.py
+analysis/metrics/correlation.py
+loaders/model_bundle.py
 ```
 
 `RunSpec.source` fixes the exact bytes of every entrypoint, imported production
 module, metric, and artifact loader.
 
-`tools/` contains repository-maintenance, migration, generation, and inspection
-utilities. A tool has one documented purpose and is never referenced by
-`BaseSpec.script`. Scientific transformations executed by the protocol live
-under their dataset, prior, or model identity in `src/mantra/`.
+When a project uses `tools/`, that directory contains repository-maintenance,
+migration, generation, and inspection utilities. A tool has one documented
+purpose and is not selected by `BaseSpec.script`.
 
-`tests/` contains deterministic checks for protocol models, verifier
-relationships, loaders, and production source. Test files are part of snapshot
-A and are not stage entrypoints.
+When a project uses `tests/`, that directory contains deterministic checks for
+its entrypoints, metrics, and loaders. Test files may be present in the source
+snapshot and are not stage entrypoints.
 
 The run directory is the durable output root. Artifact files, measurements,
 logs, resolved records, and benchmark results use stable repository-relative
@@ -3477,7 +3427,7 @@ boundary. Consequently:
 2. $b_k^{(t)}$ contains the sampler permutation and position, dispatched index
    batches, prepared batches, and delivery order.
 
-Exact continuation reconstructs both values before the next optimizer update.
+Exact resumption reconstructs both values before the next optimizer update.
 
 
 ## Appendix B. DataLoader iteration and RNG state

@@ -1,4 +1,4 @@
-"""Tests for the installed MANTRA command surface."""
+"""Tests for the installed VIPER command surface."""
 
 import unittest
 from contextlib import redirect_stdout
@@ -13,7 +13,7 @@ class CommandLineTests(unittest.TestCase):
 
     def test_validate_stage_command_loads_active_example(self) -> None:
         """Validate one canonical stage file and report its stage kind."""
-        path = Path("viper/examples/provenance/stages/download/spec.yaml")
+        path = Path("examples/provenance/stages/download/spec.yaml")
         output = StringIO()
 
         with redirect_stdout(output):

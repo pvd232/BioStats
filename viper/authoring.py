@@ -8,7 +8,6 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from .ids import ExperimentId, ReplicateId, RunId, StageId, VariantId
@@ -26,7 +25,7 @@ from .records import (
     StageArtifactRef,
     VariantSpec,
 )
-from .yaml_io import load_yaml_bytes
+from .serialization import parse_yaml_bytes, serialize_record
 
 SPEC_ADAPTER = TypeAdapter(Spec)
 
@@ -68,18 +67,6 @@ class FrozenPlanFiles(BaseModel):
     files: tuple[Path, ...]
 
 
-def serialize_protocol_model(model: BaseModel) -> bytes:
-    """Serialize one validated model as deterministic UTF-8 YAML bytes."""
-    value = model.model_dump(mode="json")
-    rendered = yaml.safe_dump(
-        value,
-        allow_unicode=True,
-        sort_keys=False,
-    )
-    assert isinstance(rendered, str)
-    return rendered.encode("utf-8")
-
-
 def _target_path(repository_root: Path, relative_path: str) -> Path:
     """Resolve one protocol path while keeping it beneath the repository root."""
     root = repository_root.resolve()
@@ -119,7 +106,7 @@ def write_experiment_spec(
         repository_root,
         f"experiments/{experiment.experiment_id}/spec.yaml",
     )
-    _write_exact_file(target, serialize_protocol_model(experiment))
+    _write_exact_file(target, serialize_record(experiment))
     return target
 
 
@@ -132,7 +119,7 @@ def write_variant_spec(repository_root: Path, variant: VariantSpec) -> Path:
             f"{variant.variant_id}.spec.yaml"
         ),
     )
-    _write_exact_file(target, serialize_protocol_model(variant))
+    _write_exact_file(target, serialize_record(variant))
     return target
 
 
@@ -142,13 +129,13 @@ def write_benchmark_spec(repository_root: Path, benchmark: BenchmarkSpec) -> Pat
         repository_root,
         f"benchmarks/{benchmark.benchmark_id}.spec.yaml",
     )
-    _write_exact_file(target, serialize_protocol_model(benchmark))
+    _write_exact_file(target, serialize_record(benchmark))
     return target
 
 
 def load_run_plan_draft(path: Path) -> RunPlanDraft:
     """Load one duplicate-key-safe run-plan draft."""
-    return RunPlanDraft.model_validate(load_yaml_bytes(path.read_bytes()))
+    return RunPlanDraft.model_validate(parse_yaml_bytes(path.read_bytes()))
 
 
 def freeze_run_plan(
@@ -168,8 +155,8 @@ def freeze_run_plan(
         if not source.is_absolute():
             source = root / source
         raw_source = source.read_bytes()
-        spec = SPEC_ADAPTER.validate_python(load_yaml_bytes(raw_source))
-        raw = serialize_protocol_model(spec)
+        spec = SPEC_ADAPTER.validate_python(parse_yaml_bytes(raw_source))
+        raw = serialize_record(spec)
         relative_path = f"{run_root}/stages/{stage.stage_id}/spec.yaml"
         target = _target_path(root, relative_path)
         staged_files.append((target, raw))
@@ -196,7 +183,7 @@ def freeze_run_plan(
         estimator=draft.estimator,
     )
     run_target = _target_path(root, f"{run_root}/spec.yaml")
-    files = (*staged_files, (run_target, serialize_protocol_model(run)))
+    files = (*staged_files, (run_target, serialize_record(run)))
 
     # Validate every destination before writing any member of the frozen group.
     for target, raw in files:

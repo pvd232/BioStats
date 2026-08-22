@@ -1,12 +1,12 @@
 {
     "include": [
         "viper",
-        "src",
+        "examples/project/src",
         "tests",
         "tools"
     ],
     "exclude": [
-        "viper/archive"
+        "archive"
     ],
     "venvPath": "/Users/machina/miniconda3/envs",
     "venv": "mantra",
@@ -14,7 +14,7 @@
     "typeCheckingMode": "standard",
     "extraPaths": [
         ".",
-        "src",
+        "examples/project/src",
         "/Users/machina/miniconda3/envs/mantra/lib/python3.14/site-packages"
     ]
 }

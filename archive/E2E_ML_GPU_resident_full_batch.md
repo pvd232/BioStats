@@ -1,6 +1,6 @@
 # Full-Batch Training on GPU-Resident Data: Execution and Reproducibility
 
-*Companion to [Part I — From Source Code to Silicon](E2E_execution.md) and [Part II — From Training Data to Updated Weights](E2E_ML_training.md).*
+*Companion to [Part I — From Source Code to Silicon](../docs/E2E_execution.md) and [Part II — From Training Data to Updated Weights](E2E_ML_training.md).*
 
 ## Abstract
 

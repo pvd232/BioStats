@@ -13,10 +13,11 @@ from typing import Any
 import yaml
 from pydantic import HttpUrl, TypeAdapter
 
+from tests.fixtures import metric_spec, resume_state, verification_policy
 from viper.ids import InputName
 from viper.records import (
-    RESUME_STATE,
     PARAMETERS,
+    RESUME_STATE,
     ArtifactPointer,
     ArtifactPointerRef,
     BenchmarkSpec,
@@ -96,18 +97,22 @@ from viper.verifier import (
     verify_stage_plan,
     verify_stored_input_selections,
 )
-from tests.fixtures import resume_state, metric_spec, verification_policy
 
 GIT_COMMIT = "a" * 40
 PLAN_COMMIT = "b" * 40
 SNAPSHOT_COMMIT = "c" * 40
-REPOSITORY = HttpUrl("https://github.com/example/mantra")
-HF_REPOSITORY: NonEmptyStr = "example/mantra-runs"
+REPOSITORY = HttpUrl("https://github.com/example/viper-project")
+HF_REPOSITORY: NonEmptyStr = "example/viper-runs"
 RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 RUN_ROOT = f"experiments/e001_strand/runs/baseline/{RUN_ID}"
 YAML_ADAPTER = TypeAdapter(Any)
 INSTRUCTION_SET: NonEmptyStr = "avx2"
 POLICY = verification_policy(REPOSITORY)
+
+
+def loader_path(name: str) -> str:
+    """Return one exact user-repository artifact-loader path."""
+    return f"project/loaders/{name}.py"
 
 
 def yaml_bytes(value: object) -> bytes:
@@ -146,8 +151,8 @@ def environment() -> GCEEnvironmentSpec:
     return GCEEnvironmentSpec(
         kind="gce",
         machine_image=GCEMachineImageRef(
-            project="mantra-project",
-            name="mantra-image",
+            project="viper-project",
+            name="viper-image",
         ),
         machine_type="n2-standard-8",
         compute=CPUComputeSpec(kind="cpu"),
@@ -314,7 +319,7 @@ def train_spec(*, future_prior: bool = False) -> TrainSpec:
         )
 
     return TrainSpec(
-        script="src/mantra/models/strand/train.py",
+        script="project/training/fit.py",
         inputs=inputs,
         params=TrainParams.model_validate(
             {"epochs": 10, "batch_size": 64, "learning_rate": 0.001}
@@ -322,15 +327,13 @@ def train_spec(*, future_prior: bool = False) -> TrainSpec:
         artifacts={
             PARAMETERS: SingleFileArtifactSpec(
                 kind="file",
-                path=(
-                    f"{RUN_ROOT}/artifacts/models/strand/parameters.safetensors"
-                ),
-                loader="parameters",
+                path=(f"{RUN_ROOT}/artifacts/models/strand/parameters.safetensors"),
+                loader=loader_path("parameters"),
             ),
             RESUME_STATE: SingleFileArtifactSpec(
                 kind="file",
                 path=f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt",
-                loader="resume_state",
+                loader=loader_path("resume_state"),
             ),
         },
     )
@@ -339,7 +342,7 @@ def train_spec(*, future_prior: bool = False) -> TrainSpec:
 def build_spec() -> BuildSpec:
     """Build a valid prior-construction request."""
     return BuildSpec(
-        script="src/mantra/priors/depmap/build.py",
+        script="domain/prior_builder.py",
         inputs={
             "depmap": StoredInputRef(
                 kind="stored",
@@ -352,7 +355,7 @@ def build_spec() -> BuildSpec:
             "prior": SingleFileArtifactSpec(
                 kind="file",
                 path=f"{RUN_ROOT}/artifacts/priors/depmap/prior.pt",
-                loader="prior",
+                loader=loader_path("prior"),
             )
         },
     )
@@ -363,8 +366,8 @@ def resolved_environment(lock_raw: bytes) -> ResolvedGCEEnvironment:
     return ResolvedGCEEnvironment(
         kind="gce",
         machine_image=ResolvedGCEMachineImageRef(
-            project="mantra-project",
-            name="mantra-image",
+            project="viper-project",
+            name="viper-image",
             id="123456",
         ),
         machine_type="n2-standard-8",
@@ -374,7 +377,7 @@ def resolved_environment(lock_raw: bytes) -> ResolvedGCEEnvironment:
 
 
 class FileVerificationTests(unittest.TestCase):
-    """Verify byte identity, artifact loading, and continuation records."""
+    """Verify byte identity, artifact loading, and resume records."""
 
     def test_artifact_loader_uses_the_consumer_materialization_path(self) -> None:
         """Verify that artifact loader uses the consumer materialization path."""
@@ -452,11 +455,11 @@ class FileVerificationTests(unittest.TestCase):
             )
 
     def test_resume_state_must_match_run_dataloader(self) -> None:
-        """Verify that continuation state must match run dataloader."""
+        """Verify that resume state must match run dataloader."""
         spec = train_spec()
         run, _ = run_spec([("train", spec)])
         declaration = spec.artifacts[RESUME_STATE]
-        content = b"continuation state"
+        content = b"resume state"
 
         resolved = ResolvedSingleFileArtifact(
             file=SnapshotFileRef(
@@ -475,11 +478,11 @@ class FileVerificationTests(unittest.TestCase):
             ),
         )
 
-        continuation_value = resume_state(
+        resume_value = resume_state(
             workers=2,
             prefetch_factor=2,
         ).model_dump(mode="python")
-        loader_raw = (f"def load(path):\n    return {continuation_value!r}\n").encode()
+        loader_raw = (f"def load(path):\n    return {resume_value!r}\n").encode()
 
         with self.assertRaisesRegex(
             VerificationError,
@@ -495,11 +498,11 @@ class FileVerificationTests(unittest.TestCase):
             )
 
     def test_resume_state_must_match_run_numpy_controls(self) -> None:
-        """Verify that continuation state must match run numpy controls."""
+        """Verify that resume state must match run numpy controls."""
         spec = train_spec()
         run, _ = run_spec([("train", spec)])
         declaration = spec.artifacts[RESUME_STATE]
-        content = b"continuation state"
+        content = b"resume state"
         resolved = ResolvedSingleFileArtifact(
             file=SnapshotFileRef(
                 path=str(declaration.path),
@@ -787,13 +790,13 @@ class RunAndStageVerificationTests(unittest.TestCase):
         source_raw = b"print('train')\n"
         lock_raw = b"lockfile"
         model_raw = b"model parameters"
-        continuation_raw = b"optimizer rng sampler"
+        resume_raw = b"optimizer rng sampler"
 
-        continuation_value = resume_state().model_dump(mode="python")
+        resume_value = resume_state().model_dump(mode="python")
         loader_raw = (
             "def load(path):\n"
             "    if path.name == 'resume_state.pt':\n"
-            f"        return {continuation_value!r}\n"
+            f"        return {resume_value!r}\n"
             "    return path.read_bytes()\n"
         ).encode()
 
@@ -824,8 +827,8 @@ class RunAndStageVerificationTests(unittest.TestCase):
                     kind="file",
                     file=SnapshotFileRef(
                         path=f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt",
-                        sha256=sha256(continuation_raw),
-                        bytes=len(continuation_raw),
+                        sha256=sha256(resume_raw),
+                        bytes=len(resume_raw),
                     ),
                 ),
             },
@@ -867,14 +870,10 @@ class RunAndStageVerificationTests(unittest.TestCase):
             f"{RUN_ROOT}/stages/train/resolved.yaml": resolved_raw,
             str(spec.script): source_raw,
             "uv.lock": lock_raw,
-            (
-                f"{RUN_ROOT}/artifacts/models/strand/parameters.safetensors"
-            ): model_raw,
-            (
-                f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt"
-            ): continuation_raw,
-            "src/mantra/artifact_loaders/parameters.py": loader_raw,
-            "src/mantra/artifact_loaders/resume_state.py": loader_raw,
+            (f"{RUN_ROOT}/artifacts/models/strand/parameters.safetensors"): model_raw,
+            (f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt"): resume_raw,
+            "project/loaders/parameters.py": loader_raw,
+            "project/loaders/resume_state.py": loader_raw,
         }
 
         verified = verify_resolved_stages(
@@ -1151,7 +1150,7 @@ class RunPlanRelationshipTests(unittest.TestCase):
         """Verify that benchmark matches evaluation inputs splits and metrics."""
         train = train_spec()
         evaluation = EvaluateSpec(
-            script="src/mantra/models/strand/evaluate.py",
+            script="analysis/predict.py",
             evaluation_id="replogle_predictions",
             metric_ids=("pearson_correlation",),
             split_inputs=("perturbation_split",),
@@ -1182,9 +1181,9 @@ class RunPlanRelationshipTests(unittest.TestCase):
                     kind="file",
                     path=(
                         f"{RUN_ROOT}/artifacts/evaluations/"
-                        "replogle_predictions/predictions.h5ad"
+                        "replogle_predictions/predictions.json"
                     ),
-                    loader="predictions_h5ad",
+                    loader=loader_path("json_file"),
                 )
             },
         )
@@ -1297,14 +1296,14 @@ class StoredInputSelectionTests(unittest.TestCase):
         payload = train_spec().model_dump(mode="python")
         payload["inputs"].update(
             {
-                "checkpoint_parameters": {
+                "parameters": {
                     "kind": "stored",
                     "pointer": artifact_pointer(
                         "inputs/models/toy/parameters.pointer.yaml"
                     ),
                     "path": "inputs/models/toy/parameters.bin",
                 },
-                "checkpoint_resume_state": {
+                "resume_state": {
                     "kind": "stored",
                     "pointer": artifact_pointer(
                         "inputs/models/toy/resume_state.pointer.yaml"
@@ -1331,17 +1330,15 @@ class StoredInputSelectionTests(unittest.TestCase):
         )
         state_pointer = ArtifactPointer(
             run=run_reference,
-            artifact=StageArtifactRef(
-                stage_id="train", artifact_name=RESUME_STATE
-            ),
+            artifact=StageArtifactRef(stage_id="train", artifact_name=RESUME_STATE),
         )
 
         verify_stored_input_selections(
             "train_resume",
             spec,
             {
-                "checkpoint_parameters": model_pointer,
-                "checkpoint_resume_state": state_pointer,
+                "parameters": model_pointer,
+                "resume_state": state_pointer,
             },
         )
 
@@ -1357,10 +1354,8 @@ class StoredInputSelectionTests(unittest.TestCase):
                 "train_resume",
                 spec,
                 {
-                    "checkpoint_parameters": model_pointer,
-                    "checkpoint_resume_state": state_pointer.model_copy(
-                        update={"run": other_run}
-                    ),
+                    "parameters": model_pointer,
+                    "resume_state": state_pointer.model_copy(update={"run": other_run}),
                 },
             )
 

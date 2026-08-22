@@ -1,4 +1,4 @@
-"""Capture and restore the state required for exact training continuation."""
+"""Capture and restore the state required to resume training exactly."""
 
 from __future__ import annotations
 
@@ -186,9 +186,9 @@ def restore_main_process_rng(
 def dataloader_configuration(
     dataloader: StatefulDataLoader,
 ) -> DataLoaderConfiguration:
-    """Return the continuation-relevant configuration of a DataLoader."""
+    """Return the resume-relevant configuration of a DataLoader."""
     if not dataloader.in_order:
-        raise ValueError("exact continuation requires in_order=True")
+        raise ValueError("exact resume requires in_order=True")
 
     return DataLoaderConfiguration(
         workers=dataloader.num_workers,
@@ -220,34 +220,34 @@ def capture_resume_state(
 
 
 def restore_resume_state(
-    continuation: ResumeState,
+    resume_state: ResumeState,
     optimizer: Optimizer,
     dataloader: StatefulDataLoader,
     numpy_generators: Mapping[str, np.random.Generator],
 ) -> None:
     """Restore a checkpoint after model parameters have been restored."""
     current_configuration = dataloader_configuration(dataloader)
-    if continuation.dataloader.configuration != current_configuration:
+    if resume_state.dataloader.configuration != current_configuration:
         raise ValueError(
             "saved DataLoader configuration does not match the current DataLoader"
         )
 
-    optimizer.load_state_dict(cast(dict[str, Any], continuation.optimizer_state))
-    dataloader.load_state_dict(cast(dict[str, Any], continuation.dataloader.state_dict))
-    restore_main_process_rng(continuation.main_process_rng, numpy_generators)
+    optimizer.load_state_dict(cast(dict[str, Any], resume_state.optimizer_state))
+    dataloader.load_state_dict(cast(dict[str, Any], resume_state.dataloader.state_dict))
+    restore_main_process_rng(resume_state.main_process_rng, numpy_generators)
 
 
 def save_resume_state(
     path: Path,
-    continuation: ResumeState,
+    resume_state: ResumeState,
 ) -> None:
-    """Serialize a continuation artifact."""
+    """Serialize a resume-state artifact."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(continuation.model_dump(mode="python"), path)
+    torch.save(resume_state.model_dump(mode="python"), path)
 
 
 def load_resume_state(path: Path) -> ResumeState:
-    """Load and validate a continuation artifact without arbitrary code execution."""
+    """Load and validate a resume-state artifact without executing its contents."""
     loaded = torch.load(
         path,
         map_location="cpu",

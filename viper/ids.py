@@ -1,4 +1,4 @@
-"""Validated identifier types shared by MANTRA provenance records."""
+"""Validated identifier types shared by VIPER provenance records."""
 
 from typing import Annotated
 

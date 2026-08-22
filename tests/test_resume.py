@@ -1,4 +1,4 @@
-"""Runtime tests for exact training-continuation state."""
+"""Runtime tests for exact training-resume state."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from viper.resume import (
 
 
 def dataloader(workers: int) -> StatefulDataLoader:
-    """Create the deterministic loader used before and after continuation."""
+    """Create the deterministic loader used before and after resume."""
     if workers > 0:
         return StatefulDataLoader(
             TensorDataset(torch.arange(24)),
@@ -47,8 +47,8 @@ def dataloader(workers: int) -> StatefulDataLoader:
     )
 
 
-class ContinuationTests(unittest.TestCase):
-    """Verify exact process and DataLoader continuation state."""
+class ResumeTests(unittest.TestCase):
+    """Verify exact process and DataLoader resume state."""
 
     def test_main_process_rng_round_trip(self) -> None:
         """Restore the next Python, NumPy, and PyTorch random values exactly."""
@@ -83,7 +83,7 @@ class ContinuationTests(unittest.TestCase):
 
         self.assertEqual(actual, expected)
 
-    def test_training_continuation_restores_next_batch(self) -> None:
+    def test_training_resume_restores_next_batch(self) -> None:
         """Restore the next shuffled batch with zero or multiple workers."""
         for workers in (0, 2):
             with self.subTest(workers=workers):
@@ -93,7 +93,7 @@ class ContinuationTests(unittest.TestCase):
                 iterator = iter(loader)
                 next(iterator)
 
-                continuation = capture_resume_state(
+                resume = capture_resume_state(
                     optimizer,
                     loader,
                     generators,
@@ -103,7 +103,7 @@ class ContinuationTests(unittest.TestCase):
 
                 with tempfile.TemporaryDirectory() as directory:
                     path = Path(directory) / "resume_state.pt"
-                    save_resume_state(path, continuation)
+                    save_resume_state(path, resume)
                     loaded = load_resume_state(path)
 
                 restored_loader = dataloader(workers)

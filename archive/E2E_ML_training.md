@@ -2,7 +2,7 @@
 
 ## Part II of *From Source Code to Silicon*
 
-**Companion paper:** [Part I — From Source Code to Silicon](E2E_execution.md)
+**Companion paper:** [Part I — From Source Code to Silicon](../docs/E2E_execution.md)
 
 ## Abstract
 

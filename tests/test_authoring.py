@@ -10,13 +10,12 @@ import yaml
 from viper.authoring import (
     RunPlanDraft,
     freeze_run_plan,
-    serialize_protocol_model,
     write_experiment_spec,
     write_variant_spec,
 )
 from viper.records import (
-    RESUME_STATE,
     PARAMETERS,
+    RESUME_STATE,
     ExperimentSpec,
     FactorSpec,
     MetricParams,
@@ -28,7 +27,7 @@ from viper.records import (
     TrainVariantStageParams,
     VariantSpec,
 )
-from viper.yaml_io import load_yaml_bytes
+from viper.serialization import parse_yaml_bytes, serialize_record
 
 RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 RUN_ROOT = f"experiments/e001_strand/runs/baseline/{RUN_ID}"
@@ -44,7 +43,7 @@ def environment_payload() -> dict[str, object]:
         "compute": {"kind": "cpu"},
         "lockfile": {
             "kind": "git",
-            "repository": "https://github.com/example/mantra",
+            "repository": "https://github.com/example/viper-project",
             "commit": COMMIT,
             "path": "environment.yml",
         },
@@ -90,13 +89,13 @@ def training_spec() -> TrainSpec:
     return TrainSpec.model_validate(
         {
             "kind": "train",
-            "script": "src/mantra/models/strand/train.py",
+            "script": "project_code/strand/fit.py",
             "inputs": {
                 "training_dataset": {
                     "kind": "stored",
                     "pointer": {
                         "kind": "git",
-                        "repository": "https://github.com/example/mantra",
+                        "repository": "https://github.com/example/viper-project",
                         "commit": COMMIT,
                         "path": "inputs/datasets/replogle/current.pointer.yaml",
                     },
@@ -108,17 +107,14 @@ def training_spec() -> TrainSpec:
                 PARAMETERS: {
                     "kind": "file",
                     "path": (
-                        f"{RUN_ROOT}/artifacts/models/strand/"
-                        "parameters.safetensors"
+                        f"{RUN_ROOT}/artifacts/models/strand/parameters.safetensors"
                     ),
-                    "loader": "parameters",
+                    "loader": "project_code/loaders/parameters.py",
                 },
                 RESUME_STATE: {
                     "kind": "file",
-                    "path": (
-                        f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt"
-                    ),
-                    "loader": "resume_state",
+                    "path": (f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt"),
+                    "loader": "project_code/loaders/resume_state.py",
                 },
             },
         }
@@ -134,7 +130,7 @@ class RunPlanAuthoringTests(unittest.TestCase):
             root = Path(directory).resolve()
             draft_stage = root / "drafts/train.yaml"
             draft_stage.parent.mkdir(parents=True)
-            draft_stage.write_bytes(serialize_protocol_model(training_spec()))
+            draft_stage.write_bytes(serialize_record(training_spec()))
             draft = RunPlanDraft.model_validate(
                 {
                     "run_id": RUN_ID,
@@ -144,7 +140,7 @@ class RunPlanAuthoringTests(unittest.TestCase):
                     "seed": 42,
                     "source": {
                         "kind": "git",
-                        "repository": "https://github.com/example/mantra",
+                        "repository": "https://github.com/example/viper-project",
                         "commit": COMMIT,
                     },
                     "environment": environment_payload(),
@@ -162,7 +158,7 @@ class RunPlanAuthoringTests(unittest.TestCase):
             frozen = freeze_run_plan(root, draft)
             stage_path, run_path = frozen.files
             stage_raw = stage_path.read_bytes()
-            loaded_run = RunSpec.model_validate(load_yaml_bytes(run_path.read_bytes()))
+            loaded_run = RunSpec.model_validate(parse_yaml_bytes(run_path.read_bytes()))
 
         self.assertEqual(
             loaded_run.stages[0].sha256,
@@ -180,7 +176,7 @@ class RunPlanAuthoringTests(unittest.TestCase):
         metric = MetricSpec(
             metric_id="training_loss",
             kind="training",
-            implementation=("src/mantra/metrics/training/training_loss/compute.py"),
+            implementation="project_code/metrics/training_loss.py",
             params=MetricParams(),
         )
         experiment = ExperimentSpec(

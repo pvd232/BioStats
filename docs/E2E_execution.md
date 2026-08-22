@@ -771,4 +771,4 @@ An interpreter is itself a program already compiled into CPU machine code. It re
 
 ## Continue to Part II
 
-[From Training Data to Updated Weights: How an ML Training Pipeline Executes](E2E_ML_training.md) extends this execution model through PyTorch and CUDA to graphics processing unit (GPU) training and reproducible checkpointing.
+[From Training Data to Updated Weights: How an ML Training Pipeline Executes](../archive/E2E_ML_training.md) extends this execution model through PyTorch and CUDA to graphics processing unit (GPU) training and reproducible checkpointing.
