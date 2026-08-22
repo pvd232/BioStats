@@ -1046,18 +1046,21 @@ The verifier retrieves that file and requires equality with
 ```python
 ArtifactName = HumanId
 ArtifactLoaderPath = PythonRepoRelPath
+DataRole = Literal["training", "validation", "evaluation", "benchmark"]
 
 
 class SingleFileArtifactSpec(ProtocolModel):
     kind: Literal["file"] = "file"
     path: RepoRelPath
     loader: ArtifactLoaderPath
+    data_role: DataRole
 
 
 class BundleArtifactSpec(ProtocolModel):
     kind: Literal["bundle"] = "bundle"
     path: RepoRelPath
     loader: ArtifactLoaderPath
+    data_role: DataRole
 
 
 ArtifactSpec = Annotated[
@@ -1375,6 +1378,7 @@ class StoredInputRef(ProtocolModel):
     kind: Literal["stored"] = "stored"
     pointer: ArtifactPointerRef
     path: RepoRelPath
+    data_role: DataRole
 
 
 class ResolvedStoredInputRef(ProtocolModel):
@@ -1423,6 +1427,55 @@ keys(producer ResolvedBaseSpec.artifacts)
 ```
 
 The selected artifact's declared path is its local file path or bundle root.
+
+### Data-use roles
+
+Every stored input and produced artifact carries one data-use role:
+
+```python
+DataRole = Literal["training", "validation", "evaluation", "benchmark"]
+```
+
+The roles are ordered by downstream restriction:
+
+$$
+\mathrm{training}
+\prec
+\mathrm{validation}
+\prec
+\mathrm{evaluation}
+\prec
+\mathrm{benchmark}.
+$$
+
+The role of a source artifact is assigned when that artifact enters the
+provenance graph. VIPER records and propagates that declaration; it does not
+infer scientific use from file contents.
+
+A stored input declares the role of the artifact selected by its pointer. The
+verifier retrieves the producer stage spec and requires equality between the
+stored-input declaration and the selected artifact declaration. A
+`FutureInputRef` carries no duplicate role field; it inherits the role of the
+producer artifact it selects.
+
+For every stage input $x$ and every artifact $a$ produced by that stage:
+
+$$
+\operatorname{role}(x)
+\preceq
+\operatorname{role}(a).
+$$
+
+This rule propagates the strongest input restriction to every derived output.
+A training stage accepts only `training` and `validation` inputs. An ordinary
+evaluation uses `evaluation` for its dataset, splits, and outputs. An
+evaluation governed by a `BenchmarkSpec` uses `benchmark` for those records.
+The `parameters` input to either evaluation has role `training` or
+`validation`.
+
+These rules enforce stage-level access and artifact lineage. A stage script is
+user code fixed by `RunSpec.source`; VIPER does not inspect that code to prove
+how a permitted validation input is used inside the stage.
 
 ### Attempts and terminal run result
 
@@ -2058,7 +2111,9 @@ Within one stage spec:
 
 After resolving same-run inputs, the external verifier applies the same path
 checks to their materialized paths. Same-run inputs consumed by one stage are
-pairwise non-overlapping.
+pairwise non-overlapping. It also requires every artifact role to be at least
+as restrictive as every input role and permits a training stage to consume
+only `training` and `validation` inputs.
 
 ### Resolved stage inputs
 
@@ -2385,6 +2440,10 @@ The split-input names are unique and differ from `parameters` and
 `evaluation_dataset`. The evaluation dataset and every split input are
 `StoredInputRef` records. The model, dataset, and split pointer paths use
 `inputs/models`, `inputs/datasets`, and `inputs/benchmarks`, respectively.
+Their data-use roles follow Section 14. The evaluation dataset and every split
+have one shared role. That role is `evaluation` for an ordinary evaluation and
+`benchmark` for an evaluation selected by a `BenchmarkSpec`. Every declared
+evaluation artifact has the same role.
 
 The `parameters` input is a `FutureInputRef` or `StoredInputRef`. A
 same-run model input selects:
@@ -2396,7 +2455,8 @@ FutureInputRef.producer_artifact
 
 A stored model input resolves through its `ArtifactPointer` to a
 `parameters` artifact. The evaluation dataset and every declared split
-are stored inputs selected before execution.
+are stored inputs selected before execution. The parameters artifact has role
+`training` or `validation`.
 
 The executor materializes every evaluation input as read-only. Its artifact
 mapping contains `predictions` and may contain additional evaluation outputs.
@@ -2500,6 +2560,10 @@ EvaluateSpec.inputs[split_name].pointer
 set(EvaluateSpec.metric_ids)
 == set(BenchmarkSpec.metrics.metric_id)
 ```
+
+The evaluation dataset, every split, and every artifact produced by this
+evaluation have the `benchmark` data-use role. The model parameters have role
+`training` or `validation`.
 
 The benchmark executor completes one successful `ResolvedRun` and one separate
 confirmation execution of the same frozen $q$. The successful attempt selected
@@ -2619,8 +2683,10 @@ Pydantic enforces:
 8. The training checkpoint input pair and training-stage ownership of the
    `parameters` and `resume_state` artifact names.
 9. The evaluation model, dataset, split, and metric requirements and
-   evaluation-stage ownership of the `predictions` artifact name.
-10. Benchmark split, metric, confirmation, and result requirements.
+   evaluation-stage ownership of the `predictions` artifact name, including
+   equality among the evaluation dataset, split, and output roles.
+10. The required data-use role on every stored input and artifact declaration.
+11. Benchmark split, metric, confirmation, and result requirements.
 
 ### Run-plan verification
 
@@ -2644,7 +2710,10 @@ Starting from a `ResolvedRunSpecRef`, the verifier:
    producer artifact.
 9. Checks input, script, and within-stage artifact-path disjointness after
    resolving every input path.
-10. Checks that `RunSpec.estimator` selects `parameters` from a training
+10. Resolves the role of every same-run input from its producer artifact,
+    rejects evaluation and benchmark inputs to training, prevents output-role
+    downgrades, and selects the required ordinary-evaluation or benchmark role.
+11. Checks that `RunSpec.estimator` selects `parameters` from a training
    stage.
 
 These checks reconstruct the complete frozen $q$ from its root record and exact
@@ -2714,11 +2783,14 @@ For a stored input, the verifier:
    graph, including every completed stage input.
 3. Selects its successful attempt.
 4. Selects the producer `ResolvedStageRef` and named artifact.
-5. Verifies the complete artifact, materializes it at `StoredInputRef.path`,
-   and invokes its loader at that path.
-6. For checkpoint inputs, requires both pointers to select one resolved run,
+5. Verifies the complete artifact.
+6. Requires the stored input's declared data-use role to equal the selected
+   producer artifact's declared role.
+7. Materializes the artifact at `StoredInputRef.path` and invokes its loader at
+   that path.
+8. For checkpoint inputs, requires both pointers to select one resolved run,
    one producer stage, `parameters`, and `resume_state`.
-7. For a stored evaluation model, requires the pointer to select
+9. For a stored evaluation model, requires the pointer to select
    `parameters`.
 
 For a same-run input, the verifier:
@@ -2726,7 +2798,8 @@ For a same-run input, the verifier:
 1. Selects the earlier `ResolvedStageRef` named by `producer_stage_id`.
 2. Loads its resolved stage spec.
 3. Selects `producer_artifact` from its artifact mapping.
-4. Verifies and materializes the complete artifact.
+4. Inherits the selected artifact's declared data-use role.
+5. Verifies and materializes the complete artifact.
 
 For each attempt that records measurement or log files, the verifier requires
 every such file to belong to one immutable snapshot $D_i$. Distinct attempts

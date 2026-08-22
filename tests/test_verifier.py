@@ -23,6 +23,7 @@ from viper.records import (
     BenchmarkSpec,
     BuildParams,
     BuildSpec,
+    BuildVariantStageParams,
     CPUBackendContext,
     CPUComputeSpec,
     CPUContext,
@@ -316,6 +317,7 @@ def train_spec(*, future_prior: bool = False) -> TrainSpec:
             kind="stored",
             pointer=artifact_pointer("inputs/datasets/replogle/current.pointer.yaml"),
             path="inputs/datasets/replogle/dataset.h5ad",
+            data_role="training",
         )
 
     return TrainSpec(
@@ -329,11 +331,13 @@ def train_spec(*, future_prior: bool = False) -> TrainSpec:
                 kind="file",
                 path=(f"{RUN_ROOT}/artifacts/models/strand/parameters.safetensors"),
                 loader=loader_path("parameters"),
+                data_role="training",
             ),
             RESUME_STATE: SingleFileArtifactSpec(
                 kind="file",
                 path=f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt",
                 loader=loader_path("resume_state"),
+                data_role="training",
             ),
         },
     )
@@ -348,6 +352,7 @@ def build_spec() -> BuildSpec:
                 kind="stored",
                 pointer=artifact_pointer("inputs/priors/depmap/current.pointer.yaml"),
                 path="inputs/priors/depmap/prior.parquet",
+                data_role="training",
             )
         },
         params=BuildParams(),
@@ -356,6 +361,7 @@ def build_spec() -> BuildSpec:
                 kind="file",
                 path=f"{RUN_ROOT}/artifacts/priors/depmap/prior.pt",
                 loader=loader_path("prior"),
+                data_role="training",
             )
         },
     )
@@ -394,6 +400,7 @@ class FileVerificationTests(unittest.TestCase):
         )
         verified = VerifiedArtifact(
             artifact=resolved,
+            data_role=declaration.data_role,
             files=(
                 VerifiedSnapshotFile(
                     reference=resolved.file,
@@ -436,6 +443,7 @@ class FileVerificationTests(unittest.TestCase):
         )
         verified = VerifiedArtifact(
             artifact=resolved,
+            data_role=declaration.data_role,
             files=(
                 VerifiedSnapshotFile(
                     reference=resolved.file,
@@ -470,6 +478,7 @@ class FileVerificationTests(unittest.TestCase):
         )
         verified = VerifiedArtifact(
             artifact=resolved,
+            data_role=declaration.data_role,
             files=(
                 VerifiedSnapshotFile(
                     reference=resolved.file,
@@ -512,6 +521,7 @@ class FileVerificationTests(unittest.TestCase):
         )
         verified = VerifiedArtifact(
             artifact=resolved,
+            data_role=declaration.data_role,
             files=(
                 VerifiedSnapshotFile(
                     reference=resolved.file,
@@ -1032,6 +1042,191 @@ class RunAndStageVerificationTests(unittest.TestCase):
 class RunPlanRelationshipTests(unittest.TestCase):
     """Verify relationships among experiments, variants, stages, and benchmarks."""
 
+    def test_training_accepts_validation_inputs_and_preserves_the_role(self) -> None:
+        """Allow validation-guided training when every output stays validation."""
+        train = train_spec()
+        training_dataset = train.inputs["training_dataset"]
+        if not isinstance(training_dataset, StoredInputRef):
+            self.fail("training_dataset must be a stored input")
+        train = train.model_copy(
+            update={
+                "inputs": {
+                    "training_dataset": training_dataset,
+                    "validation_dataset": StoredInputRef(
+                        kind="stored",
+                        pointer=artifact_pointer(
+                            "inputs/datasets/replogle_validation/current.pointer.yaml"
+                        ),
+                        path=(
+                            "inputs/datasets/replogle_validation/dataset.h5ad"
+                        ),
+                        data_role="validation",
+                    )
+                },
+                "artifacts": {
+                    name: artifact.model_copy(update={"data_role": "validation"})
+                    for name, artifact in train.artifacts.items()
+                },
+            }
+        )
+        run, _ = run_spec([("train", train)])
+        experiment = ExperimentSpec(
+            experiment_id="e001_strand",
+            factors=(),
+            variant_ids=("baseline",),
+            replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
+            metrics=(),
+        )
+        variant = VariantSpec(
+            experiment_id="e001_strand",
+            variant_id="baseline",
+            levels={},
+            stage_params=(
+                TrainVariantStageParams(
+                    kind="train", stage_id="train", params=train.params
+                ),
+            ),
+        )
+
+        verify_run_plan_relationships(
+            run,
+            experiment,
+            variant,
+            None,
+            {"train": train},
+        )
+
+    def test_training_rejects_evaluation_inputs(self) -> None:
+        """Reject evaluation data supplied to a training stage."""
+        train = train_spec()
+        training_dataset = train.inputs["training_dataset"]
+        if not isinstance(training_dataset, StoredInputRef):
+            self.fail("training_dataset must be a stored input")
+        train = train.model_copy(
+            update={
+                "inputs": {
+                    "training_dataset": training_dataset.model_copy(
+                        update={"data_role": "evaluation"}
+                    )
+                }
+            }
+        )
+        run, _ = run_spec([("train", train)])
+        experiment = ExperimentSpec(
+            experiment_id="e001_strand",
+            factors=(),
+            variant_ids=("baseline",),
+            replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
+            metrics=(),
+        )
+        variant = VariantSpec(
+            experiment_id="e001_strand",
+            variant_id="baseline",
+            levels={},
+            stage_params=(
+                TrainVariantStageParams(
+                    kind="train", stage_id="train", params=train.params
+                ),
+            ),
+        )
+
+        with self.assertRaisesRegex(VerificationError, "cannot consume evaluation"):
+            verify_run_plan_relationships(
+                run,
+                experiment,
+                variant,
+                None,
+                {"train": train},
+            )
+
+    def test_training_inherits_a_future_artifact_data_role(self) -> None:
+        """Reject a restricted future artifact supplied to a training stage."""
+        build = build_spec()
+        prior = build.artifacts["prior"]
+        build = build.model_copy(
+            update={
+                "artifacts": {
+                    "prior": prior.model_copy(update={"data_role": "evaluation"})
+                }
+            }
+        )
+        train = train_spec(future_prior=True)
+        run, _ = run_spec([("build", build), ("train", train)])
+        experiment = ExperimentSpec(
+            experiment_id="e001_strand",
+            factors=(),
+            variant_ids=("baseline",),
+            replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
+            metrics=(),
+        )
+        variant = VariantSpec(
+            experiment_id="e001_strand",
+            variant_id="baseline",
+            levels={},
+            stage_params=(
+                BuildVariantStageParams(
+                    kind="build", stage_id="build", params=build.params
+                ),
+                TrainVariantStageParams(
+                    kind="train", stage_id="train", params=train.params
+                ),
+            ),
+        )
+
+        with self.assertRaisesRegex(VerificationError, "cannot consume evaluation"):
+            verify_run_plan_relationships(
+                run,
+                experiment,
+                variant,
+                None,
+                {"build": build, "train": train},
+            )
+
+    def test_artifact_role_cannot_downgrade_an_input_role(self) -> None:
+        """Reject an output whose role is weaker than one of its inputs."""
+        build = build_spec()
+        depmap = build.inputs["depmap"]
+        if not isinstance(depmap, StoredInputRef):
+            self.fail("depmap must be a stored input")
+        build = build.model_copy(
+            update={
+                "inputs": {
+                    "depmap": depmap.model_copy(update={"data_role": "evaluation"})
+                }
+            }
+        )
+        train = train_spec(future_prior=True)
+        run, _ = run_spec([("build", build), ("train", train)])
+        experiment = ExperimentSpec(
+            experiment_id="e001_strand",
+            factors=(),
+            variant_ids=("baseline",),
+            replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
+            metrics=(),
+        )
+        variant = VariantSpec(
+            experiment_id="e001_strand",
+            variant_id="baseline",
+            levels={},
+            stage_params=(
+                BuildVariantStageParams(
+                    kind="build", stage_id="build", params=build.params
+                ),
+                TrainVariantStageParams(
+                    kind="train", stage_id="train", params=train.params
+                ),
+            ),
+        )
+
+        with self.assertRaisesRegex(VerificationError, "less restricted"):
+            verify_run_plan_relationships(
+                run,
+                experiment,
+                variant,
+                None,
+                {"build": build, "train": train},
+            )
+
     def test_variant_parameters_match_the_loaded_training_stage(self) -> None:
         """Verify that variant parameters match the loaded training stage."""
         train = train_spec()
@@ -1166,6 +1361,7 @@ class RunPlanRelationshipTests(unittest.TestCase):
                         "inputs/datasets/replogle_test/current.pointer.yaml"
                     ),
                     path="inputs/datasets/replogle_test/dataset.h5ad",
+                    data_role="benchmark",
                 ),
                 "perturbation_split": StoredInputRef(
                     kind="stored",
@@ -1173,6 +1369,7 @@ class RunPlanRelationshipTests(unittest.TestCase):
                         "inputs/benchmarks/replogle/test_split.pointer.yaml"
                     ),
                     path="inputs/benchmarks/replogle/test_split.json",
+                    data_role="benchmark",
                 ),
             },
             params=EvaluateParams(),
@@ -1184,6 +1381,7 @@ class RunPlanRelationshipTests(unittest.TestCase):
                         "replogle_predictions/predictions.json"
                     ),
                     loader=loader_path("json_file"),
+                    data_role="benchmark",
                 )
             },
         )
@@ -1237,6 +1435,24 @@ class RunPlanRelationshipTests(unittest.TestCase):
             benchmark,
             {"train": train, "evaluate": evaluation},
         )
+
+        ordinary_payload = evaluation.model_dump(mode="python")
+        ordinary_payload["inputs"]["evaluation_dataset"]["data_role"] = (
+            "evaluation"
+        )
+        ordinary_payload["inputs"]["perturbation_split"]["data_role"] = (
+            "evaluation"
+        )
+        ordinary_payload["artifacts"]["predictions"]["data_role"] = "evaluation"
+        ordinary_evaluation = EvaluateSpec.model_validate(ordinary_payload)
+        with self.assertRaisesRegex(VerificationError, "must use 'benchmark'"):
+            verify_run_plan_relationships(
+                run,
+                experiment,
+                variant,
+                benchmark,
+                {"train": train, "evaluate": ordinary_evaluation},
+            )
 
         wrong_benchmark = benchmark.model_copy(
             update={"evaluation_id": "other_evaluation"}
@@ -1298,6 +1514,7 @@ class StoredInputSelectionTests(unittest.TestCase):
             {
                 "parameters": {
                     "kind": "stored",
+                    "data_role": "training",
                     "pointer": artifact_pointer(
                         "inputs/models/toy/parameters.pointer.yaml"
                     ),
@@ -1305,6 +1522,7 @@ class StoredInputSelectionTests(unittest.TestCase):
                 },
                 "resume_state": {
                     "kind": "stored",
+                    "data_role": "training",
                     "pointer": artifact_pointer(
                         "inputs/models/toy/resume_state.pointer.yaml"
                     ),

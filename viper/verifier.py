@@ -72,6 +72,12 @@ from .serialization import parse_yaml_bytes
 StorageFetcher = Callable[[StorageModel], bytes]
 SPEC_ADAPTER = TypeAdapter(Spec)
 RESOLVED_SPEC_ADAPTER = TypeAdapter(ResolvedSpec)
+_DATA_ROLE_RANK: dict[DataRole, int] = {
+    "training": 0,
+    "validation": 1,
+    "evaluation": 2,
+    "benchmark": 3,
+}
 
 
 def run_root(run: RunSpec) -> RepoRelPath:
@@ -82,6 +88,85 @@ def run_root(run: RunSpec) -> RepoRelPath:
 def stage_spec_path(run: RunSpec, stage_id: StageId) -> RepoRelPath:
     """Return the canonical stage-spec path for a run stage."""
     return f"{run_root(run)}/stages/{stage_id}/spec.yaml"
+
+
+def _verify_stage_data_roles(
+    stage_id: StageId,
+    stage: BaseSpec,
+    prior_stages: Mapping[StageId, BaseSpec],
+) -> None:
+    """Reject restricted inputs and artifact-role downgrades within a run plan."""
+    if not isinstance(stage, InternalSpec):
+        return
+
+    input_roles: dict[InputName, DataRole] = {}
+    for input_name, input_ref in stage.inputs.items():
+        if isinstance(input_ref, StoredInputRef):
+            input_roles[input_name] = input_ref.data_role
+            continue
+
+        producer = prior_stages.get(input_ref.producer_stage_id)
+        if producer is None:
+            raise VerificationError(
+                f"future input {input_name!r} of stage {stage_id!r} must select "
+                "an earlier stage"
+            )
+        declaration = producer.artifacts.get(input_ref.producer_artifact)
+        if declaration is None:
+            raise VerificationError(
+                f"future input {input_name!r} of stage {stage_id!r} selects an "
+                "undeclared producer artifact"
+            )
+        input_roles[input_name] = declaration.data_role
+
+    if isinstance(stage, TrainSpec):
+        restricted = {
+            name: role
+            for name, role in input_roles.items()
+            if _DATA_ROLE_RANK[role] > _DATA_ROLE_RANK["validation"]
+        }
+        if restricted:
+            names = ", ".join(sorted(restricted))
+            raise VerificationError(
+                f"training stage {stage_id!r} cannot consume evaluation or "
+                f"benchmark inputs: {names}"
+            )
+
+    if isinstance(stage, EvaluateSpec):
+        model_role = input_roles[PARAMETERS_INPUT]
+        if _DATA_ROLE_RANK[model_role] > _DATA_ROLE_RANK["validation"]:
+            raise VerificationError(
+                f"evaluation stage {stage_id!r} parameters must have training "
+                "or validation data_role"
+            )
+
+        dataset_input = stage.inputs["evaluation_dataset"]
+        assert isinstance(dataset_input, StoredInputRef)
+        evaluation_role = dataset_input.data_role
+        incompatible = {
+            name: role
+            for name, role in input_roles.items()
+            if _DATA_ROLE_RANK[role] > _DATA_ROLE_RANK[evaluation_role]
+        }
+        if incompatible:
+            names = ", ".join(sorted(incompatible))
+            raise VerificationError(
+                f"evaluation stage {stage_id!r} consumes inputs more restricted "
+                f"than its {evaluation_role!r} evaluation: {names}"
+            )
+
+    highest_input_rank = max(_DATA_ROLE_RANK[role] for role in input_roles.values())
+    downgraded_outputs = {
+        name
+        for name, artifact in stage.artifacts.items()
+        if _DATA_ROLE_RANK[artifact.data_role] < highest_input_rank
+    }
+    if downgraded_outputs:
+        names = ", ".join(sorted(downgraded_outputs))
+        raise VerificationError(
+            f"stage {stage_id!r} artifacts cannot have a less restricted "
+            f"data_role than their inputs: {names}"
+        )
 
 
 def resolved_stage_spec_path(run: RunSpec, stage_id: StageId) -> RepoRelPath:
@@ -131,7 +216,7 @@ class VerifiedArtifact:
 
     artifact: ResolvedArtifact
     files: tuple[VerifiedSnapshotFile, ...]
-    data_role: DataRole | None = None
+    data_role: DataRole
 
 
 @dataclass(frozen=True)
@@ -325,7 +410,7 @@ def verify_snapshot_artifact(
     stage: ResolvedStageRef,
     artifact: ResolvedArtifact,
     *,
-    data_role: DataRole | None = None,
+    data_role: DataRole,
     fetcher: StorageFetcher | None = None,
 ) -> VerifiedArtifact:
     """Verify every file representing one artifact in a stage snapshot."""
@@ -638,6 +723,12 @@ def verify_run_plan_relationships(
                         f"stored input {input_name!r} of stage {stage_id!r}",
                     )
 
+    prior_stages: dict[StageId, BaseSpec] = {}
+    for stage_reference in run.stages:
+        stage = stages[stage_reference.stage_id]
+        _verify_stage_data_roles(stage_reference.stage_id, stage, prior_stages)
+        prior_stages[stage_reference.stage_id] = stage
+
     parameterized_stages = {
         stage_id: stage
         for stage_id, stage in stages.items()
@@ -685,12 +776,24 @@ def verify_run_plan_relationships(
                 f"stage {stage_id!r} must select diagnostic metrics"
             )
 
-    if benchmark is None:
-        return
-
     evaluation_stages = [
         stage for stage in stages.values() if isinstance(stage, EvaluateSpec)
     ]
+    expected_evaluation_role: DataRole = (
+        "benchmark" if benchmark is not None else "evaluation"
+    )
+    for evaluation in evaluation_stages:
+        dataset_input = evaluation.inputs["evaluation_dataset"]
+        assert isinstance(dataset_input, StoredInputRef)
+        if dataset_input.data_role != expected_evaluation_role:
+            raise VerificationError(
+                f"evaluation {evaluation.evaluation_id!r} must use "
+                f"{expected_evaluation_role!r} data_role"
+            )
+
+    if benchmark is None:
+        return
+
     if len(evaluation_stages) != 1:
         raise VerificationError("benchmark runs require exactly one evaluation stage")
 
@@ -859,6 +962,8 @@ def verify_stage_plan(
                             f"future input {input_name!r} path collides with a "
                             f"stored input of stage {stage.stage_id!r}"
                         )
+
+            _verify_stage_data_roles(stage.stage_id, spec, loaded_stages)
 
         loaded_stages[stage.stage_id] = spec
 
@@ -1055,14 +1160,16 @@ def verify_attempt_stages(
             )
 
         for artifact_name, artifact in resolved_spec.artifacts.items():
+            declaration = stage_spec.artifacts[artifact_name]
             verified_artifact = verify_snapshot_artifact(
                 stage_reference,
                 artifact,
+                data_role=declaration.data_role,
                 fetcher=fetcher,
             )
             load_verified_artifact(
                 run,
-                stage_spec.artifacts[artifact_name],
+                declaration,
                 artifact_name,
                 verified_artifact,
                 policy=policy,
@@ -1353,6 +1460,7 @@ def verify_promoted_artifact(
     pointer: ArtifactPointer,
     *,
     policy: VerificationPolicy,
+    expected_data_role: DataRole | None = None,
     materialization_path: RepoRelPath | None = None,
     fetcher: StorageFetcher | None = None,
 ) -> VerifiedArtifact:
@@ -1388,6 +1496,7 @@ def verify_promoted_artifact(
     artifact = producer_spec.artifacts.get(pointer.artifact.artifact_name)
     if artifact is None:
         raise VerificationError("artifact pointer selects an undeclared artifact")
+    declaration = producer_spec.spec.artifacts[pointer.artifact.artifact_name]
 
     if pointer.benchmark_result is not None:
         benchmark_result_raw = read_resolved_file(
@@ -1439,10 +1548,18 @@ def verify_promoted_artifact(
     verified_artifact = verify_snapshot_artifact(
         producer_stage,
         artifact,
+        data_role=declaration.data_role,
         fetcher=fetcher,
     )
+    if (
+        expected_data_role is not None
+        and verified_artifact.data_role != expected_data_role
+    ):
+        raise VerificationError(
+            f"selected artifact data_role {verified_artifact.data_role!r} does not "
+            f"match stored input data_role {expected_data_role!r}"
+        )
     if materialization_path is not None:
-        declaration = producer_spec.spec.artifacts[pointer.artifact.artifact_name]
         load_verified_artifact(
             verified_run.plan.run,
             declaration,
@@ -1552,11 +1669,13 @@ def verify_stored_inputs(
             verified_artifact = verify_promoted_artifact(
                 pointer,
                 policy=policy,
+                expected_data_role=spec_input.data_role,
                 materialization_path=spec_input.path,
                 fetcher=fetcher,
             )
             stage_inputs[input_name] = VerifiedInput(
                 path=spec_input.path,
+                data_role=spec_input.data_role,
                 artifact=verified_artifact.artifact,
                 files=verified_artifact.files,
             )
@@ -1694,10 +1813,12 @@ def verify_attempt_future_inputs(
             verified_artifact = verify_snapshot_artifact(
                 producer_stage_reference,
                 artifact,
+                data_role=declared_artifact.data_role,
                 fetcher=fetcher,
             )
             stage_inputs[input_name] = VerifiedInput(
                 path=declared_artifact.path,
+                data_role=declared_artifact.data_role,
                 artifact=verified_artifact.artifact,
                 files=verified_artifact.files,
             )

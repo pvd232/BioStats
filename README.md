@@ -71,6 +71,12 @@ input lineage, estimator and prediction file parity, metric criteria, and
 result status. `verify_promoted_artifact()` verifies the selected producer run
 and any benchmark result required to authorize estimator promotion.
 
+Every stored input and produced artifact declares a data-use role: `training`,
+`validation`, `evaluation`, or `benchmark`. The verifier confirms stored-input
+roles against their producer artifacts, propagates same-run roles, prevents a
+stage from weakening an inherited restriction, and blocks evaluation or
+benchmark data from entering a training stage.
+
 ## Public operations
 
 - `load_stage_spec(path)` parses a `DownloadSpec`, `BuildSpec`, `EmbedSpec`,
@@ -128,6 +134,9 @@ rejection.
   local typed model before constructing the core parameter record.
 - Evaluation reserves the logical artifact name `predictions`. The project
   selects its file or bundle format and declares the exact loader path.
+- Data-use roles are assigned by the project when source artifacts enter the
+  provenance graph. VIPER verifies their propagation and permitted stage
+  flows; it does not infer a dataset's scientific role from its bytes.
 - Each experiment metric records its role, parameters, and exact
   repository-relative implementation path.
 - VIPER prescribes no user source-tree layout. Stage scripts, metric

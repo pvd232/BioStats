@@ -14,6 +14,7 @@ from viper.records import (
     PREDICTIONS,
     RESUME_STATE,
     CUDABackendContext,
+    DataRole,
     EvaluateParams,
     EvaluateSpec,
     FutureInputRef,
@@ -96,21 +97,27 @@ def reproducibility() -> dict:
     }
 
 
-def artifact(path: str, loader: str) -> dict:
+def artifact(path: str, loader: str, data_role: DataRole = "training") -> dict:
     """Build one declared single-file artifact payload."""
     return {
         "kind": "file",
         "path": path,
         "loader": f"project/loaders/{loader}.py",
+        "data_role": data_role,
     }
 
 
-def stored_input(path: str, pointer_path: str) -> dict:
+def stored_input(
+    path: str,
+    pointer_path: str,
+    data_role: DataRole = "training",
+) -> dict:
     """Build one promoted-input materialization payload."""
     return {
         "kind": "stored",
         "pointer": git_file(pointer_path),
         "path": path,
+        "data_role": data_role,
     }
 
 
@@ -528,10 +535,12 @@ class EvaluationTests(unittest.TestCase):
                     "evaluation_dataset": stored_input(
                         "inputs/datasets/replogle_test/dataset.h5ad",
                         "inputs/datasets/replogle_test/current.pointer.yaml",
+                        "evaluation",
                     ),
                     "perturbation_split": stored_input(
                         "inputs/benchmarks/replogle/perturbations.json",
                         "inputs/benchmarks/replogle/perturbations.pointer.yaml",
+                        "evaluation",
                     ),
                 },
                 "params": {},
@@ -539,6 +548,7 @@ class EvaluationTests(unittest.TestCase):
                     PREDICTIONS: artifact(
                         f"{RUN_ROOT}/artifacts/evaluations/strand_predictions/predictions.json",
                         "json_file",
+                        "evaluation",
                     )
                 },
             }
@@ -563,10 +573,12 @@ class EvaluationTests(unittest.TestCase):
                 "evaluation_dataset": stored_input(
                     "inputs/datasets/test/data.bin",
                     "inputs/datasets/test/current.pointer.yaml",
+                    "evaluation",
                 ),
                 "test_split": stored_input(
                     "inputs/benchmarks/test/split.json",
                     "inputs/benchmarks/test/current.pointer.yaml",
+                    "evaluation",
                 ),
             },
             "params": {},
@@ -577,6 +589,7 @@ class EvaluationTests(unittest.TestCase):
                         f"{RUN_ROOT}/artifacts/evaluations/structured_predictions"
                     ),
                     "loader": "custom_code/load_prediction_bundle.py",
+                    "data_role": "evaluation",
                 }
             },
         }
@@ -601,10 +614,12 @@ class EvaluationTests(unittest.TestCase):
                 "evaluation_dataset": stored_input(
                     "inputs/datasets/replogle_test/dataset.h5ad",
                     "inputs/datasets/replogle_test/current.pointer.yaml",
+                    "evaluation",
                 ),
                 "split": stored_input(
                     "inputs/benchmarks/replogle/split.json",
                     "inputs/benchmarks/replogle/split.pointer.yaml",
+                    "evaluation",
                 ),
             },
             "params": {},
@@ -612,6 +627,7 @@ class EvaluationTests(unittest.TestCase):
                 PREDICTIONS: artifact(
                     f"{RUN_ROOT}/artifacts/evaluations/strand_predictions/predictions.json",
                     "json_file",
+                    "evaluation",
                 )
             },
         }
@@ -626,6 +642,7 @@ class EvaluationTests(unittest.TestCase):
         payload["inputs"]["evaluation_dataset"] = stored_input(
             "inputs/priors/replogle_test/dataset.h5ad",
             "inputs/priors/replogle_test/current.pointer.yaml",
+            "evaluation",
         )
         with self.assertRaisesRegex(ValidationError, "inputs/datasets"):
             EvaluateSpec.model_validate(payload)
@@ -633,10 +650,12 @@ class EvaluationTests(unittest.TestCase):
         payload["inputs"]["evaluation_dataset"] = stored_input(
             "inputs/datasets/replogle_test/dataset.h5ad",
             "inputs/datasets/replogle_test/current.pointer.yaml",
+            "evaluation",
         )
         payload["inputs"]["split"] = stored_input(
             "inputs/datasets/replogle/split.json",
             "inputs/datasets/replogle/split.pointer.yaml",
+            "evaluation",
         )
         with self.assertRaisesRegex(ValidationError, "inputs/benchmarks"):
             EvaluateSpec.model_validate(payload)
@@ -657,10 +676,12 @@ class EvaluationTests(unittest.TestCase):
                 "evaluation_dataset": stored_input(
                     "inputs/datasets/replogle_test/dataset.h5ad",
                     "inputs/datasets/replogle_test/current.pointer.yaml",
+                    "evaluation",
                 ),
                 "split": stored_input(
                     "inputs/benchmarks/replogle/split.json",
                     "inputs/benchmarks/replogle/split.pointer.yaml",
+                    "evaluation",
                 ),
             },
             "params": {},
@@ -668,10 +689,12 @@ class EvaluationTests(unittest.TestCase):
                 PREDICTIONS: artifact(
                     f"{RUN_ROOT}/artifacts/evaluations/strand_predictions/predictions.json",
                     "json_file",
+                    "evaluation",
                 ),
                 PARAMETERS: artifact(
                     f"{RUN_ROOT}/artifacts/evaluations/strand_predictions/parameters.safetensors",
                     "parameters",
+                    "evaluation",
                 ),
             },
         }

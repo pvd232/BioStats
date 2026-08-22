@@ -34,6 +34,7 @@ from viper.records import (
     CPUComputeSpec,
     CPUContext,
     DataLoaderConfiguration,
+    DataRole,
     DownloadSpec,
     EvaluateParams,
     EvaluateSpec,
@@ -526,7 +527,11 @@ def resolved_pointer(
     )
 
 
-def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str, Any]]:
+def publish_producer_run(
+    store: DocumentStore,
+    *,
+    evaluation_role: DataRole = "evaluation",
+) -> tuple[ResolvedRunRef, dict[str, Any]]:
     """Publish a complete upstream run for stored-input verification."""
     run_root = "experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA"
     download = DownloadSpec(
@@ -543,11 +548,19 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
                 kind="file",
                 path=f"{run_root}/artifacts/datasets/toy/dataset.bin",
                 loader=loader_path("bytes_file"),
+                data_role="training",
+            ),
+            "evaluation_dataset": SingleFileArtifactSpec(
+                kind="file",
+                path=f"{run_root}/artifacts/datasets/toy/evaluation.bin",
+                loader=loader_path("bytes_file"),
+                data_role=evaluation_role,
             ),
             "split": SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/datasets/toy/split.json",
                 loader=loader_path("bytes_file"),
+                data_role=evaluation_role,
             ),
         },
     )
@@ -568,11 +581,13 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
                 kind="file",
                 path=f"{run_root}/artifacts/models/toy/parameters.bin",
                 loader=loader_path("bytes_file"),
+                data_role="training",
             ),
             RESUME_STATE: SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/models/toy/resume_state.bin",
                 loader=loader_path("resume_state"),
+                data_role="training",
             ),
         },
     )
@@ -645,6 +660,12 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
                 store,
                 download_commit,
                 str(download.artifacts["dataset"].path),
+                dataset_raw,
+            ),
+            "evaluation_dataset": add_single_artifact(
+                store,
+                download_commit,
+                str(download.artifacts["evaluation_dataset"].path),
                 dataset_raw,
             ),
             "split": add_single_artifact(
@@ -736,6 +757,7 @@ def publish_producer_run(store: DocumentStore) -> tuple[ResolvedRunRef, dict[str
 def build_complete_fixture(
     *,
     benchmark_enabled: bool = False,
+    producer_evaluation_role: DataRole | None = None,
 ) -> tuple[
     ResolvedRun,
     DocumentStore,
@@ -743,23 +765,41 @@ def build_complete_fixture(
 ]:
     """Publish one complete valid provenance chain and return its roots."""
     store = DocumentStore()
-    producer_run_ref, _ = publish_producer_run(store)
+    evaluation_role = "benchmark" if benchmark_enabled else "evaluation"
+    producer_run_ref, _ = publish_producer_run(
+        store,
+        evaluation_role=producer_evaluation_role or evaluation_role,
+    )
 
-    dataset_pointer = ArtifactPointer(
+    training_dataset_pointer = ArtifactPointer(
         run=producer_run_ref,
         artifact=StageArtifactRef(stage_id="download", artifact_name="dataset"),
+    )
+    evaluation_dataset_pointer = ArtifactPointer(
+        run=producer_run_ref,
+        artifact=StageArtifactRef(
+            stage_id="download",
+            artifact_name="evaluation_dataset",
+        ),
     )
     split_pointer = ArtifactPointer(
         run=producer_run_ref,
         artifact=StageArtifactRef(stage_id="download", artifact_name="split"),
     )
-    dataset_pointer_path = "inputs/datasets/toy/current.pointer.yaml"
+    training_dataset_pointer_path = "inputs/datasets/toy/training.pointer.yaml"
+    evaluation_dataset_pointer_path = "inputs/datasets/toy/evaluation.pointer.yaml"
     split_pointer_path = "inputs/benchmarks/toy/test_split.pointer.yaml"
-    resolved_dataset_pointer = resolved_pointer(
+    resolved_training_dataset_pointer = resolved_pointer(
         store,
         MAIN_SOURCE_COMMIT,
-        dataset_pointer_path,
-        dataset_pointer,
+        training_dataset_pointer_path,
+        training_dataset_pointer,
+    )
+    resolved_evaluation_dataset_pointer = resolved_pointer(
+        store,
+        MAIN_SOURCE_COMMIT,
+        evaluation_dataset_pointer_path,
+        evaluation_dataset_pointer,
     )
     resolved_split_pointer = resolved_pointer(
         store,
@@ -775,8 +815,9 @@ def build_complete_fixture(
         inputs={
             "dataset": StoredInputRef(
                 kind="stored",
-                pointer=resolved_dataset_pointer.stored_at,
+                pointer=resolved_training_dataset_pointer.stored_at,
                 path="inputs/datasets/toy/current.bin",
+                data_role="training",
             )
         },
         params=BuildParams(),
@@ -785,6 +826,7 @@ def build_complete_fixture(
                 kind="bundle",
                 path=f"{run_root}/artifacts/priors/toy",
                 loader=loader_path("prior_bundle"),
+                data_role="training",
             )
         },
     )
@@ -805,11 +847,13 @@ def build_complete_fixture(
                 kind="file",
                 path=f"{run_root}/artifacts/models/toy/parameters.bin",
                 loader=loader_path("bytes_file"),
+                data_role="training",
             ),
             RESUME_STATE: SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/models/toy/resume_state.bin",
                 loader=loader_path("resume_state"),
+                data_role="training",
             ),
         },
     )
@@ -826,13 +870,15 @@ def build_complete_fixture(
             ),
             "evaluation_dataset": StoredInputRef(
                 kind="stored",
-                pointer=resolved_dataset_pointer.stored_at,
+                pointer=resolved_evaluation_dataset_pointer.stored_at,
                 path="inputs/datasets/toy/evaluation.bin",
+                data_role=evaluation_role,
             ),
             "test_split": StoredInputRef(
                 kind="stored",
                 pointer=resolved_split_pointer.stored_at,
                 path="inputs/benchmarks/toy/test_split.json",
+                data_role=evaluation_role,
             ),
         },
         params=EvaluateParams(),
@@ -843,6 +889,7 @@ def build_complete_fixture(
                     f"{run_root}/artifacts/evaluations/toy_predictions/predictions.json"
                 ),
                 loader=loader_path("json_file"),
+                data_role=evaluation_role,
             )
         },
     )
@@ -864,7 +911,7 @@ def build_complete_fixture(
         benchmark = BenchmarkSpec(
             benchmark_id="toy_strict",
             evaluation_id="toy_predictions",
-            evaluation_dataset=resolved_dataset_pointer.stored_at,
+            evaluation_dataset=resolved_evaluation_dataset_pointer.stored_at,
             splits={"test_split": resolved_split_pointer.stored_at},
             metrics=(
                 MetricCriterion(
@@ -944,7 +991,7 @@ def build_complete_fixture(
         command=("python", str(build.script), str(run.stages[0].spec)),
         inputs={
             "dataset": ResolvedStoredInputRef(
-                kind="stored", pointer=resolved_dataset_pointer
+                kind="stored", pointer=resolved_training_dataset_pointer
             ),
         },
         artifacts={"prior": prior_artifact},
@@ -1001,7 +1048,7 @@ def build_complete_fixture(
             "parameters": ResolvedFutureInputRef(producer=train_stage),
             "evaluation_dataset": ResolvedStoredInputRef(
                 kind="stored",
-                pointer=resolved_dataset_pointer,
+                pointer=resolved_evaluation_dataset_pointer,
             ),
             "test_split": ResolvedStoredInputRef(
                 kind="stored", pointer=resolved_split_pointer
@@ -1242,6 +1289,19 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         self.assertEqual(set(verified.resolved_stages), {"build", "train", "evaluate"})
         self.assertEqual(len(verified.measurements), 1)
         self.assertEqual(verified.measurements[0].value, 0.91)
+
+    def test_stored_input_role_must_match_the_selected_artifact(self) -> None:
+        """Reject a stored input whose declared role differs from its source."""
+        resolved_run, store, _ = build_complete_fixture(
+            producer_evaluation_role="validation"
+        )
+
+        with self.assertRaisesRegex(VerificationError, "does not match stored input"):
+            verify_run_result(
+                resolved_run,
+                policy=POLICY,
+                fetcher=store.fetch,
+            )
 
     def test_complete_verifier_rejects_tampered_referenced_file(self) -> None:
         """Verify that complete verifier rejects tampered referenced file."""

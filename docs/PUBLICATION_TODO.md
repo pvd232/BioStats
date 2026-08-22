@@ -26,7 +26,7 @@ repository.
 - [x] Place repository maintenance utilities under `tools/`.
 - [x] Use `spec.yaml` and `resolved.yaml` inside run and stage identity
   directories.
-- [ ] Define data-use roles and the permitted flows among training, validation,
+- [x] Define data-use roles and the permitted flows among training, validation,
   evaluation, and benchmark inputs. Enforce those rules while validating a run
   plan and before materializing stage inputs.
 

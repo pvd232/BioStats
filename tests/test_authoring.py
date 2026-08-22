@@ -100,6 +100,7 @@ def training_spec() -> TrainSpec:
                         "path": "inputs/datasets/replogle/current.pointer.yaml",
                     },
                     "path": "inputs/datasets/replogle/dataset.h5ad",
+                    "data_role": "training",
                 }
             },
             "params": {"schema_version": 1, "epochs": 2},
@@ -110,11 +111,13 @@ def training_spec() -> TrainSpec:
                         f"{RUN_ROOT}/artifacts/models/strand/parameters.safetensors"
                     ),
                     "loader": "project_code/loaders/parameters.py",
+                    "data_role": "training",
                 },
                 RESUME_STATE: {
                     "kind": "file",
                     "path": (f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt"),
                     "loader": "project_code/loaders/resume_state.py",
+                    "data_role": "training",
                 },
             },
         }

@@ -1,9 +1,11 @@
 artifacts:
   dataset:
+    data_role: training
     kind: file
     loader: project/loaders/bytes_file.py
     path: experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA/artifacts/datasets/toy/dataset.bin
   split:
+    data_role: evaluation
     kind: file
     loader: project/loaders/bytes_file.py
     path: experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA/artifacts/datasets/toy/split.json

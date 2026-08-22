@@ -39,6 +39,7 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
                         "kind": "file",
                         "path": artifact_path,
                         "loader": "project/loaders/bytes_file.py",
+                        "data_role": "training",
                     }
                 },
             }
