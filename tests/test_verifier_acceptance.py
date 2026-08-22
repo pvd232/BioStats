@@ -646,7 +646,8 @@ def publish_producer_run(
     )
 
     download_commit = "7" * 40
-    dataset_raw = b"fixed dataset bytes"
+    training_dataset_raw = b"fixed training dataset bytes"
+    evaluation_dataset_raw = b"fixed evaluation dataset bytes"
     split_raw = b'{"test":[0,1]}\n'
     resolved_download = ResolvedDownloadSpec(
         spec=download,
@@ -660,13 +661,13 @@ def publish_producer_run(
                 store,
                 download_commit,
                 str(download.artifacts["dataset"].path),
-                dataset_raw,
+                training_dataset_raw,
             ),
             "evaluation_dataset": add_single_artifact(
                 store,
                 download_commit,
                 str(download.artifacts["evaluation_dataset"].path),
-                dataset_raw,
+                evaluation_dataset_raw,
             ),
             "split": add_single_artifact(
                 store,
@@ -748,7 +749,7 @@ def publish_producer_run(
         stored_at=resolved_run_location,
     )
     return reference, {
-        "dataset": dataset_raw,
+        "dataset": training_dataset_raw,
         "dataset_ref": download_stage,
         "run": resolved_run,
     }
