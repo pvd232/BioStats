@@ -577,6 +577,15 @@ class ParameterSet(BaseModel):
     schema_version: Literal[1] = 1
 
 
+class ParameterModelRef(ProtocolModel):
+    """Identify one project-owned Pydantic parameter class by exact file bytes."""
+
+    path: PythonRepoRelPath
+    symbol: PythonSymbol
+    sha256: SHA256
+    bytes: int = Field(gt=0)
+
+
 class MetricParams(ParameterSet):
     """Metric-specific parameters preserved by the core protocol."""
 
@@ -1262,6 +1271,7 @@ class InternalSpec(BaseSpec):
     """Request a stage that consumes stored or prior-stage artifacts."""
 
     inputs: dict[InputName, InternalInputRef] = Field(min_length=1)
+    parameter_model: ParameterModelRef | None = None
 
     @model_validator(mode="after")
     def validate_local_path_collisions(self) -> InternalSpec:

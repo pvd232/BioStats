@@ -30,7 +30,7 @@ jobs:
         run: |
           python -m pip install --force-reinstall --no-deps dist/*.whl
           python -I -c "import viper; assert all(getattr(viper, name) for name in viper.__all__)"
-          python -I -c "import importlib; modules = ('application', 'authoring', 'ids', 'inspection', 'journal', 'local_store', 'materialization', 'metrics', 'preflight', 'protocol', 'resume', 'runner', 'runtime', 'serialization', 'stage_execution', 'stage_worker', 'verifier', 'worker', 'workspace'); assert all(importlib.import_module(f'viper.{name}') for name in modules)"
+          python -I -c "import importlib; modules = ('application', 'authoring', 'ids', 'inspection', 'journal', 'local_store', 'materialization', 'metrics', 'parameter_models', 'preflight', 'protocol', 'resume', 'runner', 'runtime', 'serialization', 'stage_execution', 'stage_worker', 'verifier', 'worker', 'workspace'); assert all(importlib.import_module(f'viper.{name}') for name in modules)"
           python -I -c "from viper import application; assert all(getattr(application, name) for name in application.__all__)"
           python -I -c "from viper.application import CapabilitiesRequest, get_capabilities; result = get_capabilities(CapabilitiesRequest()); assert 'run_local' in result.operations and 'RunSpec' in result.schemas"
           viper --json capabilities

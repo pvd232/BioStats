@@ -15,6 +15,7 @@ exercise each path before release.
 | `viper.local_store` | Immutable repository-local files and stage snapshots |
 | `viper.materialization` | Verified stored-input and same-run input materialization |
 | `viper.metrics` | Decorated functions, stateful metrics, comparison, and measurement output |
+| `viper.parameter_models` | Project parameter-class loading, identity checks, and validation |
 | `viper.preflight` | Complete-plan checks for trusted local execution |
 | `viper.protocol` | Authored and resolved protocol models |
 | `viper.resume` | Training resume-state capture, persistence, and restoration |
@@ -38,6 +39,7 @@ viper.journal
 viper.local_store
 viper.materialization
 viper.metrics
+viper.parameter_models
 viper.preflight
 viper.protocol
 viper.resume
