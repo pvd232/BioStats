@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from warnings import warn
 
 import yaml
 from pydantic import BaseModel, TypeAdapter
@@ -45,9 +46,9 @@ _SPEC_ADAPTER = TypeAdapter(Spec)
 _RESOLVED_SPEC_ADAPTER = TypeAdapter(ResolvedSpec)
 
 
-def serialize_record(record: BaseModel) -> bytes:
-    """Serialize one validated record as deterministic UTF-8 YAML bytes."""
-    value = record.model_dump(mode="json")
+def serialize_document(document: BaseModel) -> bytes:
+    """Serialize one validated protocol document as deterministic YAML bytes."""
+    value = document.model_dump(mode="json")
     rendered = yaml.safe_dump(
         value,
         allow_unicode=True,
@@ -55,6 +56,16 @@ def serialize_record(record: BaseModel) -> bytes:
     )
     assert isinstance(rendered, str)
     return rendered.encode("utf-8")
+
+
+def serialize_record(record: BaseModel) -> bytes:
+    """Serialize a protocol document through the deprecated 0.1 alias."""
+    warn(
+        "serialize_record() is deprecated; use serialize_document()",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return serialize_document(record)
 
 
 def parse_yaml_bytes(raw: bytes) -> Any:

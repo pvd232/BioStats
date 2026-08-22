@@ -1,56 +1,52 @@
-"""Provide installed commands for plan authoring and provenance verification."""
+"""Expose VIPER application operations through the installed command."""
 
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+from typing import Any, NoReturn
 
-from pydantic import TypeAdapter
-
-from .authoring import freeze_run_plan, load_run_plan_draft
-from .protocol import ArtifactPointer, BenchmarkResult, ResolvedRun, RunSpec
-from .serialization import load_resolved_stage, load_stage_spec, parse_yaml_bytes
-from .stage_execution import execute_stage_process
-from .verifier import (
-    VerificationPolicy,
-    verify_benchmark_result,
-    verify_promoted_artifact,
-    verify_run_result,
+from .application import (
+    ApplicationModel,
+    OperationName,
+    SuccessModel,
+    ViperFailure,
+    dispatch,
+    result_json_bytes,
 )
 
 
-def _load_model(path: Path, model_type: type[object]) -> object:
-    """Load one duplicate-key-safe YAML document through a Pydantic model."""
-    return TypeAdapter(model_type).validate_python(parse_yaml_bytes(path.read_bytes()))
+class CliParseError(ValueError):
+    """Carry one command-line syntax failure into the result renderer."""
 
 
-def _policy(repositories: list[str]) -> VerificationPolicy:
-    """Construct an explicit artifact-loader trust policy from CLI arguments."""
-    return VerificationPolicy(trusted_loader_repositories=frozenset(repositories))
+class ViperArgumentParser(argparse.ArgumentParser):
+    """Raise parser failures so JSON mode retains one-document output."""
+
+    def error(self, message: str) -> NoReturn:
+        """Convert one argparse syntax error into a catchable exception."""
+        raise CliParseError(message)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the VIPER command-line parser and its subcommands."""
-    parser = argparse.ArgumentParser(prog="viper")
+    """Build the VIPER command parser and its application subcommands."""
+    parser = ViperArgumentParser(prog="viper")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="emit one machine-readable result document",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    validate_stage = commands.add_parser(
-        "validate-stage",
-        help="validate one authored stage specification",
-    )
-    validate_stage.add_argument("path", type=Path)
-
-    validate_resolved = commands.add_parser(
-        "validate-resolved-stage",
-        help="validate one resolved stage record",
-    )
-    validate_resolved.add_argument("path", type=Path)
-
-    validate_run = commands.add_parser(
-        "validate-run",
-        help="validate one frozen run specification",
-    )
-    validate_run.add_argument("path", type=Path)
+    for name, help_text in (
+        ("validate-stage", "validate one authored stage specification"),
+        ("validate-resolved-stage", "validate one resolved stage specification"),
+        ("validate-run", "validate one frozen run specification"),
+    ):
+        command = commands.add_parser(name, help=help_text)
+        command.add_argument("path", type=Path)
 
     freeze = commands.add_parser(
         "freeze-run",
@@ -66,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     execute.add_argument("run_spec", type=Path)
     execute.add_argument("stage_id")
     execute.add_argument("--repository-root", type=Path, default=Path.cwd())
+    execute.add_argument("--timeout-seconds", type=float)
 
     for name, help_text in (
         ("verify-run", "verify one terminal resolved run"),
@@ -78,75 +75,107 @@ def build_parser() -> argparse.ArgumentParser:
             "--trust-loader-source",
             action="append",
             required=True,
-            help="exact source-repository URL whose artifact loaders may execute",
+            help="source repository URL approved to supply executable loaders",
         )
 
+    schema = commands.add_parser("schema", help="return one public JSON Schema")
+    schema.add_argument("name")
+    commands.add_parser("capabilities", help="list installed VIPER capabilities")
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Execute one authoring, validation, or verification command."""
-    arguments = build_parser().parse_args(argv)
+def _operation_and_payload(
+    arguments: argparse.Namespace,
+) -> tuple[OperationName, dict[str, Any]]:
+    """Map parsed command arguments onto one application operation."""
+    values = vars(arguments).copy()
+    command = values.pop("command")
+    values.pop("json_output")
+    mapping: dict[str, OperationName] = {
+        "validate-stage": "validate_stage",
+        "validate-resolved-stage": "validate_resolved_stage",
+        "validate-run": "validate_run_spec",
+        "freeze-run": "freeze_run",
+        "execute-stage": "execute_stage",
+        "verify-run": "verify_run",
+        "verify-benchmark": "verify_benchmark",
+        "verify-pointer": "verify_pointer",
+        "schema": "get_schema",
+        "capabilities": "get_capabilities",
+    }
+    operation = mapping[command]
+    trusted = values.pop("trust_loader_source", None)
+    if trusted is not None:
+        values["trusted_loader_repositories"] = trusted
+    return operation, values
 
-    if arguments.command == "validate-stage":
-        stage = load_stage_spec(arguments.path)
-        print(f"valid {stage.kind} stage")
-        return 0
 
-    if arguments.command == "validate-resolved-stage":
-        stage = load_resolved_stage(arguments.path)
-        print(f"valid resolved {stage.kind} stage")
-        return 0
-
-    if arguments.command == "validate-run":
-        _load_model(arguments.path, RunSpec)
-        print("valid run plan")
-        return 0
-
-    if arguments.command == "freeze-run":
-        draft = load_run_plan_draft(arguments.draft)
-        frozen = freeze_run_plan(arguments.repository_root, draft)
-        print(f"froze {len(frozen.run.stages)} stages in {len(frozen.files)} files")
-        return 0
-
-    if arguments.command == "execute-stage":
-        run = _load_model(arguments.run_spec, RunSpec)
-        assert isinstance(run, RunSpec)
-        reference = next(
-            (stage for stage in run.stages if stage.stage_id == arguments.stage_id),
-            None,
-        )
-        if reference is None:
-            raise ValueError(f"run plan has no stage {arguments.stage_id!r}")
-        stage = load_stage_spec(arguments.repository_root / reference.spec)
-        result = execute_stage_process(arguments.repository_root, reference, stage)
-        file_count = sum(
+def _human_success(result: SuccessModel) -> str:
+    """Render one concise human result for an application success."""
+    if result.operation == "validate_stage":
+        return f"valid {getattr(result, 'stage_kind')} stage"
+    if result.operation == "validate_resolved_stage":
+        return f"valid resolved {getattr(result, 'stage_kind')} stage"
+    if result.operation == "validate_run_spec":
+        return "valid run plan"
+    if result.operation == "freeze_run":
+        files = getattr(result, "files")
+        return f"froze run {getattr(result, 'run_id')} in {len(files)} files"
+    if result.operation == "execute_stage":
+        artifacts = getattr(result, "artifacts")
+        count = sum(
             1 if artifact.kind == "file" else len(artifact.members)
-            for artifact in result.artifacts.values()
+            for artifact in artifacts.values()
         )
-        print(f"executed stage {reference.stage_id} and identified {file_count} files")
-        return 0
+        return (
+            f"executed stage {getattr(result, 'stage_id')} and identified {count} files"
+        )
+    if result.operation == "verify_run":
+        return f"verified run {getattr(result, 'run_id')}"
+    if result.operation == "verify_benchmark":
+        return f"verified benchmark result {getattr(result, 'benchmark_status')}"
+    if result.operation == "verify_pointer":
+        return f"verified artifact with {getattr(result, 'file_count')} files"
+    if result.operation == "get_schema":
+        return result.model_dump_json(indent=2)
+    capabilities = getattr(result, "operations")
+    return "\n".join(capabilities)
 
-    policy = _policy(arguments.trust_loader_source)
-    if arguments.command == "verify-run":
-        resolved_run = _load_model(arguments.path, ResolvedRun)
-        assert isinstance(resolved_run, ResolvedRun)
-        verified = verify_run_result(resolved_run, policy=policy)
-        print(f"verified run {verified.plan.run.run_id}")
-        return 0
 
-    if arguments.command == "verify-benchmark":
-        result = _load_model(arguments.path, BenchmarkResult)
-        assert isinstance(result, BenchmarkResult)
-        verified = verify_benchmark_result(result, policy=policy)
-        print(f"verified benchmark result {verified.result.status}")
-        return 0
+def _render(result: ApplicationModel, *, json_output: bool) -> int:
+    """Write one result to its declared channel and return an exit status."""
+    if json_output:
+        sys.stdout.buffer.write(result_json_bytes(result))
+    elif isinstance(result, ViperFailure):
+        print(result.message, file=sys.stderr)
+    else:
+        assert isinstance(result, SuccessModel)
+        print(_human_success(result))
+    return 1 if isinstance(result, ViperFailure) else 0
 
-    pointer = _load_model(arguments.path, ArtifactPointer)
-    assert isinstance(pointer, ArtifactPointer)
-    verified_artifact = verify_promoted_artifact(pointer, policy=policy)
-    print(f"verified artifact with {len(verified_artifact.files)} files")
-    return 0
+
+def main(argv: list[str] | None = None) -> int:
+    """Parse, dispatch, and render one VIPER command."""
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    json_output = "--json" in arguments
+    parser = build_parser()
+    try:
+        parsed = parser.parse_args(arguments)
+    except CliParseError as exc:
+        failure = ViperFailure(
+            operation=None,
+            origin="cli",
+            code="invalid_request",
+            message=str(exc),
+        )
+        if json_output:
+            return _render(failure, json_output=True)
+        parser.print_usage(sys.stderr)
+        return _render(failure, json_output=False)
+
+    operation, payload = _operation_and_payload(parsed)
+    result = dispatch(operation, payload)
+    return _render(result, json_output=parsed.json_output)
 
 
 if __name__ == "__main__":

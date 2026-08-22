@@ -25,7 +25,7 @@ from .protocol import (
     StageArtifactRef,
     VariantSpec,
 )
-from .serialization import parse_yaml_bytes, serialize_record
+from .serialization import parse_yaml_bytes, serialize_document
 
 SPEC_ADAPTER = TypeAdapter(Spec)
 
@@ -106,7 +106,7 @@ def write_experiment_spec(
         repository_root,
         f"experiments/{experiment.experiment_id}/spec.yaml",
     )
-    _write_exact_file(target, serialize_record(experiment))
+    _write_exact_file(target, serialize_document(experiment))
     return target
 
 
@@ -119,7 +119,7 @@ def write_variant_spec(repository_root: Path, variant: VariantSpec) -> Path:
             f"{variant.variant_id}.spec.yaml"
         ),
     )
-    _write_exact_file(target, serialize_record(variant))
+    _write_exact_file(target, serialize_document(variant))
     return target
 
 
@@ -129,7 +129,7 @@ def write_benchmark_spec(repository_root: Path, benchmark: BenchmarkSpec) -> Pat
         repository_root,
         f"benchmarks/{benchmark.benchmark_id}.spec.yaml",
     )
-    _write_exact_file(target, serialize_record(benchmark))
+    _write_exact_file(target, serialize_document(benchmark))
     return target
 
 
@@ -156,7 +156,7 @@ def freeze_run_plan(
             source = root / source
         raw_source = source.read_bytes()
         spec = SPEC_ADAPTER.validate_python(parse_yaml_bytes(raw_source))
-        raw = serialize_record(spec)
+        raw = serialize_document(spec)
         relative_path = f"{run_root}/stages/{stage.stage_id}/spec.yaml"
         target = _target_path(root, relative_path)
         staged_files.append((target, raw))
@@ -183,7 +183,7 @@ def freeze_run_plan(
         estimator=draft.estimator,
     )
     run_target = _target_path(root, f"{run_root}/spec.yaml")
-    files = (*staged_files, (run_target, serialize_record(run)))
+    files = (*staged_files, (run_target, serialize_document(run)))
 
     # Validate every destination before writing any member of the frozen group.
     for target, raw in files:

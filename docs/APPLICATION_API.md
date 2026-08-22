@@ -18,7 +18,7 @@ Every result model includes `status="ok"` and the function's `operation` name.
 |---|---|---|
 | [`validate_stage()`](#validate_stage) | Validate an authored stage specification. | `viper validate-stage` |
 | [`validate_resolved_stage()`](#validate_resolved_stage) | Validate a resolved stage specification. | `viper validate-resolved-stage` |
-| [`validate_run()`](#validate_run) | Validate a frozen run specification. | `viper validate-run` |
+| [`validate_run_spec()`](#validate_run_spec) | Validate a frozen run specification. | `viper validate-run` |
 | [`freeze_run()`](#freeze_run) | Create a frozen run specification and its stage specifications. | `viper freeze-run` |
 | [`execute_stage()`](#execute_stage) | Execute one stage from a frozen run. | `viper execute-stage` |
 | [`verify_run()`](#verify_run) | Verify a terminal run and its provenance chain. | `viper verify-run` |
@@ -83,10 +83,12 @@ Loads the YAML document at `request.path` and validates it as a `ResolvedSpec`.
 
 `invalid_document`, `not_found`, `io_failed`
 
-## `validate_run()`
+## `validate_run_spec()`
 
 ```python
-validate_run(request: ValidateRunRequest) -> ValidateRunSuccess
+validate_run_spec(
+    request: ValidateRunSpecRequest,
+) -> ValidateRunSpecSuccess
 ```
 
 Loads the YAML document at `request.path` and validates it as a `RunSpec`.
@@ -99,7 +101,7 @@ Loads the YAML document at `request.path` and validates it as a `RunSpec`.
 
 ### Returns
 
-`ValidateRunSuccess`
+`ValidateRunSpecSuccess`
 
 | Field | Type | Description |
 |---|---|---|
