@@ -299,6 +299,8 @@ class ParameterContractTests(unittest.TestCase):
             kind="evaluation",
             implementation="analysis/quality/correlation.py",
             params=MetricParams.model_validate({"dim": 1}),
+            production="after_stage",
+            verification="recompute",
         )
 
         self.assertEqual(metric.params.model_dump()["dim"], 1)
@@ -311,6 +313,8 @@ class ParameterContractTests(unittest.TestCase):
                 kind="evaluation",
                 implementation="analysis/quality/correlation.yaml",
                 params=MetricParams(),
+                production="after_stage",
+                verification="recompute",
             )
 
 

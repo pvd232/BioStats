@@ -72,6 +72,7 @@ PythonRepoRelPath = Annotated[
     AfterValidator(validate_repo_rel_path),
     AfterValidator(validate_python_file_path),
 ]
+PythonSymbol = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
 SHA256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 GitCommit = Annotated[
@@ -496,6 +497,24 @@ class ResumeState(ProtocolModel):
 
 
 MetricKind = Literal["training", "evaluation", "diagnostic"]
+MetricProduction = Literal["during_stage", "after_stage"]
+MetricVerification = Literal["execution", "recompute"]
+
+
+class FloatComparator(ProtocolModel):
+    """Define equality for one recomputed floating-point metric."""
+
+    mode: Literal["exact", "absolute", "relative"] = "exact"
+    tolerance: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_tolerance(self) -> FloatComparator:
+        """Require a positive tolerance for approximate comparison modes."""
+        if self.mode != "exact" and self.tolerance == 0:
+            raise ValueError("approximate metric comparison requires tolerance")
+        if self.mode == "exact" and self.tolerance != 0:
+            raise ValueError("exact metric comparison requires zero tolerance")
+        return self
 
 
 class ParameterSet(BaseModel):
@@ -520,7 +539,26 @@ class MetricSpec(ProtocolModel):
     metric_id: MetricId
     kind: MetricKind
     implementation: PythonRepoRelPath
+    symbol: PythonSymbol = "compute"
     params: MetricParams
+    production: MetricProduction
+    verification: MetricVerification
+    comparator: FloatComparator = Field(default_factory=FloatComparator)
+
+    @model_validator(mode="after")
+    def validate_lifecycle(self) -> MetricSpec:
+        """Align production and verification with the metric's scientific role."""
+        if self.kind == "evaluation" and (
+            self.production != "after_stage" or self.verification != "recompute"
+        ):
+            raise ValueError(
+                "evaluation metrics require after_stage production and recomputation"
+            )
+        if self.production == "during_stage" and self.verification != "execution":
+            raise ValueError(
+                "during-stage metrics require execution provenance verification"
+            )
+        return self
 
 
 class Measurement(ProtocolModel):

@@ -10,11 +10,15 @@ exercise each path before release.
 | `viper.application` | Typed operations, requests, successes, failures, schema discovery, and capability discovery |
 | `viper.authoring` | Canonical experiment, variant, benchmark, stage, and run-plan documents |
 | `viper.ids` | Validated identifier types |
+| `viper.journal` | Synchronized attempt-state journals |
+| `viper.metrics` | Decorated functions, stateful metrics, comparison, and measurement output |
 | `viper.protocol` | Authored and resolved protocol models |
 | `viper.resume` | Training resume-state capture, persistence, and restoration |
 | `viper.serialization` | Duplicate-key-safe parsing and canonical document encoding |
 | `viper.stage_execution` | One local stage-process invocation |
 | `viper.verifier` | Run, benchmark, and promoted-artifact verification |
+| `viper.worker` | Project command execution through the selected backend |
+| `viper.workspace` | Bounded attempt directories and exclusive run ownership |
 
 ## Root package
 
@@ -24,9 +28,13 @@ exercise each path before release.
 viper.application
 viper.authoring
 viper.ids
+viper.journal
+viper.metrics
 viper.protocol
 viper.resume
 viper.stage_execution
+viper.worker
+viper.workspace
 ```
 
 Import concrete classes and functions from their owning module. For example:

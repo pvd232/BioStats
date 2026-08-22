@@ -25,6 +25,10 @@ both named `viper`.
 | [serialization](viper/serialization.py) | Encodes records and parses duplicate-key-safe YAML | `serialize_record()`, `parse_yaml_bytes()`, `load_stage_spec()`, `load_resolved_stage()` |
 | [examples](examples/) | Supplies a user-project extension tree and loadable protocol records | Project code plus download and build records |
 | [identifiers](viper/ids.py) | Defines run and human-readable identifier types | `RunId`, `HumanId` |
+| [metrics](viper/metrics.py) | Defines project metric decorators, stateful metrics, comparison, and measurement output | `metric()`, `StatefulMetric`, `MeasurementSink` |
+| [worker](viper/worker.py) | Executes one project command through an execution backend | `WorkerRequest`, `execute_worker()` |
+| [workspace](viper/workspace.py) | Creates bounded attempt directories and exclusive run ownership | `AttemptWorkspace` |
+| [journal](viper/journal.py) | Persists synchronized attempt transitions | `DurableJournal` |
 | [package exports](viper/__init__.py) | Exposes the supported authoring, stage-execution, identifier, record, and resume modules | Public package imports |
 | [supporting documents](docs/) | Contains the active protocol, publication checklist, and supporting explanations | Markdown documents and figures |
 | [archive](archive/) | Retains prior model drafts and protocol documents | Reference material |

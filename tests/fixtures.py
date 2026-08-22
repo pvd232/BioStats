@@ -31,6 +31,8 @@ def metric_spec(metric_id: str, kind: MetricKind) -> MetricSpec:
         kind=kind,
         implementation=f"project/metrics/{kind}/{metric_id}.py",
         params=MetricParams(),
+        production="during_stage" if kind == "training" else "after_stage",
+        verification="execution" if kind == "training" else "recompute",
     )
 
 

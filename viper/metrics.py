@@ -1,0 +1,173 @@
+"""Define project metric authoring, invocation, comparison, and measurement."""
+
+from __future__ import annotations
+
+import importlib.util
+import math
+import os
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, TypeVar, cast
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from .ids import MetricId, RunId, StageId
+from .protocol import (
+    FloatComparator,
+    Measurement,
+    MetricKind,
+    MetricParams,
+    MetricProduction,
+    MetricVerification,
+)
+
+
+class MetricError(RuntimeError):
+    """Report an invalid metric definition, invocation, or result."""
+
+
+class MetricContext(BaseModel):
+    """Supply verified paths and frozen parameters to one metric invocation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    inputs: Mapping[str, Path] = Field(default_factory=dict)
+    artifacts: Mapping[str, Path] = Field(default_factory=dict)
+    params: MetricParams = Field(default_factory=MetricParams)
+
+
+@dataclass(frozen=True)
+class MetricDefinition:
+    """Store authoring metadata attached to one project metric callable."""
+
+    metric_id: MetricId
+    kind: MetricKind
+    production: MetricProduction
+    verification: MetricVerification
+
+
+MetricCallable = Callable[[MetricContext], float]
+Decorated = TypeVar("Decorated", bound=Callable[..., Any] | type[Any])
+
+
+def metric(
+    *,
+    metric_id: MetricId,
+    kind: MetricKind,
+    production: MetricProduction | None = None,
+    verification: MetricVerification | None = None,
+) -> Callable[[Decorated], Decorated]:
+    """Attach VIPER metric metadata to one function or stateful class."""
+    selected_production: MetricProduction = (
+        ("during_stage" if kind == "training" else "after_stage")
+        if production is None
+        else production
+    )
+    selected_verification: MetricVerification = (
+        ("execution" if selected_production == "during_stage" else "recompute")
+        if verification is None
+        else verification
+    )
+    definition = MetricDefinition(
+        metric_id=metric_id,
+        kind=kind,
+        production=selected_production,
+        verification=selected_verification,
+    )
+
+    def decorate(value: Decorated) -> Decorated:
+        """Store the immutable definition on the selected Python object."""
+        setattr(value, "__viper_metric__", definition)
+        return value
+
+    return decorate
+
+
+class StatefulMetric(ABC):
+    """Accumulate changing metric state across training updates."""
+
+    @abstractmethod
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        """Consume one training observation and update internal state."""
+
+    @abstractmethod
+    def compute(self) -> float:
+        """Return the metric value represented by the accumulated state."""
+
+
+def load_metric(path: Path, symbol: str) -> MetricCallable:
+    """Load one top-level metric function from an exact local Python file."""
+    module_name = f"_viper_metric_{path.stem}_{abs(hash(path.resolve()))}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise MetricError("metric module could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    value = getattr(module, symbol, None)
+    if value is None or not callable(value):
+        raise MetricError("metric symbol is absent or is not callable")
+    return cast(MetricCallable, value)
+
+
+def compare_metric_values(
+    recorded: float,
+    recomputed: float,
+    comparator: FloatComparator,
+) -> bool:
+    """Compare one recorded value with its recomputed value."""
+    if comparator.mode == "exact":
+        return recorded == recomputed
+    if comparator.mode == "absolute":
+        return math.isclose(
+            recorded, recomputed, rel_tol=0, abs_tol=comparator.tolerance
+        )
+    return math.isclose(recorded, recomputed, rel_tol=comparator.tolerance, abs_tol=0)
+
+
+class MeasurementSink:
+    """Append synchronized Measurement rows owned by one active stage."""
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        run_id: RunId,
+        attempt_id: int,
+        stage_id: StageId,
+        metric_id: MetricId,
+    ) -> None:
+        """Bind the sink to one canonical stage and metric identity."""
+        self.path = path
+        self.run_id = run_id
+        self.attempt_id = attempt_id
+        self.stage_id = stage_id
+        self.metric_id = metric_id
+
+    def append(
+        self,
+        value: float,
+        *,
+        measured_at: datetime | None = None,
+        epoch: int | None = None,
+        step: int | None = None,
+    ) -> Measurement:
+        """Construct, append, flush, and synchronize one measurement row."""
+        measurement = Measurement(
+            run_id=self.run_id,
+            attempt_id=self.attempt_id,
+            stage_id=self.stage_id,
+            metric_id=self.metric_id,
+            value=value,
+            measured_at=datetime.now(UTC) if measured_at is None else measured_at,
+            epoch=epoch,
+            step=step,
+        )
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("ab") as handle:
+            handle.write(measurement.model_dump_json().encode("utf-8") + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        return measurement

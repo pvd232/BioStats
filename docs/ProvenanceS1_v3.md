@@ -996,6 +996,7 @@ The records below use these shared types:
 | `HumanId` | A lowercase identifier matching `^[a-z][a-z0-9_]*$`. |
 | `RepoRelPath` | A normalized POSIX path relative to the repository root that contains no empty or dot segments, parent traversal, backslashes, or control characters. |
 | `PythonRepoRelPath` | A `RepoRelPath` ending in `.py`. |
+| `PythonSymbol` | A top-level Python identifier selected from one module. |
 | `SHA256` | A 64-character lowercase hexadecimal digest. |
 | `GitCommit` | A 40- or 64-character lowercase hexadecimal commit ID. |
 | `NonEmptyStr` | A string containing at least one character. |
@@ -1878,7 +1879,11 @@ class MetricSpec(ProtocolModel):
     metric_id: MetricId
     kind: Literal["training", "evaluation", "diagnostic"]
     implementation: PythonRepoRelPath
+    symbol: PythonSymbol = "compute"
     params: MetricParams
+    production: Literal["during_stage", "after_stage"]
+    verification: Literal["execution", "recompute"]
+    comparator: FloatComparator = FloatComparator()
 
 
 class ExperimentSpec(ProtocolModel):
@@ -1892,10 +1897,17 @@ class ExperimentSpec(ProtocolModel):
 
 Factor IDs are unique. Level IDs are unique within each factor. Variant IDs,
 replicate IDs, replicate seeds, and `MetricSpec.metric_id` values are unique
-within the experiment. `MetricSpec.implementation` identifies the metric's
-Python file by its exact repository-relative path. `RunSpec.source` fixes its
-bytes. The verifier retrieves the file and requires one top-level `compute`
-function.
+within the experiment. `MetricSpec.implementation` and `MetricSpec.symbol`
+identify the metric callable within the repository fixed by `RunSpec.source`.
+`production` states when VIPER receives the value. `verification` states
+whether the verifier checks the producing execution or recomputes the value
+from verified inputs. `FloatComparator` defines exact, absolute-tolerance, or
+relative-tolerance comparison for recomputed values.
+
+Evaluation metrics use `production="after_stage"` and
+`verification="recompute"`. A metric produced during a stage uses
+`verification="execution"` because its measurement belongs to that exact
+stage invocation.
 
 The experiment file and its variant files occur at:
 

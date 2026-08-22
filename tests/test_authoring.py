@@ -181,6 +181,8 @@ class RunPlanAuthoringTests(unittest.TestCase):
             kind="training",
             implementation="project_code/metrics/training_loss.py",
             params=MetricParams(),
+            production="during_stage",
+            verification="execution",
         )
         experiment = ExperimentSpec(
             experiment_id="e001_strand",
