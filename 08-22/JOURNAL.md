@@ -129,3 +129,81 @@ The local successful-run path is complete. VIPER 0.1 still requires:
 Add `status()` over the durable attempt journal, then add `compare_runs()` over
 two verified terminal runs. Keep both operations read-only and return stable
 Pydantic results through the Python API and JSON CLI.
+
+## Autonomous continuation
+
+### Outcome
+
+The read-only agent inspection phase is complete:
+
+- `status()` reads one durable attempt journal and returns its latest event,
+  timestamp, details, terminal flag, and permitted successor states.
+- `compare_runs()` verifies two terminal runs, then compares their terminal
+  records, run plans, experiment and variant specifications, benchmark
+  specifications, stage specifications, resolved stages, artifacts, and
+  measurements.
+- `get_capabilities()` lists callable operations, registered schemas, and
+  execution backends.
+- `plan_diff()`, `lineage()`, `status()`, and `compare_runs()` are available
+  through typed Python functions and JSON commands.
+
+### Checklist audit
+
+Every overnight acceptance gate was traced to an executable test. The audit
+made four corrections:
+
+1. Installed-wheel checks now run in isolated interpreter mode, import every
+   documented public module, resolve every application export, and exercise
+   capability and command discovery.
+2. `serialize_record()` has a focused warning-and-byte-equivalence test. Its
+   removal is scheduled for `0.2.0` in the versioning policy.
+3. Durable journal reads validate the complete attempt transition chain.
+   Journal writes reject invalid successor states.
+4. Empty mappings and sequences remain visible during plan and run comparison.
+
+The publication roadmap now marks each verified application, CLI,
+serialization, CI-configuration, and immutable-inspection item complete. Items
+requiring remote CI, coordinator authority, recovery, or stronger isolation
+remain open.
+
+### Validation
+
+Executed in the `mantra` Conda environment:
+
+```text
+Ruff: passed
+Pyright: 0 errors, 0 warnings
+Pytest: 119 passed, 13 subtests passed
+Known dependency warning: TorchData calls deprecated torch.set_vital
+Distribution build: passed
+Twine metadata check: passed for wheel and source distribution
+Isolated installed-wheel module imports: passed
+Installed application export inventory: passed
+Installed schema and capability discovery: passed
+Installed status and compare-runs command help: passed
+Markdown fences and local links: passed
+```
+
+### Git increments
+
+```text
+ac1cdff  Add attempt status and verified run comparison
+77261f1  Document agent inspection and harden wheel smoke tests
+03e0968  Harden attempt history and capability discovery
+```
+
+### Remaining local priorities
+
+1. Bind project-defined Pydantic parameter models to frozen stage
+   implementations and execute their validators through the worker boundary.
+2. Bind metric dependencies to exact stage inputs and artifacts.
+3. Persist failed attempts and implement retry and publication recovery from
+   the durable journal.
+4. Execute benchmark confirmations through the runner and publish their
+   recomputation evidence.
+
+### Next action
+
+Implement project parameter-model binding. This gives user-defined stages a
+typed extension point while preserving the frozen implementation identity,
+preflight checks, and verifier guarantees.
