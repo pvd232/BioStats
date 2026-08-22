@@ -15,6 +15,7 @@ from .ids import InputName, StageId
 from .journal import DurableJournal
 from .local_store import LocalArtifactStore, snapshot_file
 from .metrics import MeasurementSink, MetricContext, load_metric
+from .preflight import preflight_local_plan
 from .protocol import (
     ArtifactPointer,
     BaseSpec,
@@ -202,6 +203,7 @@ def _run_after_stage_metrics(
     experiment: ExperimentSpec,
     input_paths: Mapping[str, Path],
     measurement_paths: list[Path],
+    fetcher: LocalRunFetcher,
 ) -> None:
     """Invoke each selected after-stage metric and append its Measurement row."""
     metrics = {metric.metric_id: metric for metric in experiment.metrics}
@@ -210,14 +212,28 @@ def _run_after_stage_metrics(
         if metric.production != "after_stage":
             continue
         implementation = root / metric.implementation
-        callable_metric = load_metric(implementation, metric.symbol)
-        value = callable_metric(
-            MetricContext(
-                inputs=input_paths,
-                artifacts=_artifact_paths(root, stage),
-                params=metric.params,
+        frozen_implementation = fetcher(
+            GitFileRef(
+                repository=run.source.repository,
+                commit=run.source.commit,
+                path=metric.implementation,
             )
         )
+        if implementation.read_bytes() != frozen_implementation:
+            raise LocalRunError(
+                f"metric {metric_id!r} implementation differs from frozen source"
+            )
+        try:
+            callable_metric = load_metric(implementation, metric.symbol)
+            value = callable_metric(
+                MetricContext(
+                    inputs=input_paths,
+                    artifacts=_artifact_paths(root, stage),
+                    params=metric.params,
+                )
+            )
+        except Exception as exc:
+            raise LocalRunError(f"metric {metric_id!r} invocation failed") from exc
         path = (
             root
             / f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
@@ -294,6 +310,12 @@ def run_local(
     run = RunSpec.model_validate(parse_yaml_bytes(run_raw))
     if not isinstance(run.environment, LocalEnvironmentSpec):
         raise LocalRunError("trusted local execution requires a local environment")
+    preflight = preflight_local_plan(root, run_path)
+    if not preflight.ready:
+        failed_codes = ", ".join(
+            check.code for check in preflight.checks if check.status == "failure"
+        )
+        raise LocalRunError(f"plan preflight failed: {failed_codes}")
 
     plan_commit = _git(root, "rev-parse", "HEAD").decode("ascii").strip()
     relative_run_path = run_path.relative_to(root).as_posix()
@@ -382,6 +404,7 @@ def run_local(
                 experiment,
                 input_paths,
                 measurement_paths,
+                fetcher,
             )
             stage_completed = datetime.now(UTC)
             resolved = _resolved_stage(
@@ -485,6 +508,8 @@ def run_local(
         )
         terminal_raw = serialize_document(resolved_run)
         terminal_path = run_path.parent / "resolved.yaml"
+        if terminal_path.exists() and terminal_path.read_bytes() != terminal_raw:
+            raise LocalRunError("terminal resolved run path contains different bytes")
         terminal_path.write_bytes(terminal_raw)
         workspace.terminal.write_bytes(terminal_raw)
         verify_run_result(resolved_run, policy=policy, fetcher=fetcher)

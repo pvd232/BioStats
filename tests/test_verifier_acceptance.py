@@ -48,6 +48,7 @@ from viper.protocol import (
     GitFileRef,
     GitSource,
     HuggingFaceFileRef,
+    LocalFileRef,
     MetricCriterion,
     NativeLibraryContext,
     NativeThreadPoolContext,
@@ -150,6 +151,14 @@ class DocumentStore:
     @staticmethod
     def key(location: StorageModel) -> tuple[str, str, str, str, str]:
         """Return the immutable storage identity used as the document key."""
+        if isinstance(location, LocalFileRef):
+            return (
+                location.kind,
+                str(location.store),
+                location.commit,
+                str(location.path),
+                "",
+            )
         repo_type = getattr(location, "repo_type", "")
         return (
             location.kind,
@@ -387,7 +396,7 @@ def add_plan_records(
     for metric in experiment.metrics:
         store.put(
             git_file(source_commit, metric.implementation),
-            b"def compute(predictions, targets):\n    return 0.0\n",
+            b"def compute(context):\n    return 0.91\n",
         )
 
     for run_stage, (_, spec) in zip(run.stages, stage_specs, strict=True):

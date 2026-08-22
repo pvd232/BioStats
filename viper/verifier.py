@@ -19,6 +19,7 @@ from huggingface_hub import hf_hub_download
 from pydantic import TypeAdapter
 
 from .ids import InputName, StageId
+from .metrics import MetricContext, compare_metric_values, load_metric
 from .protocol import (
     PARAMETERS,
     PARAMETERS_INPUT,
@@ -672,11 +673,12 @@ def verify_experiment_and_variant(
             ) from exc
         if not any(
             isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "compute"
+            and node.name == metric.symbol
             for node in metric_tree.body
         ):
             raise VerificationError(
-                f"metric {metric.metric_id!r} implementation must define compute"
+                f"metric {metric.metric_id!r} implementation must define "
+                f"{metric.symbol}"
             )
 
     if experiment.experiment_id != run.experiment_id:
@@ -1423,6 +1425,130 @@ def verify_measurement_stage_times(
             )
 
 
+def _materialize_metric_value(
+    root: Path,
+    target_path: RepoRelPath,
+    artifact: VerifiedArtifact | VerifiedInput,
+) -> None:
+    """Write one verified artifact at the path supplied to a metric."""
+    if artifact.artifact.kind == "file":
+        files = ((target_path, artifact.files[0]),)
+    else:
+        files = tuple(
+            (f"{target_path}/{member.relative_path}", verified_file)
+            for member, verified_file in zip(
+                artifact.artifact.members,
+                artifact.files,
+                strict=True,
+            )
+        )
+    for relative_path, verified_file in files:
+        path = root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(verified_file.content)
+
+
+def verify_recomputed_metrics(
+    attempt: RunAttempt,
+    plan: VerifiedRunPlan,
+    resolved_stages: Mapping[StageId, ResolvedBaseSpec],
+    measurements: tuple[Measurement, ...],
+    stored_inputs: Mapping[StageId, Mapping[InputName, VerifiedInput]],
+    future_inputs: Mapping[StageId, Mapping[InputName, VerifiedInput]],
+    *,
+    policy: VerificationPolicy,
+    fetcher: StorageFetcher | None = None,
+) -> None:
+    """Recompute selected metrics from frozen code and verified dependencies."""
+    if not policy.permits_loader_source(plan.run.source.repository):
+        raise VerificationError(
+            "metric recomputation requires an explicitly trusted source repository"
+        )
+    retrieve = fetch_storage_bytes if fetcher is None else fetcher
+    metric_specs = {metric.metric_id: metric for metric in plan.experiment.metrics}
+    stage_refs = {stage.stage_id: stage for stage in attempt.resolved_stages}
+
+    for stage_id, stage in plan.stages.items():
+        for metric_id in stage.metric_ids:
+            metric = metric_specs[metric_id]
+            if metric.verification != "recompute":
+                continue
+            recorded = tuple(
+                measurement
+                for measurement in measurements
+                if measurement.stage_id == stage_id
+                and measurement.metric_id == metric_id
+            )
+            if len(recorded) != 1:
+                raise VerificationError(
+                    f"recomputed metric {metric_id!r} of stage {stage_id!r} "
+                    "requires exactly one measurement"
+                )
+            resolved_stage = resolved_stages[stage_id]
+            stage_ref = stage_refs[stage_id]
+            verified_artifacts = {
+                name: verify_snapshot_artifact(
+                    stage_ref,
+                    resolved_artifact,
+                    data_role=stage.artifacts[name].data_role,
+                    fetcher=fetcher,
+                )
+                for name, resolved_artifact in resolved_stage.artifacts.items()
+            }
+            inputs = {
+                **stored_inputs.get(stage_id, {}),
+                **future_inputs.get(stage_id, {}),
+            }
+            implementation_location = GitFileRef(
+                repository=plan.run.source.repository,
+                commit=plan.run.source.commit,
+                path=metric.implementation,
+            )
+            with tempfile.TemporaryDirectory(prefix="viper-metric-") as directory:
+                root = Path(directory)
+                implementation = root / metric.implementation
+                implementation.parent.mkdir(parents=True, exist_ok=True)
+                implementation.write_bytes(retrieve(implementation_location))
+                for name, verified_input in inputs.items():
+                    _materialize_metric_value(
+                        root,
+                        verified_input.path,
+                        verified_input,
+                    )
+                for name, verified_artifact in verified_artifacts.items():
+                    _materialize_metric_value(
+                        root,
+                        stage.artifacts[name].path,
+                        verified_artifact,
+                    )
+                try:
+                    recomputed = load_metric(implementation, metric.symbol)(
+                        MetricContext(
+                            inputs={
+                                name: root / value.path
+                                for name, value in inputs.items()
+                            },
+                            artifacts={
+                                name: root / stage.artifacts[name].path
+                                for name in verified_artifacts
+                            },
+                            params=metric.params,
+                        )
+                    )
+                except Exception as exc:
+                    raise VerificationError(
+                        f"metric {metric_id!r} recomputation failed"
+                    ) from exc
+            if not compare_metric_values(
+                recorded[0].value,
+                recomputed,
+                metric.comparator,
+            ):
+                raise VerificationError(
+                    f"recomputed metric {metric_id!r} does not match its measurement"
+                )
+
+
 def verify_run_result(
     resolved_run: ResolvedRun,
     *,
@@ -1473,8 +1599,12 @@ def verify_run_result(
             policy=policy,
             fetcher=fetcher,
         )
-        verify_stored_inputs(verified_stages, policy=policy, fetcher=fetcher)
-        verify_attempt_future_inputs(
+        stored_inputs = verify_stored_inputs(
+            verified_stages,
+            policy=policy,
+            fetcher=fetcher,
+        )
+        future_inputs = verify_attempt_future_inputs(
             attempt,
             plan.run,
             verified_stages,
@@ -1488,6 +1618,16 @@ def verify_run_result(
             fetcher=fetcher,
         )
         verify_measurement_stage_times(verified_stages, attempt_measurements)
+        verify_recomputed_metrics(
+            attempt,
+            plan,
+            verified_stages,
+            attempt_measurements,
+            stored_inputs,
+            future_inputs,
+            policy=policy,
+            fetcher=fetcher,
+        )
         all_measurements.extend(attempt_measurements)
         if attempt.attempt_id == resolved_run.successful_attempt_id:
             successful_stages = verified_stages
@@ -1985,8 +2125,12 @@ def verify_benchmark_result(
         policy=policy,
         fetcher=fetcher,
     )
-    verify_stored_inputs(confirmation_stages, policy=policy, fetcher=fetcher)
-    verify_attempt_future_inputs(
+    confirmation_stored_inputs = verify_stored_inputs(
+        confirmation_stages,
+        policy=policy,
+        fetcher=fetcher,
+    )
+    confirmation_future_inputs = verify_attempt_future_inputs(
         result.confirmation,
         verified_run.plan.run,
         confirmation_stages,
@@ -2002,6 +2146,16 @@ def verify_benchmark_result(
     verify_measurement_stage_times(
         confirmation_stages,
         confirmation_measurements,
+    )
+    verify_recomputed_metrics(
+        result.confirmation,
+        verified_run.plan,
+        confirmation_stages,
+        confirmation_measurements,
+        confirmation_stored_inputs,
+        confirmation_future_inputs,
+        policy=policy,
+        fetcher=fetcher,
     )
 
     estimator_ref = verified_run.plan.run.estimator

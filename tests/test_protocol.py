@@ -18,6 +18,7 @@ from viper.protocol import (
     EvaluateParams,
     EvaluateSpec,
     FutureInputRef,
+    GCEEnvironmentSpec,
     MetricParams,
     MetricSpec,
     ResolvedBundleArtifact,
@@ -188,6 +189,8 @@ class RunPlanTests(unittest.TestCase):
         run = RunSpec.model_validate(run_payload())
 
         self.assertEqual(run.seed, 42)
+        self.assertIsInstance(run.environment, GCEEnvironmentSpec)
+        assert isinstance(run.environment, GCEEnvironmentSpec)
         self.assertEqual(run.environment.machine_type, "n2-standard-8")
         self.assertEqual(run.estimator.artifact_name, PARAMETERS)
 

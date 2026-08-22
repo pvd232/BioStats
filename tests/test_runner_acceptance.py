@@ -5,8 +5,11 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from tests.fixtures import resume_state
 from viper.authoring import RunPlanDraft, StageDraft, freeze_run_plan
+from viper.local_store import LocalArtifactStore
 from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
@@ -16,6 +19,8 @@ from viper.protocol import (
     GitFileRef,
     GitSource,
     LocalEnvironmentSpec,
+    MetricParams,
+    MetricSpec,
     RemoteFileRef,
     ReplicateSpec,
     ReproducibilitySpec,
@@ -26,8 +31,9 @@ from viper.protocol import (
     TrainVariantStageParams,
     VariantSpec,
 )
-from viper.runner import run_local
+from viper.runner import LocalRunFetcher, run_local
 from viper.serialization import serialize_document
+from viper.verifier import VerificationError, VerificationPolicy, verify_run_result
 
 REPOSITORY = "https://github.com/example/viper-local-project"
 RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
@@ -94,12 +100,20 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     train_params = TrainParams.model_validate(
         {"epochs": 1, "batch_size": 1, "learning_rate": 0.1}
     )
+    parameter_bytes = MetricSpec(
+        metric_id="parameter_bytes",
+        kind="diagnostic",
+        implementation="project/metrics/parameter_bytes.py",
+        params=MetricParams(),
+        production="after_stage",
+        verification="recompute",
+    )
     experiment = ExperimentSpec(
         experiment_id="example",
         factors=(),
         variant_ids=("baseline",),
         replicates=(ReplicateSpec(replicate_id="r1", seed=7),),
-        metrics=(),
+        metrics=(parameter_bytes,),
     )
     variant = VariantSpec(
         experiment_id="example",
@@ -116,6 +130,10 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             "def load(path):\n"
             f"    return {resume_state().model_dump(mode='python')!r}\n"
         ).encode(),
+        "project/metrics/parameter_bytes.py": (
+            b"def compute(context):\n"
+            b"    return float(len(context.artifacts['parameters'].read_bytes()))\n"
+        ),
         "jobs/download.py": (
             "from pathlib import Path\n"
             f"path = Path({f'{RUN_ROOT}/artifacts/datasets/tiny/prior.bin'!r})\n"
@@ -172,6 +190,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     )
     train = TrainSpec(
         script="jobs/train.py",
+        metric_ids=("parameter_bytes",),
         inputs={
             "prior": FutureInputRef(
                 producer_stage_id="download",
@@ -227,4 +246,24 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     assert result.resolved_run.status == "succeeded"
     assert result.resolved_run_path.is_file()
     assert len(result.resolved_run.attempts[0].resolved_stages) == 2
+    assert len(result.resolved_run.attempts[0].measurement_files) == 1
     assert result.journal_path.is_file()
+
+    first_snapshot = result.resolved_run.attempts[0].resolved_stages[0].snapshot
+    assert first_snapshot.kind == "local"
+    stored_artifact = (
+        root
+        / first_snapshot.store
+        / first_snapshot.commit
+        / f"{RUN_ROOT}/artifacts/datasets/tiny/prior.bin"
+    )
+    stored_artifact.write_bytes(b"tampered")
+    store = LocalArtifactStore(root)
+    with pytest.raises(VerificationError, match="byte-count mismatch"):
+        verify_run_result(
+            result.resolved_run,
+            policy=VerificationPolicy(
+                trusted_loader_repositories=frozenset({REPOSITORY})
+            ),
+            fetcher=LocalRunFetcher(root, store),
+        )
