@@ -11,9 +11,13 @@ exercise each path before release.
 | `viper.authoring` | Canonical experiment, variant, benchmark, stage, and run-plan documents |
 | `viper.ids` | Validated identifier types |
 | `viper.journal` | Synchronized attempt-state journals |
+| `viper.local_store` | Immutable repository-local files and stage snapshots |
+| `viper.materialization` | Verified stored-input and same-run input materialization |
 | `viper.metrics` | Decorated functions, stateful metrics, comparison, and measurement output |
+| `viper.preflight` | Complete-plan checks for trusted local execution |
 | `viper.protocol` | Authored and resolved protocol models |
 | `viper.resume` | Training resume-state capture, persistence, and restoration |
+| `viper.runner` | Complete trusted-local run execution and publication |
 | `viper.serialization` | Duplicate-key-safe parsing and canonical document encoding |
 | `viper.stage_execution` | One local stage-process invocation |
 | `viper.verifier` | Run, benchmark, and promoted-artifact verification |
@@ -29,9 +33,13 @@ viper.application
 viper.authoring
 viper.ids
 viper.journal
+viper.local_store
+viper.materialization
 viper.metrics
+viper.preflight
 viper.protocol
 viper.resume
+viper.runner
 viper.stage_execution
 viper.worker
 viper.workspace

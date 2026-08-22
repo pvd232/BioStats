@@ -199,5 +199,6 @@ viper --json preflight experiments/example/runs/baseline/<run_id>/spec.yaml
 viper --json run-local experiments/example/runs/baseline/<run_id>/spec.yaml
 ```
 
-JSON mode writes one UTF-8 document with one trailing newline. Successes use
-exit status `0`. Failures use exit status `1`.
+JSON mode writes one UTF-8 document with one trailing newline. Completed
+operations use exit status `0`. Application failures and a preflight result
+with `ready=false` use exit status `1`.

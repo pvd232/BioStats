@@ -24,6 +24,8 @@ def test_application_schema_and_capability_discovery() -> None:
     assert schema.name == "RunSpec"
     assert schema.json_schema["title"] == "RunSpec"
     assert "validate_run_spec" in capabilities.operations
+    assert "preflight" in capabilities.operations
+    assert "run_local" in capabilities.operations
     assert capabilities.execution_backends == ("trusted_local",)
 
 

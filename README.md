@@ -21,8 +21,11 @@ both named `viper`.
 | [training resume](viper/resume.py) | Captures, serializes, restores, and validates optimizer, generator, and stateful-loader state | `capture_resume_state()`, `restore_resume_state()` |
 | [plan authoring](viper/authoring.py) | Writes canonical experiment, variant, benchmark, stage, and frozen run-plan files | `freeze_run_plan()`, `write_experiment_spec()`, `write_variant_spec()` |
 | [stage execution](viper/stage_execution.py) | Invokes one canonical stage command and hashes every declared output file | `execute_stage_process()` |
-| [installed command](viper/cli.py) | Exposes authoring, local validation, and connected verification | `viper freeze-run`, `viper validate-stage`, `viper verify-run` |
-| [serialization](viper/serialization.py) | Encodes records and parses duplicate-key-safe YAML | `serialize_record()`, `parse_yaml_bytes()`, `load_stage_spec()`, `load_resolved_stage()` |
+| [local runner](viper/runner.py) | Executes and verifies a complete frozen run in a trusted local environment | `run_local()` |
+| [preflight](viper/preflight.py) | Checks source, environment, stages, inputs, outputs, and metrics before execution | `preflight_local_plan()` |
+| [local storage](viper/local_store.py) | Publishes immutable stage snapshots and run files beneath `.viper/store` | `LocalArtifactStore` |
+| [installed command](viper/cli.py) | Exposes authoring, preflight, execution, validation, verification, and discovery | `viper preflight`, `viper run-local`, `viper verify-run` |
+| [serialization](viper/serialization.py) | Encodes protocol documents and parses duplicate-key-safe YAML | `serialize_document()`, `parse_yaml_bytes()`, `load_stage_spec()`, `load_resolved_stage()` |
 | [examples](examples/) | Supplies a user-project extension tree and loadable protocol records | Project code plus download and build records |
 | [identifiers](viper/ids.py) | Defines run and human-readable identifier types | `RunId`, `HumanId` |
 | [metrics](viper/metrics.py) | Defines project metric decorators, stateful metrics, comparison, and measurement output | `metric()`, `StatefulMetric`, `MeasurementSink` |
@@ -121,6 +124,31 @@ benchmark data from entering a training stage.
   stage and run `spec.yaml` files.
 - `execute_stage_process(...)` verifies the frozen stage-spec bytes, invokes
   the canonical command, and records every produced artifact file.
+- `preflight_local_plan(repository_root, run_spec_path)` checks the complete
+  local plan and returns every failed check in one result.
+- `run_local(repository_root, run_spec_path)` executes every stage, publishes
+  immutable stage results, writes the terminal `resolved.yaml`, and verifies
+  the completed run.
+
+## Run locally
+
+Freeze the plan, inspect it, then execute it from the project repository:
+
+```bash
+viper freeze-run <draft.yaml>
+viper preflight <run-spec-path>
+viper run-local <run-spec-path>
+```
+
+`RunSpec.source.commit` identifies the project source, environment lockfile,
+metric implementations, and artifact loaders. The Git revision containing the
+run spec identifies the frozen plan files. VIPER checks both revisions before
+execution.
+
+The local runner creates an exclusive attempt workspace, applies the run-wide
+reproducibility controls, invokes each stage through the VIPER runtime
+bootstrap, materializes declared inputs, publishes immutable results, and runs
+the complete verifier before returning success.
 
 ## Validation
 
@@ -142,7 +170,9 @@ rejection.
 
 ## Current boundaries
 
-- `GCEEnvironmentSpec` is the implemented environment type.
+- `LocalEnvironmentSpec` powers the trusted local runner.
+- `GCEEnvironmentSpec` defines the remote environment contract. OCI execution
+  on GCE remains a release task.
 - Stage parameter bases preserve versioned JSON values. Projects may apply a
   local typed model before constructing the core parameter record.
 - Evaluation reserves the logical artifact name `predictions`. The project
@@ -158,6 +188,6 @@ rejection.
 - Artifact loaders execute Python from the Git commit named by `RunSpec.source`.
   Verification therefore accepts only run sources trusted to execute in the
   verifier process.
-- The package freezes run plans and invokes individual stage scripts. Full
-  attempt orchestration, environment provisioning, snapshot publication, and
-  terminal run publication remain on the publication checklist.
+- The trusted local runner completes successful attempts from preflight through
+  terminal publication and verification. Crash recovery, cancellation,
+  preemption, OCI isolation, and GCE provisioning remain release tasks.

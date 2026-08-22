@@ -178,7 +178,12 @@ def _render(result: ApplicationModel, *, json_output: bool) -> int:
     else:
         assert isinstance(result, SuccessModel)
         print(_human_success(result))
-    return 1 if isinstance(result, ViperFailure) else 0
+    if isinstance(result, ViperFailure):
+        return 1
+    assert isinstance(result, SuccessModel)
+    if result.operation == "preflight" and not getattr(result, "ready"):
+        return 1
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

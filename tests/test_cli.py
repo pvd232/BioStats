@@ -50,3 +50,24 @@ class CommandLineTests(unittest.TestCase):
         failure = json.loads(process.stdout)
         self.assertEqual(failure["origin"], "cli")
         self.assertEqual(failure["operation"], None)
+
+    def test_preflight_failure_uses_nonzero_exit_status(self) -> None:
+        """Return a failing exit status when plan checks find an invalid path."""
+        process = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "viper.cli",
+                "--json",
+                "preflight",
+                "missing/spec.yaml",
+            ],
+            check=False,
+            capture_output=True,
+        )
+
+        self.assertEqual(process.returncode, 1)
+        self.assertEqual(process.stderr, b"")
+        result = json.loads(process.stdout)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["ready"], False)
