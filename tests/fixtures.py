@@ -1,5 +1,7 @@
 """Shared protocol objects used by independent test modules."""
 
+import hashlib
+
 from viper.protocol import (
     DataLoaderConfiguration,
     DataLoaderResumeState,
@@ -9,12 +11,36 @@ from viper.protocol import (
     MetricParams,
     MetricSpec,
     NumPyRNGState,
+    ParameterModelRef,
     PCG64GeneratorState,
     PCG64InternalState,
     PythonRNGState,
     ResumeState,
 )
 from viper.verifier import VerificationPolicy
+
+
+def parameter_model_ref(kind: str) -> ParameterModelRef:
+    """Build one exact synthetic parameter-model identity for model tests."""
+    raw = parameter_model_source(kind)
+    class_name = f"{kind.title()}Parameters"
+    return ParameterModelRef(
+        path=f"project/parameters/{kind}.py",
+        symbol=class_name,
+        sha256=hashlib.sha256(raw).hexdigest(),
+        bytes=len(raw),
+    )
+
+
+def parameter_model_source(kind: str) -> bytes:
+    """Build the source bytes matched by ``parameter_model_ref``."""
+    class_name = f"{kind.title()}Parameters"
+    base_name = f"{kind.title()}Params"
+    return (
+        f"from viper.protocol import {base_name}\n\n"
+        f"class {class_name}({base_name}):\n"
+        f'    """Validate the {kind} parameters used by this fixture."""\n'
+    ).encode()
 
 
 def verification_policy(*repositories: object) -> VerificationPolicy:

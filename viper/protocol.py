@@ -1271,7 +1271,7 @@ class InternalSpec(BaseSpec):
     """Request a stage that consumes stored or prior-stage artifacts."""
 
     inputs: dict[InputName, InternalInputRef] = Field(min_length=1)
-    parameter_model: ParameterModelRef | None = None
+    parameter_model: ParameterModelRef
 
     @model_validator(mode="after")
     def validate_local_path_collisions(self) -> InternalSpec:

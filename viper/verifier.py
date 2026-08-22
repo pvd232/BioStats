@@ -20,6 +20,7 @@ from pydantic import TypeAdapter
 
 from .ids import InputName, StageId
 from .metrics import MetricContext, compare_metric_values, load_metric
+from .parameter_models import ParameterModelError, verify_parameter_model_bytes
 from .protocol import (
     PARAMETERS,
     PARAMETERS_INPUT,
@@ -829,7 +830,6 @@ def verify_run_plan_relationships(
             raise VerificationError(
                 f"stage {stage_id!r} must select diagnostic metrics"
             )
-
     evaluation_stages = [
         stage for stage in stages.values() if isinstance(stage, EvaluateSpec)
     ]
@@ -896,6 +896,41 @@ def verify_run_plan_relationships(
         raise VerificationError(
             "evaluation metrics do not match the benchmark specification"
         )
+
+
+def verify_parameter_model_references(
+    run: RunSpec,
+    stages: Mapping[StageId, BaseSpec],
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> None:
+    """Verify each internal stage's parameter class against frozen source bytes."""
+    retrieve = fetch_storage_bytes if fetcher is None else fetcher
+    for stage_id, stage in stages.items():
+        if not isinstance(stage, InternalSpec):
+            continue
+        reference = stage.parameter_model
+        location = GitFileRef(
+            repository=run.source.repository,
+            commit=run.source.commit,
+            path=reference.path,
+        )
+        try:
+            raw = retrieve(location)
+            verify_parameter_model_bytes(reference, raw)
+            tree = ast.parse(raw, filename=reference.path)
+        except (KeyError, OSError, SyntaxError, ParameterModelError) as exc:
+            raise VerificationError(
+                f"parameter model of stage {stage_id!r} failed source verification"
+            ) from exc
+        if not any(
+            isinstance(node, ast.ClassDef) and node.name == reference.symbol
+            for node in tree.body
+        ):
+            raise VerificationError(
+                f"parameter model of stage {stage_id!r} must define "
+                f"{reference.symbol}"
+            )
 
 
 def verify_stage_plan(
@@ -1041,6 +1076,7 @@ def verify_run_plan(
         benchmark,
         stages,
     )
+    verify_parameter_model_references(run, stages, fetcher=fetcher)
     return VerifiedRunPlan(
         run=run,
         experiment=experiment,

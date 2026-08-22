@@ -13,7 +13,13 @@ from typing import Any
 import yaml
 from pydantic import HttpUrl, TypeAdapter
 
-from tests.fixtures import metric_spec, resume_state, verification_policy
+from tests.fixtures import (
+    metric_spec,
+    parameter_model_ref,
+    parameter_model_source,
+    resume_state,
+    verification_policy,
+)
 from viper.ids import InputName
 from viper.protocol import (
     PARAMETERS,
@@ -92,6 +98,7 @@ from viper.verifier import (
     verify_attempt_files,
     verify_attempt_future_inputs,
     verify_future_inputs,
+    verify_parameter_model_references,
     verify_resolved_stages,
     verify_run_plan_relationships,
     verify_run_spec,
@@ -322,6 +329,7 @@ def train_spec(*, future_prior: bool = False) -> TrainSpec:
 
     return TrainSpec(
         script="project/training/fit.py",
+        parameter_model=parameter_model_ref("train"),
         inputs=inputs,
         params=TrainParams.model_validate(
             {"epochs": 10, "batch_size": 64, "learning_rate": 0.001}
@@ -347,6 +355,7 @@ def build_spec() -> BuildSpec:
     """Build a valid prior-construction request."""
     return BuildSpec(
         script="domain/prior_builder.py",
+        parameter_model=parameter_model_ref("build"),
         inputs={
             "depmap": StoredInputRef(
                 kind="stored",
@@ -1350,6 +1359,7 @@ class RunPlanRelationshipTests(unittest.TestCase):
         train = train_spec()
         evaluation = EvaluateSpec(
             script="analysis/predict.py",
+            parameter_model=parameter_model_ref("evaluate"),
             evaluation_id="replogle_predictions",
             metric_ids=("pearson_correlation",),
             split_inputs=("perturbation_split",),
@@ -1501,6 +1511,33 @@ class RunPlanRelationshipTests(unittest.TestCase):
                     "other_train": other_train,
                     "evaluate": wrong_evaluation,
                 },
+            )
+
+
+class ParameterModelReferenceTests(unittest.TestCase):
+    """Verify project parameter classes against the run source snapshot."""
+
+    def test_parameter_model_matches_frozen_source(self) -> None:
+        """Accept the exact class file selected by an internal stage."""
+        stage = train_spec()
+        run, _ = run_spec([("train", stage)])
+
+        verify_parameter_model_references(
+            run,
+            {"train": stage},
+            fetcher=lambda _: parameter_model_source("train"),
+        )
+
+    def test_parameter_model_rejects_changed_source_bytes(self) -> None:
+        """Reject source bytes that differ from the frozen class identity."""
+        stage = train_spec()
+        run, _ = run_spec([("train", stage)])
+
+        with self.assertRaisesRegex(VerificationError, "source verification"):
+            verify_parameter_model_references(
+                run,
+                {"train": stage},
+                fetcher=lambda _: b'class Changed:\n    """Changed bytes."""\n',
             )
 
 

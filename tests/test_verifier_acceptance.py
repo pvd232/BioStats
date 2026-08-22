@@ -17,7 +17,13 @@ import torch
 import yaml
 from pydantic import HttpUrl, TypeAdapter
 
-from tests.fixtures import metric_spec, resume_state, verification_policy
+from tests.fixtures import (
+    metric_spec,
+    parameter_model_ref,
+    parameter_model_source,
+    resume_state,
+    verification_policy,
+)
 from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
@@ -575,6 +581,7 @@ def publish_producer_run(
     )
     train = TrainSpec(
         script="training/fit.py",
+        parameter_model=parameter_model_ref("train"),
         inputs={
             "training_dataset": FutureInputRef(
                 kind="future",
@@ -640,6 +647,12 @@ def publish_producer_run(
 
     add_loader(store, PRODUCER_SOURCE_COMMIT, "bytes_file")
     add_loader(store, PRODUCER_SOURCE_COMMIT, "resume_state")
+    add_source_file(
+        store,
+        PRODUCER_SOURCE_COMMIT,
+        parameter_model_ref("train").path,
+        parameter_model_source("train"),
+    )
     resolved_env = resolved_environment(store, PRODUCER_SOURCE_COMMIT)
     download_source = add_source_file(
         store,
@@ -834,6 +847,7 @@ def build_complete_fixture(
     run_root = f"experiments/model_eval/runs/baseline/{run_id}"
     build = BuildSpec(
         script="features/build_prior.py",
+        parameter_model=parameter_model_ref("build"),
         inputs={
             "dataset": StoredInputRef(
                 kind="stored",
@@ -854,6 +868,7 @@ def build_complete_fixture(
     )
     train = TrainSpec(
         script="training/fit.py",
+        parameter_model=parameter_model_ref("train"),
         inputs={
             "prior": FutureInputRef(
                 kind="future",
@@ -881,6 +896,7 @@ def build_complete_fixture(
     )
     evaluate = EvaluateSpec(
         script="evaluation/predict.py",
+        parameter_model=parameter_model_ref("evaluate"),
         evaluation_id="toy_predictions",
         metric_ids=("pearson_correlation",),
         split_inputs=("test_split",),
@@ -983,6 +999,13 @@ def build_complete_fixture(
     add_loader(store, MAIN_SOURCE_COMMIT, "bytes_file")
     add_loader(store, MAIN_SOURCE_COMMIT, "resume_state")
     add_loader(store, MAIN_SOURCE_COMMIT, "json_file")
+    for parameter_kind in ("build", "train", "evaluate"):
+        add_source_file(
+            store,
+            MAIN_SOURCE_COMMIT,
+            parameter_model_ref(parameter_kind).path,
+            parameter_model_source(parameter_kind),
+        )
     resolved_env = resolved_environment(store, MAIN_SOURCE_COMMIT)
     build_source = add_source_file(
         store, MAIN_SOURCE_COMMIT, str(build.script), b"# build\n"

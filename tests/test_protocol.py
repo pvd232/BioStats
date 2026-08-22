@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 import yaml
 from pydantic import ValidationError
 
+from tests.fixtures import parameter_model_ref
 from viper.protocol import (
     PARAMETERS,
     PREDICTIONS,
@@ -127,6 +128,7 @@ def train_payload() -> dict:
     return {
         "kind": "train",
         "script": "project/training/fit.py",
+        "parameter_model": parameter_model_ref("train").model_dump(mode="json"),
         "inputs": {
             "training_dataset": stored_input(
                 "inputs/datasets/replogle/dataset.h5ad",
@@ -530,6 +532,9 @@ class EvaluationTests(unittest.TestCase):
             {
                 "kind": "evaluate",
                 "script": "project/evaluation/predict.py",
+                "parameter_model": parameter_model_ref("evaluate").model_dump(
+                    mode="json"
+                ),
                 "evaluation_id": "strand_predictions",
                 "metric_ids": ["pearson_correlation"],
                 "split_inputs": ["perturbation_split"],
@@ -568,6 +573,9 @@ class EvaluationTests(unittest.TestCase):
         payload = {
             "kind": "evaluate",
             "script": "evaluation/predict.py",
+            "parameter_model": parameter_model_ref("evaluate").model_dump(
+                mode="json"
+            ),
             "evaluation_id": "structured_predictions",
             "metric_ids": ["accuracy"],
             "split_inputs": ["test_split"],
@@ -610,6 +618,9 @@ class EvaluationTests(unittest.TestCase):
         payload = {
             "kind": "evaluate",
             "script": "project/evaluation/predict.py",
+            "parameter_model": parameter_model_ref("evaluate").model_dump(
+                mode="json"
+            ),
             "evaluation_id": "strand_predictions",
             "metric_ids": ["pearson_correlation"],
             "split_inputs": ["split"],
@@ -672,6 +683,9 @@ class EvaluationTests(unittest.TestCase):
         payload = {
             "kind": "evaluate",
             "script": "project/evaluation/predict.py",
+            "parameter_model": parameter_model_ref("evaluate").model_dump(
+                mode="json"
+            ),
             "evaluation_id": "strand_predictions",
             "metric_ids": ["pearson_correlation"],
             "split_inputs": ["split"],

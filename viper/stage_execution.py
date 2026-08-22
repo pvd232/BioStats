@@ -9,11 +9,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .parameter_models import ParameterModelError, validate_stage_parameters
 from .protocol import (
     ArtifactName,
     BaseSpec,
     BundleArtifactSpec,
     ExecutionContext,
+    InternalSpec,
     ResolvedArtifact,
     ResolvedBundleArtifact,
     ResolvedBundleMember,
@@ -126,6 +128,17 @@ def execute_stage_process(
     script_path = _workspace_path(root, stage_spec.script)
     if not script_path.is_file():
         raise StageExecutionError(f"stage entrypoint is missing: {stage_spec.script}")
+
+    if isinstance(stage_spec, InternalSpec):
+        try:
+            validate_stage_parameters(
+                root,
+                spec_path,
+                stage_spec,
+                timeout_seconds=timeout_seconds,
+            )
+        except ParameterModelError as exc:
+            raise StageExecutionError("stage parameter validation failed") from exc
 
     run_spec_path = (
         f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}/spec.yaml"

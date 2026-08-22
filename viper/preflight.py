@@ -10,6 +10,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from .ids import StageId
+from .parameter_models import (
+    ParameterModelError,
+    validate_stage_parameters,
+    verify_parameter_model_bytes,
+)
 from .protocol import (
     BaseSpec,
     FutureInputRef,
@@ -222,6 +227,48 @@ def preflight_local_plan(repository_root: Path, run_spec_path: Path) -> Prefligh
                 "one or more artifact loaders are absent from the source tree",
             )
         )
+
+        if isinstance(stage, InternalSpec):
+            parameter_identity_valid = False
+            parameter_validation_valid = False
+            parameter_reference = stage.parameter_model
+            model_path = root / parameter_reference.path
+            try:
+                local_raw = model_path.read_bytes()
+                verify_parameter_model_bytes(parameter_reference, local_raw)
+                parameter_identity_valid = local_raw == _git_bytes(
+                    root,
+                    run.source.commit,
+                    parameter_reference.path,
+                )
+            except (
+                OSError,
+                subprocess.CalledProcessError,
+                ParameterModelError,
+            ):
+                parameter_identity_valid = False
+            if parameter_identity_valid:
+                try:
+                    validate_stage_parameters(root, target, stage)
+                    parameter_validation_valid = True
+                except (ParameterModelError, OSError):
+                    parameter_validation_valid = False
+            checks.append(
+                _check(
+                    "parameter_model.identity",
+                    reference.stage_id,
+                    parameter_identity_valid,
+                    "parameter model differs from its frozen source identity",
+                )
+            )
+            checks.append(
+                _check(
+                    "parameter_model.validation",
+                    reference.stage_id,
+                    parameter_validation_valid,
+                    "stage parameters failed their project parameter model",
+                )
+            )
 
         valid_future_inputs = True
         if isinstance(stage, InternalSpec):

@@ -10,9 +10,20 @@ from viper.parameter_models import (
     ParameterModelError,
     load_parameter_model,
     validate_parameters,
+    validate_stage_parameters,
     verify_parameter_model_bytes,
 )
-from viper.protocol import ParameterModelRef, TrainParams
+from viper.protocol import (
+    PARAMETERS,
+    RESUME_STATE,
+    ArtifactPointerRef,
+    ParameterModelRef,
+    SingleFileArtifactSpec,
+    StoredInputRef,
+    TrainParams,
+    TrainSpec,
+)
+from viper.serialization import serialize_document
 
 
 def _model_file(tmp_path: Path) -> tuple[Path, bytes]:
@@ -70,7 +81,10 @@ def test_parameter_model_rejects_invalid_project_values(tmp_path: Path) -> None:
 def test_parameter_model_requires_the_stage_specific_base(tmp_path: Path) -> None:
     """Reject a selected class that does not specialize TrainParams."""
     path = tmp_path / "wrong.py"
-    path.write_text("class WrongParams:\n    pass\n", encoding="utf-8")
+    path.write_text(
+        'class WrongParams:\n    """Does not specialize TrainParams."""\n',
+        encoding="utf-8",
+    )
 
     with pytest.raises(ParameterModelError, match="subclass TrainParams"):
         load_parameter_model(path, "WrongParams", TrainParams)
@@ -83,3 +97,54 @@ def test_parameter_model_rejects_tampered_bytes(tmp_path: Path) -> None:
 
     with pytest.raises(ParameterModelError, match="byte count"):
         verify_parameter_model_bytes(reference, raw + b"# changed\n")
+
+
+def test_stage_parameter_validation_runs_in_a_worker(tmp_path: Path) -> None:
+    """Validate a stage while keeping project imports outside this process."""
+    _, raw = _model_file(tmp_path)
+    reference = _reference(raw)
+    model_path = tmp_path / reference.path
+    model_path.parent.mkdir(parents=True)
+    model_path.write_bytes(raw)
+    stage = TrainSpec(
+        script="project/train.py",
+        parameter_model=reference,
+        inputs={
+            "dataset": StoredInputRef(
+                pointer=ArtifactPointerRef.model_validate(
+                    {
+                        "repository": "https://github.com/example/project",
+                        "commit": "a" * 40,
+                        "path": "inputs/datasets/example/current.pointer.yaml",
+                    }
+                ),
+                path="inputs/datasets/example/data.bin",
+                data_role="training",
+            )
+        },
+        params=TrainParams.model_validate(
+            {"epochs": 2, "learning_rate": 0.1}
+        ),
+        artifacts={
+            PARAMETERS: SingleFileArtifactSpec(
+                path="experiments/example/runs/baseline/"
+                "01JABCDEFGHJKMNPQRSTVWXYZ0/artifacts/models/main/parameters.bin",
+                loader="project/loaders/parameters.py",
+                data_role="training",
+            ),
+            RESUME_STATE: SingleFileArtifactSpec(
+                path="experiments/example/runs/baseline/"
+                "01JABCDEFGHJKMNPQRSTVWXYZ0/artifacts/models/main/resume.bin",
+                loader="project/loaders/resume.py",
+                data_role="training",
+            ),
+        },
+    )
+    stage_path = tmp_path / "drafts/train.yaml"
+    stage_path.parent.mkdir(parents=True)
+    stage_path.write_bytes(serialize_document(stage))
+
+    validated = validate_stage_parameters(tmp_path, stage_path, stage)
+
+    assert validated["epochs"] == 2
+    assert validated["learning_rate"] == 0.1

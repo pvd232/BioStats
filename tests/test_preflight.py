@@ -3,6 +3,7 @@
 import hashlib
 from pathlib import Path
 
+from tests.fixtures import parameter_model_ref
 from viper.materialization import future_input_paths
 from viper.preflight import preflight_local_plan
 from viper.protocol import (
@@ -36,6 +37,7 @@ def test_preflight_reports_all_plan_failures(tmp_path: Path) -> None:
     run_root = "experiments/example/runs/baseline/01JABCDEFGHJKMNPQRSTVWXYZ0"
     stage = TrainSpec(
         script="project/build.py",
+        parameter_model=parameter_model_ref("train"),
         inputs={
             "dataset": FutureInputRef(
                 producer_stage_id="download",
@@ -134,6 +136,8 @@ def test_preflight_reports_all_plan_failures(tmp_path: Path) -> None:
         "environment.local",
         "input.future",
         "metric.implementation",
+        "parameter_model.identity",
+        "parameter_model.validation",
         "plan.git_identity",
         "plan.records",
         "plan.relationships",
@@ -164,6 +168,7 @@ def test_future_input_uses_canonical_producer_path(tmp_path: Path) -> None:
     )
     consumer = BuildSpec(
         script="project/build.py",
+        parameter_model=parameter_model_ref("build"),
         inputs={
             "dataset": FutureInputRef(
                 producer_stage_id="download",

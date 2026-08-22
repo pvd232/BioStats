@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from viper.protocol import (
     LocalEnvironmentSpec,
     MetricParams,
     MetricSpec,
+    ParameterModelRef,
     RemoteFileRef,
     ReplicateSpec,
     ReproducibilitySpec,
@@ -162,6 +164,14 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             b"def compute(context):\n"
             b"    return float(len(context.artifacts['parameters'].read_bytes()))\n"
         ),
+        "project/parameters/train.py": (
+            b"from pydantic import Field\n"
+            b"from viper.protocol import TrainParams\n\n"
+            b"class TinyTrainParameters(TrainParams):\n"
+            b"    epochs: int = Field(gt=0)\n"
+            b"    batch_size: int = Field(gt=0)\n"
+            b"    learning_rate: float = Field(gt=0)\n"
+        ),
         "jobs/download.py": (
             "from pathlib import Path\n"
             f"path = Path({f'{RUN_ROOT}/artifacts/datasets/tiny/prior.bin'!r})\n"
@@ -218,6 +228,14 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     )
     train = TrainSpec(
         script="jobs/train.py",
+        parameter_model=ParameterModelRef(
+            path="project/parameters/train.py",
+            symbol="TinyTrainParameters",
+            sha256=hashlib.sha256(
+                source_files["project/parameters/train.py"]
+            ).hexdigest(),
+            bytes=len(source_files["project/parameters/train.py"]),
+        ),
         metric_ids=("parameter_bytes",),
         inputs={
             "prior": FutureInputRef(

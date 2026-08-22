@@ -16,6 +16,11 @@ inputs:
       path: inputs/datasets/toy/current.pointer.yaml
       repository: https://github.com/example/mantra
 kind: build
+parameter_model:
+  bytes: 138
+  path: project/parameters/build.py
+  sha256: 8fc110e347d2041bcbcced8e695e439613ce3e336f6ac2a076559f97bfee2e1d
+  symbol: BuildParameters
 params: {}
 schema_version: 1
 script: features/build_prior.py

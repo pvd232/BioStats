@@ -1,6 +1,7 @@
 """Tests for canonical protocol-file authoring and run-plan freezing."""
 
 import hashlib
+import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,6 +21,7 @@ from viper.protocol import (
     FactorSpec,
     MetricParams,
     MetricSpec,
+    ParameterModelRef,
     ReplicateSpec,
     RunSpec,
     TrainParams,
@@ -34,7 +36,17 @@ RUN_ROOT = f"experiments/e001_strand/runs/baseline/{RUN_ID}"
 COMMIT = "a" * 40
 
 
-def environment_payload() -> dict[str, object]:
+def _git(root: Path, *arguments: str) -> str:
+    """Run one successful Git command in an authoring test repository."""
+    return subprocess.run(
+        ("git", "-C", str(root), *arguments),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def environment_payload(commit: str = COMMIT) -> dict[str, object]:
     """Build the shared GCE environment used by an authored run plan."""
     return {
         "kind": "gce",
@@ -44,7 +56,7 @@ def environment_payload() -> dict[str, object]:
         "lockfile": {
             "kind": "git",
             "repository": "https://github.com/example/viper-project",
-            "commit": COMMIT,
+            "commit": commit,
             "path": "environment.yml",
         },
     }
@@ -84,19 +96,24 @@ def reproducibility_payload() -> dict[str, object]:
     }
 
 
-def training_spec() -> TrainSpec:
+def training_spec(
+    parameter_model: ParameterModelRef,
+    *,
+    commit: str = COMMIT,
+) -> TrainSpec:
     """Build one valid training stage with its terminal checkpoint."""
     return TrainSpec.model_validate(
         {
             "kind": "train",
             "script": "project_code/strand/fit.py",
+            "parameter_model": parameter_model.model_dump(mode="json"),
             "inputs": {
                 "training_dataset": {
                     "kind": "stored",
                     "pointer": {
                         "kind": "git",
                         "repository": "https://github.com/example/viper-project",
-                        "commit": COMMIT,
+                        "commit": commit,
                         "path": "inputs/datasets/replogle/current.pointer.yaml",
                     },
                     "path": "inputs/datasets/replogle/dataset.h5ad",
@@ -131,9 +148,46 @@ class RunPlanAuthoringTests(unittest.TestCase):
         """Write canonical files whose RunStageRef matches exact stage bytes."""
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
+            _git(root, "init", "--quiet")
+            _git(root, "config", "user.email", "viper@example.com")
+            _git(root, "config", "user.name", "VIPER Test")
+            _git(
+                root,
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/example/viper-project",
+            )
+            parameter_raw = (
+                b"from pydantic import Field\n"
+                b"from viper.protocol import TrainParams\n\n"
+                b"class StrandTrainParameters(TrainParams):\n"
+                b"    epochs: int = Field(gt=0)\n"
+            )
+            parameter_path = root / "project/parameters/train.py"
+            parameter_path.parent.mkdir(parents=True)
+            parameter_path.write_bytes(parameter_raw)
+            environment_path = root / "environment.yml"
+            environment_path.write_text("name: viper-test\n", encoding="utf-8")
+            pointer_path = root / "inputs/datasets/replogle/current.pointer.yaml"
+            pointer_path.parent.mkdir(parents=True)
+            pointer_path.write_text("schema_version: 1\n", encoding="utf-8")
+            _git(root, "add", ".")
+            _git(root, "commit", "--quiet", "-m", "source")
+            source_commit = _git(root, "rev-parse", "HEAD")
+            parameter_model = ParameterModelRef(
+                path="project/parameters/train.py",
+                symbol="StrandTrainParameters",
+                sha256=hashlib.sha256(parameter_raw).hexdigest(),
+                bytes=len(parameter_raw),
+            )
             draft_stage = root / "drafts/train.yaml"
             draft_stage.parent.mkdir(parents=True)
-            draft_stage.write_bytes(serialize_document(training_spec()))
+            draft_stage.write_bytes(
+                serialize_document(
+                    training_spec(parameter_model, commit=source_commit)
+                )
+            )
             draft = RunPlanDraft.model_validate(
                 {
                     "run_id": RUN_ID,
@@ -144,9 +198,9 @@ class RunPlanAuthoringTests(unittest.TestCase):
                     "source": {
                         "kind": "git",
                         "repository": "https://github.com/example/viper-project",
-                        "commit": COMMIT,
+                        "commit": source_commit,
                     },
-                    "environment": environment_payload(),
+                    "environment": environment_payload(source_commit),
                     "reproducibility": reproducibility_payload(),
                     "stages": [
                         {"stage_id": "train", "spec_source": "drafts/train.yaml"}

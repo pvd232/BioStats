@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Literal
@@ -11,12 +12,18 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from .ids import ExperimentId, ReplicateId, RunId, StageId, VariantId
+from .parameter_models import (
+    ParameterModelError,
+    validate_stage_parameters,
+    verify_parameter_model_bytes,
+)
 from .protocol import (
     BenchmarkId,
     BenchmarkSpec,
     EnvironmentSpec,
     ExperimentSpec,
     GitSource,
+    InternalSpec,
     ReproducibilitySpec,
     RNGSeed,
     RunSpec,
@@ -156,6 +163,32 @@ def freeze_run_plan(
             source = root / source
         raw_source = source.read_bytes()
         spec = SPEC_ADAPTER.validate_python(parse_yaml_bytes(raw_source))
+        if isinstance(spec, InternalSpec):
+            reference = spec.parameter_model
+            model_path = root / reference.path
+            model_raw = model_path.read_bytes()
+            verify_parameter_model_bytes(reference, model_raw)
+            try:
+                committed_model_raw = subprocess.run(
+                    (
+                        "git",
+                        "-C",
+                        str(root),
+                        "show",
+                        f"{draft.source.commit}:{reference.path}",
+                    ),
+                    check=True,
+                    capture_output=True,
+                ).stdout
+            except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+                raise ParameterModelError(
+                    "parameter model is absent from the frozen source commit"
+                ) from exc
+            if model_raw != committed_model_raw:
+                raise ParameterModelError(
+                    "parameter model differs from the frozen source commit"
+                )
+            validate_stage_parameters(root, source, spec)
         raw = serialize_document(spec)
         relative_path = f"{run_root}/stages/{stage.stage_id}/spec.yaml"
         target = _target_path(root, relative_path)
