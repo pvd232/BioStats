@@ -1,5 +1,33 @@
 # Foundational reproducibility formalism
 
+## Contents
+
+- [1. Model family and estimator](#1-model-family-and-estimator)
+- [2. Construction of the run plan](#2-construction-of-the-run-plan)
+- [3. Permitted runtime states](#3-permitted-runtime-states)
+- [4. Initial training state](#4-initial-training-state)
+- [5. Training-state transition](#5-training-state-transition)
+- [6. Estimator and strict reproducibility](#6-estimator-and-strict-reproducibility)
+- [7. Stage outputs and terminal training checkpoints](#7-stage-outputs-and-terminal-training-checkpoints)
+- [8. Artifact partition of a training checkpoint](#8-artifact-partition-of-a-training-checkpoint)
+- [9. File representation of an artifact](#9-file-representation-of-an-artifact)
+- [10. Boundary rules](#10-boundary-rules)
+- [11. Complete dependency chain](#11-complete-dependency-chain)
+- [12. Protocol record roles](#12-protocol-record-roles)
+- [13. File, artifact, and stage-result records](#13-file-artifact-and-stage-result-records)
+- [14. Run, input, and attempt records](#14-run-input-and-attempt-records)
+- [15. Environment, reproducibility, and execution records](#15-environment-reproducibility-and-execution-records)
+- [16. Experiment, variant, replicate, and measurement records](#16-experiment-variant-replicate-and-measurement-records)
+- [17. Concrete stage records](#17-concrete-stage-records)
+- [18. Training checkpoint mapping](#18-training-checkpoint-mapping)
+- [19. Evaluation stage](#19-evaluation-stage)
+- [20. Benchmark specification and confirmation](#20-benchmark-specification-and-confirmation)
+- [21. Validation and external verification](#21-validation-and-external-verification)
+- [22. Execution and publication sequence](#22-execution-and-publication-sequence)
+- [23. Repository layout](#23-repository-layout)
+- [Appendix A. Complete training-state transition](#appendix-a-complete-training-state-transition)
+- [Appendix B. DataLoader iteration and RNG state](#appendix-b-dataloader-iteration-and-rng-state)
+
 ## 1. Model family and estimator
 
 A family specification $\alpha$ determines:
@@ -2502,8 +2530,28 @@ the resolved spec.
 
 ## 20. Benchmark specification and confirmation
 
-A benchmark fixes the evaluation data, splits, metrics, acceptance criteria,
-and confirmation count applied to candidate run plans.
+An evaluation measures one candidate. A benchmark standardizes that evaluation
+across candidates and requires a reproducible, threshold-qualified result.
+
+`EvaluateSpec` is the executable request within one candidate run plan. It
+binds the candidate parameters, evaluation inputs, metrics, execution
+parameters, and declared outputs. `BenchmarkSpec` is the reusable qualification
+policy. It fixes the evaluation dataset, splits, metric thresholds, and
+confirmation count applied to candidate run plans.
+
+```text
+BenchmarkSpec
+├── fixes the evaluation ID, dataset, splits, and metrics
+├── adds a threshold for each metric and the confirmation count
+└── constrains each candidate EvaluateSpec
+    ├── binds that candidate's parameters
+    ├── supplies its evaluation execution parameters
+    └── declares predictions and any additional outputs
+```
+
+The evaluation ID, dataset, splits, and metric IDs occur in both records. The
+verifier requires them to match exactly. This overlap allows one
+`BenchmarkSpec` to govern multiple candidate run plans.
 
 ```python
 BenchmarkId = HumanId

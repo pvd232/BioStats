@@ -71,6 +71,14 @@ input lineage, estimator and prediction file parity, metric criteria, and
 result status. `verify_promoted_artifact()` verifies the selected producer run
 and any benchmark result required to authorize estimator promotion.
 
+An evaluation measures one candidate. A benchmark standardizes that evaluation
+across candidates and requires a reproducible, threshold-qualified result.
+`EvaluateSpec` binds the candidate parameters, evaluation inputs, metrics,
+execution parameters, and outputs. `BenchmarkSpec` repeats the evaluation ID,
+dataset, splits, and metric IDs, then adds metric thresholds and a confirmation
+count. The verifier requires the repeated values to match, which allows one
+benchmark to govern multiple candidate run plans.
+
 Every stored input and produced artifact declares a data-use role: `training`,
 `validation`, `evaluation`, or `benchmark`. The verifier confirms stored-input
 roles against their producer artifacts, propagates same-run roles, prevents a
