@@ -1,3 +1,5 @@
+"""Focused tests for cross-record, file-identity, and lineage verification."""
+
 from __future__ import annotations
 
 import hashlib
@@ -11,11 +13,10 @@ from typing import Any
 import yaml
 from pydantic import HttpUrl, TypeAdapter
 
-from mantra_provenance.ids import InputName
-from mantra_provenance.models_v4 import (
-    CONTINUATION_STATE,
-    MODEL_PARAMETERS,
-    PREDICTIONS,
+from viper.ids import InputName
+from viper.records import (
+    RESUME_STATE,
+    PARAMETERS,
     ArtifactPointer,
     ArtifactPointerRef,
     BenchmarkSpec,
@@ -25,12 +26,12 @@ from mantra_provenance.models_v4 import (
     CPUComputeSpec,
     CPUContext,
     DataLoaderConfiguration,
-    DataLoaderContinuationState,
     EvaluateParams,
     EvaluateSpec,
     EvaluateVariantStageParams,
     ExecutionContext,
     ExperimentSpec,
+    FutureInputRef,
     GCEEnvironmentSpec,
     GCEHostContext,
     GCEMachineImageRef,
@@ -38,19 +39,13 @@ from mantra_provenance.models_v4 import (
     GitSource,
     HuggingFaceFileRef,
     InternalInputRef,
-    LegacyNumPyRNGState,
-    MainProcessRNGState,
     MetricCriterion,
     NativeLibraryContext,
     NativeThreadPoolContext,
     NonEmptyStr,
     NumericalRuntimeContext,
     NumPyRandomnessSpec,
-    NumPyRNGState,
     ParallelismSpec,
-    PCG64GeneratorState,
-    PCG64InternalState,
-    PythonRNGState,
     RandomnessContext,
     ReplicateSpec,
     ReproducibilitySpec,
@@ -78,14 +73,14 @@ from mantra_provenance.models_v4 import (
     StoredInputRef,
     TorchDeterminismSpec,
     TorchPrecisionSpec,
-    TrainingContinuationState,
     TrainParams,
     TrainSpec,
     TrainVariantStageParams,
     VariantSpec,
 )
-from mantra_provenance.verifier import (
+from viper.verifier import (
     VerificationError,
+    VerificationPolicy,
     VerifiedArtifact,
     VerifiedSnapshotFile,
     fetch_git_file_bytes,
@@ -101,7 +96,7 @@ from mantra_provenance.verifier import (
     verify_stage_plan,
     verify_stored_input_selections,
 )
-from tests.test_models_v4 import FutureInputRef
+from tests.fixtures import resume_state, metric_spec, verification_policy
 
 GIT_COMMIT = "a" * 40
 PLAN_COMMIT = "b" * 40
@@ -112,9 +107,11 @@ RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 RUN_ROOT = f"experiments/e001_strand/runs/baseline/{RUN_ID}"
 YAML_ADAPTER = TypeAdapter(Any)
 INSTRUCTION_SET: NonEmptyStr = "avx2"
+POLICY = verification_policy(REPOSITORY)
 
 
 def yaml_bytes(value: object) -> bytes:
+    """Serialize one value as YAML bytes."""
     data = YAML_ADAPTER.dump_python(value, mode="json")
     data_s = yaml.safe_dump(data, sort_keys=True)
     assert isinstance(data_s, str)
@@ -122,10 +119,12 @@ def yaml_bytes(value: object) -> bytes:
 
 
 def sha256(raw: bytes) -> str:
+    """Return the SHA-256 digest of exact bytes."""
     return hashlib.sha256(raw).hexdigest()
 
 
 def git_file(path: str, *, commit: str = GIT_COMMIT) -> GitFileRef:
+    """Build one immutable Git file reference."""
     return GitFileRef(
         repository=REPOSITORY,
         commit=commit,
@@ -134,6 +133,7 @@ def git_file(path: str, *, commit: str = GIT_COMMIT) -> GitFileRef:
 
 
 def artifact_pointer(path: str) -> ArtifactPointerRef:
+    """Build one canonical promoted-artifact pointer reference."""
     return ArtifactPointerRef(
         repository=REPOSITORY,
         commit=GIT_COMMIT,
@@ -142,6 +142,7 @@ def artifact_pointer(path: str) -> ArtifactPointerRef:
 
 
 def environment() -> GCEEnvironmentSpec:
+    """Build the shared requested GCE environment."""
     return GCEEnvironmentSpec(
         kind="gce",
         machine_image=GCEMachineImageRef(
@@ -155,6 +156,7 @@ def environment() -> GCEEnvironmentSpec:
 
 
 def reproducibility() -> ReproducibilitySpec:
+    """Build the run-wide reproducibility controls."""
     return ReproducibilitySpec(
         determinism=TorchDeterminismSpec(
             deterministic_algorithms=True,
@@ -188,6 +190,7 @@ def reproducibility() -> ReproducibilitySpec:
 
 
 def execution_context(seed: int = 42) -> ExecutionContext:
+    """Build the runtime context observed by one stage."""
     controls = reproducibility()
     return ExecutionContext(
         host=GCEHostContext(
@@ -230,59 +233,8 @@ def execution_context(seed: int = 42) -> ExecutionContext:
     )
 
 
-def continuation_state(
-    *,
-    workers: int = 0,
-    prefetch_factor: int | None = None,
-    persistent_workers: bool = False,
-) -> TrainingContinuationState:
-    return TrainingContinuationState(
-        optimizer_state={
-            "state": {},
-            "param_groups": [],
-        },
-        main_process_rng=MainProcessRNGState(
-            python=PythonRNGState(
-                version=3,
-                internal_state=(1,),
-                gaussian_cache=None,
-            ),
-            numpy=NumPyRNGState(
-                generators={
-                    "training": PCG64GeneratorState(
-                        state=PCG64InternalState(
-                            state=1,
-                            inc=1,
-                        ),
-                        has_uint32=0,
-                        uinteger=0,
-                    ),
-                },
-                legacy_global=LegacyNumPyRNGState(
-                    keys=(0,) * 624,
-                    position=0,
-                    has_gaussian=0,
-                    cached_gaussian=0.0,
-                ),
-            ),
-            torch_cpu=b"torch-cpu",
-            torch_cuda=(),
-        ),
-        dataloader=DataLoaderContinuationState(
-            configuration=DataLoaderConfiguration(
-                workers=workers,
-                prefetch_factor=prefetch_factor,
-                persistent_workers=persistent_workers,
-                in_order=True,
-            ),
-            state_dict={
-                "num_yielded": 10,
-            },
-        ),
-    )
-
-
 def resolved_git(raw: bytes, path: str) -> ResolvedGitFileRef:
+    """Bind exact bytes to their immutable Git location."""
     return ResolvedGitFileRef(
         sha256=sha256(raw),
         bytes=len(raw),
@@ -291,6 +243,7 @@ def resolved_git(raw: bytes, path: str) -> ResolvedGitFileRef:
 
 
 def resolved_pointer(path: str) -> ResolvedArtifactPointerRef:
+    """Build one resolved artifact-pointer reference."""
     raw = b"pointer"
     return ResolvedArtifactPointerRef(
         sha256=sha256(raw),
@@ -300,6 +253,7 @@ def resolved_pointer(path: str) -> ResolvedArtifactPointerRef:
 
 
 def snapshot(*, commit: str = SNAPSHOT_COMMIT) -> StageResultSnapshotRef:
+    """Build one immutable stage-result snapshot reference."""
     return StageResultSnapshotRef(
         repository=HF_REPOSITORY,
         commit=commit,
@@ -308,6 +262,7 @@ def snapshot(*, commit: str = SNAPSHOT_COMMIT) -> StageResultSnapshotRef:
 
 
 def run_spec(stage_specs: list[tuple[str, object]]) -> tuple[RunSpec, dict[str, bytes]]:
+    """Build a run plan and the stage-spec files it identifies."""
     documents: dict[str, bytes] = {}
     stage_refs = []
 
@@ -336,13 +291,14 @@ def run_spec(stage_specs: list[tuple[str, object]]) -> tuple[RunSpec, dict[str, 
         stages=tuple(stage_refs),
         estimator=StageArtifactRef(
             stage_id="train",
-            artifact_name=MODEL_PARAMETERS,
+            artifact_name=PARAMETERS,
         ),
     )
     return run, documents
 
 
 def train_spec(*, future_prior: bool = False) -> TrainSpec:
+    """Build a valid training-stage request."""
     inputs: dict[InputName, InternalInputRef] = {}
     if future_prior:
         inputs["prior"] = FutureInputRef(
@@ -360,25 +316,28 @@ def train_spec(*, future_prior: bool = False) -> TrainSpec:
     return TrainSpec(
         script="src/mantra/models/strand/train.py",
         inputs=inputs,
-        params=TrainParams(epochs=10, batch_size=64, learning_rate=0.001),
+        params=TrainParams.model_validate(
+            {"epochs": 10, "batch_size": 64, "learning_rate": 0.001}
+        ),
         artifacts={
-            MODEL_PARAMETERS: SingleFileArtifactSpec(
+            PARAMETERS: SingleFileArtifactSpec(
                 kind="file",
                 path=(
-                    f"{RUN_ROOT}/artifacts/models/strand/model_parameters.safetensors"
+                    f"{RUN_ROOT}/artifacts/models/strand/parameters.safetensors"
                 ),
-                loader="model_parameters",
+                loader="parameters",
             ),
-            CONTINUATION_STATE: SingleFileArtifactSpec(
+            RESUME_STATE: SingleFileArtifactSpec(
                 kind="file",
-                path=f"{RUN_ROOT}/artifacts/models/strand/continuation_state.pt",
-                loader="continuation_state",
+                path=f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt",
+                loader="resume_state",
             ),
         },
     )
 
 
 def build_spec() -> BuildSpec:
+    """Build a valid prior-construction request."""
     return BuildSpec(
         script="src/mantra/priors/depmap/build.py",
         inputs={
@@ -400,6 +359,7 @@ def build_spec() -> BuildSpec:
 
 
 def resolved_environment(lock_raw: bytes) -> ResolvedGCEEnvironment:
+    """Bind the requested environment to its immutable machine image and lockfile."""
     return ResolvedGCEEnvironment(
         kind="gce",
         machine_image=ResolvedGCEMachineImageRef(
@@ -414,10 +374,13 @@ def resolved_environment(lock_raw: bytes) -> ResolvedGCEEnvironment:
 
 
 class FileVerificationTests(unittest.TestCase):
+    """Verify byte identity, artifact loading, and continuation records."""
+
     def test_artifact_loader_uses_the_consumer_materialization_path(self) -> None:
-        spec = train_spec()
+        """Verify that artifact loader uses the consumer materialization path."""
+        spec = train_spec().model_copy(update={"metric_ids": ("training_loss",)})
         run, _ = run_spec([("train", spec)])
-        declaration = spec.artifacts[MODEL_PARAMETERS]
+        declaration = spec.artifacts[PARAMETERS]
         content = b"model parameters"
         resolved = ResolvedSingleFileArtifact(
             file=SnapshotFileRef(
@@ -446,18 +409,53 @@ class FileVerificationTests(unittest.TestCase):
         loaded = load_verified_artifact(
             run,
             declaration,
-            MODEL_PARAMETERS,
+            PARAMETERS,
             verified,
+            policy=POLICY,
             materialization_path=consumer_path,
             fetcher=lambda _: loader_raw,
         )
 
         self.assertEqual(loaded, content)
 
-    def test_continuation_state_must_match_run_dataloader(self) -> None:
+    def test_artifact_loader_requires_explicit_source_trust(self) -> None:
+        """Reject loader execution when the source repository is not trusted."""
         spec = train_spec()
         run, _ = run_spec([("train", spec)])
-        declaration = spec.artifacts[CONTINUATION_STATE]
+        declaration = spec.artifacts[PARAMETERS]
+        content = b"model parameters"
+        resolved = ResolvedSingleFileArtifact(
+            file=SnapshotFileRef(
+                path=str(declaration.path),
+                sha256=sha256(content),
+                bytes=len(content),
+            )
+        )
+        verified = VerifiedArtifact(
+            artifact=resolved,
+            files=(
+                VerifiedSnapshotFile(
+                    reference=resolved.file,
+                    content=content,
+                ),
+            ),
+        )
+
+        with self.assertRaisesRegex(VerificationError, "explicitly trusted"):
+            load_verified_artifact(
+                run,
+                declaration,
+                PARAMETERS,
+                verified,
+                policy=VerificationPolicy(trusted_loader_repositories=frozenset()),
+                fetcher=lambda _: b"def load(path): return path.read_bytes()\n",
+            )
+
+    def test_resume_state_must_match_run_dataloader(self) -> None:
+        """Verify that continuation state must match run dataloader."""
+        spec = train_spec()
+        run, _ = run_spec([("train", spec)])
+        declaration = spec.artifacts[RESUME_STATE]
         content = b"continuation state"
 
         resolved = ResolvedSingleFileArtifact(
@@ -477,7 +475,7 @@ class FileVerificationTests(unittest.TestCase):
             ),
         )
 
-        continuation_value = continuation_state(
+        continuation_value = resume_state(
             workers=2,
             prefetch_factor=2,
         ).model_dump(mode="python")
@@ -490,15 +488,17 @@ class FileVerificationTests(unittest.TestCase):
             load_verified_artifact(
                 run,
                 declaration,
-                CONTINUATION_STATE,
+                RESUME_STATE,
                 verified,
+                policy=POLICY,
                 fetcher=lambda _: loader_raw,
             )
 
-    def test_continuation_state_must_match_run_numpy_controls(self) -> None:
+    def test_resume_state_must_match_run_numpy_controls(self) -> None:
+        """Verify that continuation state must match run numpy controls."""
         spec = train_spec()
         run, _ = run_spec([("train", spec)])
-        declaration = spec.artifacts[CONTINUATION_STATE]
+        declaration = spec.artifacts[RESUME_STATE]
         content = b"continuation state"
         resolved = ResolvedSingleFileArtifact(
             file=SnapshotFileRef(
@@ -516,7 +516,7 @@ class FileVerificationTests(unittest.TestCase):
                 ),
             ),
         )
-        baseline = continuation_state()
+        baseline = resume_state()
         numpy_state = baseline.main_process_rng.numpy
         mismatches = (
             (
@@ -545,12 +545,14 @@ class FileVerificationTests(unittest.TestCase):
                     load_verified_artifact(
                         run,
                         declaration,
-                        CONTINUATION_STATE,
+                        RESUME_STATE,
                         verified,
+                        policy=POLICY,
                         fetcher=lambda _: loader_raw,
                     )
 
     def test_git_retrieval_supports_sha256_repositories(self) -> None:
+        """Verify that git retrieval supports sha256 repositories."""
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory) / "source"
             subprocess.run(
@@ -598,6 +600,7 @@ class FileVerificationTests(unittest.TestCase):
             self.assertEqual(fetch_git_file_bytes(location), expected)
 
     def test_resolved_file_requires_matching_bytes(self) -> None:
+        """Verify that resolved file requires matching bytes."""
         raw = b"exact bytes"
         reference = ResolvedFileRef(
             sha256=sha256(raw),
@@ -614,15 +617,17 @@ class FileVerificationTests(unittest.TestCase):
             )
 
     def test_snapshot_file_uses_snapshot_commit_and_exact_identity(self) -> None:
+        """Verify that snapshot file uses snapshot commit and exact identity."""
         raw = b"snapshot bytes"
         reference = {
-            "path": "artifacts/train/model_parameters.safetensors",
+            "path": "artifacts/train/parameters.safetensors",
             "sha256": sha256(raw),
             "bytes": len(raw),
         }
         seen: list[HuggingFaceFileRef] = []
 
         def fetcher(location: object) -> bytes:
+            """Return fixture bytes for one storage location."""
             self.assertIsInstance(location, HuggingFaceFileRef)
             assert isinstance(location, HuggingFaceFileRef)
             seen.append(location)
@@ -639,7 +644,10 @@ class FileVerificationTests(unittest.TestCase):
 
 
 class RunAndStageVerificationTests(unittest.TestCase):
+    """Verify resolved run, stage, attempt, measurement, and log relationships."""
+
     def test_resolved_run_spec_is_loaded_from_its_reference(self) -> None:
+        """Verify that resolved run spec is loaded from its reference."""
         spec = train_spec()
         run, _ = run_spec([("train", spec)])
         raw = yaml_bytes(run)
@@ -670,6 +678,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             verify_run_spec(duplicate_record, fetcher=lambda _: duplicate_raw)
 
     def test_resolved_run_spec_uses_the_source_repository(self) -> None:
+        """Verify that resolved run spec uses the source repository."""
         spec = train_spec()
         run, _ = run_spec([("train", spec)])
         raw = yaml_bytes(run)
@@ -688,6 +697,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             verify_run_spec(record, fetcher=lambda _: raw)
 
     def test_stage_plan_loads_named_future_artifact(self) -> None:
+        """Verify that stage plan loads named future artifact."""
         build = build_spec()
         train = train_spec(future_prior=True)
         run, documents = run_spec([("build", build), ("train", train)])
@@ -718,6 +728,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             )
 
     def test_distinct_stage_snapshots_may_reuse_artifact_paths(self) -> None:
+        """Verify that distinct stage snapshots may reuse artifact paths."""
         first = train_spec()
         second = train_spec()
         run, documents = run_spec([("train", first), ("train_02", second)])
@@ -736,6 +747,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
         self.assertEqual(set(loaded), {"train", "train_02"})
 
     def test_consumer_rejects_colliding_same_run_input_paths(self) -> None:
+        """Verify that consumer rejects colliding same run input paths."""
         first = train_spec()
         second = train_spec()
         consumer_payload = build_spec().model_dump(mode="python")
@@ -743,12 +755,12 @@ class RunAndStageVerificationTests(unittest.TestCase):
             "first_model": {
                 "kind": "future",
                 "producer_stage_id": "train",
-                "producer_artifact": MODEL_PARAMETERS,
+                "producer_artifact": PARAMETERS,
             },
             "second_model": {
                 "kind": "future",
                 "producer_stage_id": "train_02",
-                "producer_artifact": MODEL_PARAMETERS,
+                "producer_artifact": PARAMETERS,
             },
         }
         consumer = BuildSpec.model_validate(consumer_payload)
@@ -769,6 +781,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             )
 
     def test_resolved_stage_checks_run_controls_and_snapshot_files(self) -> None:
+        """Verify that resolved stage checks run controls and snapshot files."""
         spec = train_spec()
         run, _ = run_spec([("train", spec)])
         source_raw = b"print('train')\n"
@@ -776,10 +789,10 @@ class RunAndStageVerificationTests(unittest.TestCase):
         model_raw = b"model parameters"
         continuation_raw = b"optimizer rng sampler"
 
-        continuation_value = continuation_state().model_dump(mode="python")
+        continuation_value = resume_state().model_dump(mode="python")
         loader_raw = (
             "def load(path):\n"
-            "    if path.name == 'continuation_state.pt':\n"
+            "    if path.name == 'resume_state.pt':\n"
             f"        return {continuation_value!r}\n"
             "    return path.read_bytes()\n"
         ).encode()
@@ -799,18 +812,18 @@ class RunAndStageVerificationTests(unittest.TestCase):
                 )
             },
             artifacts={
-                MODEL_PARAMETERS: ResolvedSingleFileArtifact(
+                PARAMETERS: ResolvedSingleFileArtifact(
                     kind="file",
                     file=SnapshotFileRef(
-                        path=f"{RUN_ROOT}/artifacts/models/strand/model_parameters.safetensors",
+                        path=f"{RUN_ROOT}/artifacts/models/strand/parameters.safetensors",
                         sha256=sha256(model_raw),
                         bytes=len(model_raw),
                     ),
                 ),
-                CONTINUATION_STATE: ResolvedSingleFileArtifact(
+                RESUME_STATE: ResolvedSingleFileArtifact(
                     kind="file",
                     file=SnapshotFileRef(
-                        path=f"{RUN_ROOT}/artifacts/models/strand/continuation_state.pt",
+                        path=f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt",
                         sha256=sha256(continuation_raw),
                         bytes=len(continuation_raw),
                     ),
@@ -855,26 +868,28 @@ class RunAndStageVerificationTests(unittest.TestCase):
             str(spec.script): source_raw,
             "uv.lock": lock_raw,
             (
-                f"{RUN_ROOT}/artifacts/models/strand/model_parameters.safetensors"
+                f"{RUN_ROOT}/artifacts/models/strand/parameters.safetensors"
             ): model_raw,
             (
-                f"{RUN_ROOT}/artifacts/models/strand/continuation_state.pt"
+                f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt"
             ): continuation_raw,
-            "src/mantra/artifact_loaders/model_parameters.py": loader_raw,
-            "src/mantra/artifact_loaders/continuation_state.py": loader_raw,
+            "src/mantra/artifact_loaders/parameters.py": loader_raw,
+            "src/mantra/artifact_loaders/resume_state.py": loader_raw,
         }
 
         verified = verify_resolved_stages(
             record,
             run,
             {"train": spec},
+            policy=POLICY,
             fetcher=lambda location: documents[location.path],
         )
 
         self.assertEqual(verified["train"], resolved)
 
     def test_attempt_measurements_and_logs_are_verified(self) -> None:
-        spec = train_spec()
+        """Verify that attempt measurements and logs are verified."""
+        spec = train_spec().model_copy(update={"metric_ids": ("training_loss",)})
         run, _ = run_spec([("train", spec)])
         measured_at = datetime(2026, 8, 21, 12, 30, tzinfo=UTC)
         measurement_raw = (
@@ -930,7 +945,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             factors=(),
             variant_ids=("baseline",),
             replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
-            metric_ids=("training_loss",),
+            metrics=(metric_spec("training_loss", "training"),),
         )
         documents = {
             f"{RUN_ROOT}/measurements/train.training_loss.jsonl": measurement_raw,
@@ -971,7 +986,8 @@ class RunAndStageVerificationTests(unittest.TestCase):
             )
 
     def test_failed_attempt_may_retain_log_for_interrupted_stage(self) -> None:
-        spec = train_spec()
+        """Verify that failed attempt may retain log for interrupted stage."""
+        spec = train_spec().model_copy(update={"metric_ids": ("training_loss",)})
         run, _ = run_spec([("train", spec)])
         log_raw = b"training failed\n"
         attempt = RunAttempt(
@@ -1000,7 +1016,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             factors=(),
             variant_ids=("baseline",),
             replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
-            metric_ids=("training_loss",),
+            metrics=(metric_spec("training_loss", "training"),),
         )
 
         measurements = verify_attempt_files(
@@ -1015,7 +1031,10 @@ class RunAndStageVerificationTests(unittest.TestCase):
 
 
 class RunPlanRelationshipTests(unittest.TestCase):
+    """Verify relationships among experiments, variants, stages, and benchmarks."""
+
     def test_variant_parameters_match_the_loaded_training_stage(self) -> None:
+        """Verify that variant parameters match the loaded training stage."""
         train = train_spec()
         run, _ = run_spec([("train", train)])
         experiment = ExperimentSpec(
@@ -1023,7 +1042,7 @@ class RunPlanRelationshipTests(unittest.TestCase):
             factors=(),
             variant_ids=("baseline",),
             replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
-            metric_ids=("pearson_correlation",),
+            metrics=(metric_spec("pearson_correlation", "evaluation"),),
         )
         variant = VariantSpec(
             experiment_id="e001_strand",
@@ -1067,6 +1086,7 @@ class RunPlanRelationshipTests(unittest.TestCase):
             )
 
     def test_plan_files_belong_to_the_source_snapshot(self) -> None:
+        """Verify that plan files belong to the source snapshot."""
         train = train_spec()
         run, _ = run_spec([("train", train)])
         experiment = ExperimentSpec(
@@ -1074,7 +1094,7 @@ class RunPlanRelationshipTests(unittest.TestCase):
             factors=(),
             variant_ids=("baseline",),
             replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
-            metric_ids=("pearson_correlation",),
+            metrics=(metric_spec("pearson_correlation", "evaluation"),),
         )
         variant = VariantSpec(
             experiment_id="e001_strand",
@@ -1128,14 +1148,18 @@ class RunPlanRelationshipTests(unittest.TestCase):
             )
 
     def test_benchmark_matches_evaluation_inputs_splits_and_metrics(self) -> None:
+        """Verify that benchmark matches evaluation inputs splits and metrics."""
         train = train_spec()
         evaluation = EvaluateSpec(
             script="src/mantra/models/strand/evaluate.py",
+            evaluation_id="replogle_predictions",
+            metric_ids=("pearson_correlation",),
+            split_inputs=("perturbation_split",),
             inputs={
-                "model_parameters": FutureInputRef(
+                "parameters": FutureInputRef(
                     kind="future",
                     producer_stage_id="train",
-                    producer_artifact=MODEL_PARAMETERS,
+                    producer_artifact=PARAMETERS,
                 ),
                 "evaluation_dataset": StoredInputRef(
                     kind="stored",
@@ -1152,15 +1176,15 @@ class RunPlanRelationshipTests(unittest.TestCase):
                     path="inputs/benchmarks/replogle/test_split.json",
                 ),
             },
-            params=EvaluateParams(
-                metric_ids=("pearson_correlation",),
-                split_inputs=("perturbation_split",),
-            ),
+            params=EvaluateParams(),
             artifacts={
                 "predictions": SingleFileArtifactSpec(
                     kind="file",
-                    path=f"{RUN_ROOT}/artifacts/evaluations/replogle_strict/predictions.parquet",
-                    loader="predictions",
+                    path=(
+                        f"{RUN_ROOT}/artifacts/evaluations/"
+                        "replogle_predictions/predictions.h5ad"
+                    ),
+                    loader="predictions_h5ad",
                 )
             },
         )
@@ -1172,7 +1196,7 @@ class RunPlanRelationshipTests(unittest.TestCase):
             factors=(),
             variant_ids=("baseline",),
             replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
-            metric_ids=("pearson_correlation",),
+            metrics=(metric_spec("pearson_correlation", "evaluation"),),
         )
         variant = VariantSpec(
             experiment_id="e001_strand",
@@ -1189,6 +1213,7 @@ class RunPlanRelationshipTests(unittest.TestCase):
         )
         benchmark = BenchmarkSpec(
             benchmark_id="replogle_strict",
+            evaluation_id="replogle_predictions",
             evaluation_dataset=artifact_pointer(
                 "inputs/datasets/replogle_test/current.pointer.yaml"
             ),
@@ -1214,26 +1239,21 @@ class RunPlanRelationshipTests(unittest.TestCase):
             {"train": train, "evaluate": evaluation},
         )
 
-        wrong_artifact = next(iter(evaluation.artifacts.values())).model_copy(
-            update={
-                "path": (f"{RUN_ROOT}/artifacts/evaluations/other/predictions.parquet")
-            }
+        wrong_benchmark = benchmark.model_copy(
+            update={"evaluation_id": "other_evaluation"}
         )
-        wrong_artifact_evaluation = evaluation.model_copy(
-            update={"artifacts": {PREDICTIONS: wrong_artifact}}
-        )
-        with self.assertRaisesRegex(VerificationError, "benchmark ID"):
+        with self.assertRaisesRegex(VerificationError, "evaluation ID"):
             verify_run_plan_relationships(
                 run,
                 experiment,
                 variant,
-                benchmark,
-                {"train": train, "evaluate": wrong_artifact_evaluation},
+                wrong_benchmark,
+                {"train": train, "evaluate": evaluation},
             )
 
         other_train = train_spec()
         wrong_evaluation_payload = evaluation.model_dump(mode="python")
-        wrong_evaluation_payload["inputs"]["model_parameters"]["producer_stage_id"] = (
+        wrong_evaluation_payload["inputs"]["parameters"]["producer_stage_id"] = (
             "other_train"
         )
         wrong_evaluation = EvaluateSpec.model_validate(wrong_evaluation_payload)
@@ -1270,23 +1290,26 @@ class RunPlanRelationshipTests(unittest.TestCase):
 
 
 class StoredInputSelectionTests(unittest.TestCase):
+    """Verify promoted checkpoint selections and their producer lineage."""
+
     def test_stored_checkpoint_pair_selects_one_run_and_stage(self) -> None:
+        """Verify that stored checkpoint pair selects one run and stage."""
         payload = train_spec().model_dump(mode="python")
         payload["inputs"].update(
             {
-                "checkpoint_model_parameters": {
+                "checkpoint_parameters": {
                     "kind": "stored",
                     "pointer": artifact_pointer(
-                        "inputs/models/toy/model_parameters.pointer.yaml"
+                        "inputs/models/toy/parameters.pointer.yaml"
                     ),
-                    "path": "inputs/models/toy/model_parameters.bin",
+                    "path": "inputs/models/toy/parameters.bin",
                 },
-                "checkpoint_continuation_state": {
+                "checkpoint_resume_state": {
                     "kind": "stored",
                     "pointer": artifact_pointer(
-                        "inputs/models/toy/continuation_state.pointer.yaml"
+                        "inputs/models/toy/resume_state.pointer.yaml"
                     ),
-                    "path": "inputs/models/toy/continuation_state.bin",
+                    "path": "inputs/models/toy/resume_state.bin",
                 },
             }
         )
@@ -1304,12 +1327,12 @@ class StoredInputSelectionTests(unittest.TestCase):
         )
         model_pointer = ArtifactPointer(
             run=run_reference,
-            artifact=StageArtifactRef(stage_id="train", artifact_name=MODEL_PARAMETERS),
+            artifact=StageArtifactRef(stage_id="train", artifact_name=PARAMETERS),
         )
         state_pointer = ArtifactPointer(
             run=run_reference,
             artifact=StageArtifactRef(
-                stage_id="train", artifact_name=CONTINUATION_STATE
+                stage_id="train", artifact_name=RESUME_STATE
             ),
         )
 
@@ -1317,8 +1340,8 @@ class StoredInputSelectionTests(unittest.TestCase):
             "train_resume",
             spec,
             {
-                "checkpoint_model_parameters": model_pointer,
-                "checkpoint_continuation_state": state_pointer,
+                "checkpoint_parameters": model_pointer,
+                "checkpoint_resume_state": state_pointer,
             },
         )
 
@@ -1334,8 +1357,8 @@ class StoredInputSelectionTests(unittest.TestCase):
                 "train_resume",
                 spec,
                 {
-                    "checkpoint_model_parameters": model_pointer,
-                    "checkpoint_continuation_state": state_pointer.model_copy(
+                    "checkpoint_parameters": model_pointer,
+                    "checkpoint_resume_state": state_pointer.model_copy(
                         update={"run": other_run}
                     ),
                 },
@@ -1343,7 +1366,10 @@ class StoredInputSelectionTests(unittest.TestCase):
 
 
 class FutureInputVerificationTests(unittest.TestCase):
+    """Verify same-run artifact selections from completed producer stages."""
+
     def test_future_input_selects_named_artifact_from_recorded_producer(self) -> None:
+        """Verify that future input selects named artifact from recorded producer."""
         build = build_spec()
         train = train_spec(future_prior=True)
         run, _ = run_spec([("build", build), ("train", train)])
@@ -1406,18 +1432,18 @@ class FutureInputVerificationTests(unittest.TestCase):
                 "prior": ResolvedFutureInputRef(producer=producer_stage),
             },
             artifacts={
-                MODEL_PARAMETERS: ResolvedSingleFileArtifact(
+                PARAMETERS: ResolvedSingleFileArtifact(
                     kind="file",
                     file=SnapshotFileRef(
-                        path=f"{RUN_ROOT}/artifacts/models/strand/model_parameters.safetensors",
+                        path=f"{RUN_ROOT}/artifacts/models/strand/parameters.safetensors",
                         sha256="1" * 64,
                         bytes=1,
                     ),
                 ),
-                CONTINUATION_STATE: ResolvedSingleFileArtifact(
+                RESUME_STATE: ResolvedSingleFileArtifact(
                     kind="file",
                     file=SnapshotFileRef(
-                        path=f"{RUN_ROOT}/artifacts/models/strand/continuation_state.pt",
+                        path=f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt",
                         sha256="2" * 64,
                         bytes=1,
                     ),

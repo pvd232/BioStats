@@ -1,0 +1,2 @@
+prune viper/archive
+exclude viper.egg-info/*
