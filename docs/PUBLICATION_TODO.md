@@ -1,139 +1,840 @@
-# VIPER provenance publication checklist
+# VIPER 0.1 release roadmap
 
-This checklist tracks the work required to publish a usable provenance library
-and runner. A checked item has implementation and automated validation in this
-repository.
+This file is the authoritative implementation checklist for VIPER 0.1. The
+[protocol](ProvenanceS1_v3.md) defines provenance semantics. The
+[application API](APPLICATION_API.md) defines the public application surface.
+Focused design documents created during this roadmap own their named runtime
+contracts.
 
-## Protocol foundation
+A checked item means the implementation, focused tests, public documentation,
+and installed-wheel behavior all agree. Every completed increment receives a
+task-scoped Git commit and a successful push.
 
-- [x] Define requested stage specs, resolved stage records, run attempts, and
-  terminal resolved runs.
-- [x] Verify referenced file identity, stage order, input lineage, artifact
-  completeness, runtime controls, and benchmark confirmation.
-- [x] Capture and restore model resume state for zero-worker and
-  multiprocess stateful data loaders.
-- [x] Provide versioned, JSON-shaped stage parameter bases that project models
-  can specialize without modifying this package.
-- [x] Store evaluation identity, metric IDs, and split inputs directly on
-  `EvaluateSpec`.
-- [x] Bind benchmarks to an explicit evaluation ID.
-- [x] Reserve `predictions` while allowing its declared artifact format and
-  loader to be project-defined.
-- [x] Bind each metric ID to its role, parameters, and exact
-  repository-relative implementation path.
-- [x] Resolve stage scripts, metric implementations, and artifact loaders from
-  exact repository-relative paths without prescribing a user source tree.
-- [x] Place repository maintenance utilities under `tools/`.
+## Contents
+
+1. [Release outcome](#release-outcome)
+2. [Completed foundation](#completed-foundation)
+3. [Phase 0: contract freeze](#phase-0-freeze-the-blocking-contracts)
+4. [Phase 1: public package surface](#phase-1-repair-ci-and-define-the-public-package-surface)
+5. [Phase 2: application errors and JSON](#phase-2-freeze-application-errors-and-json-encoding)
+6. [Phase 3: application API and CLI](#phase-3-implement-the-application-api-and-cli)
+7. [Phase 4: workspace, storage, and publication](#phase-4-implement-workspace-storage-and-publication-primitives)
+8. [Phase 5: project extensions](#phase-5-implement-project-extension-interfaces)
+9. [Phase 6: OCI isolation](#phase-6-implement-the-oci-isolation-worker)
+10. [Phase 7: preflight and input materialization](#phase-7-implement-preflight-and-verified-input-materialization)
+11. [Phase 8: runtime bootstrap](#phase-8-implement-the-runtime-bootstrap-and-controls)
+12. [Phase 9: durable orchestration](#phase-9-implement-durable-run-orchestration)
+13. [Phase 10: benchmark execution](#phase-10-implement-benchmark-execution-and-recomputation)
+14. [Phase 11: agent operations](#phase-11-add-agent-inspection-and-controlled-mutation)
+15. [Phase 12: internal modules](#phase-12-split-internals-at-established-dependency-boundaries)
+16. [Phase 13: documentation and release](#phase-13-complete-documentation-and-release-validation)
+17. [Current execution charter](#current-execution-charter)
+
+## Release outcome
+
+VIPER 0.1 is ready when a user can freeze a run plan, execute it on a
+pre-provisioned GCE host, publish its immutable results, verify its complete
+lineage, execute a benchmark confirmation, and inspect the result through the
+Python API or JSON CLI.
+
+The release path is:
+
+```text
+contract freeze
+-> public package surface
+-> application API and CLI
+-> storage and workspace primitives
+-> project extension interfaces
+-> OCI isolation worker
+-> preflight and input materialization
+-> runtime bootstrap
+-> durable run orchestration
+-> benchmark execution
+-> agent inspection
+-> release validation
+```
+
+## Completed foundation
+
+- [x] Define authored stage specs, resolved stage specs, run attempts, terminal
+  resolved runs, artifact pointers, evaluations, and benchmark results.
+- [x] Verify file identity, stage order, input lineage, artifact declarations,
+  runtime controls, attempt files, promoted artifacts, and benchmark
+  confirmation.
+- [x] Capture and restore `ResumeState` for zero-worker and multiprocess
+  `StatefulDataLoader` execution.
+- [x] Provide extensible JSON-shaped stage parameter bases.
+- [x] Define training, validation, evaluation, and benchmark data roles.
+- [x] Enforce training-stage data-use rules during plan verification.
+- [x] Store evaluation identity, metric IDs, and split inputs on `EvaluateSpec`.
+- [x] Bind each benchmark to one evaluation while allowing the same benchmark
+  to govern many candidate run plans.
+- [x] Reserve `predictions` as the evaluation artifact name while leaving its
+  file or bundle representation to its declared loader.
+- [x] Reserve `parameters` and `resume_state` as the two training-checkpoint
+  artifacts.
+- [x] Freeze run plans into canonical stage and run documents.
+- [x] Execute one stage entrypoint and identify every produced artifact file.
+- [x] Provide duplicate-key-safe YAML parsing and canonical document encoding.
+- [x] Package runtime code under `viper` and repository utilities under
+  `tools/`.
+- [x] Resolve project scripts, metric implementations, parameter models, and
+  artifact loaders through repository-relative paths.
 - [x] Use `spec.yaml` and `resolved.yaml` inside run and stage identity
   directories.
-- [x] Define data-use roles and the permitted flows among training, validation,
-  evaluation, and benchmark inputs. Enforce those rules while validating a run
-  plan and before materializing stage inputs.
+- [x] Document active modules, classes, functions, methods, and tests and
+  enforce that coverage through Ruff.
+- [x] Add focused protocol, verifier, resume, metric, loader, authoring, CLI,
+  and single-stage execution tests.
 
-## Package and test quality
+## Phase 0. Freeze the blocking contracts
 
-- [x] Keep the installable `viper` package limited to runtime Python modules;
-  place active documents, historical material, and examples at repository level.
-- [x] Consolidate canonical record encoding and duplicate-key-safe YAML parsing
-  in `serialization.py`.
-- [x] Name single-stage process invocation explicitly as `stage_execution.py`.
-- [x] Remove test-to-test imports and centralize shared fixtures.
-- [x] Document every active module, class, function, method, and test.
-- [x] Enforce code documentation with Ruff pydocstyle rules.
-- [x] Test each metric implementation and artifact loader.
-- [x] Add one execution acceptance test that invokes a real stage entrypoint and
-  verifies the files it publishes.
-- [x] Remove tracked generated package metadata.
+Every later phase consumes these contracts. Finish Phase 0 before adding
+application or runner modules.
 
-## Application foundation
+### 0.1 Artifact guarantees
 
-Complete this interface before implementing the run-level loop. It prevents the
-CLI, Python callers, and agent integrations from acquiring separate behavior.
-The required interface is defined in the [application API](APPLICATION_API.md).
+VIPER 0.1 uses three explicit guarantee levels:
 
-- [ ] Define machine-readable result and error models. Each error must
-  identify the failed operation, stable error code, affected protocol document
-  or path, and concrete cause.
-- [ ] Add a small Python application API whose functions accept validated
-  request models, return validated result models, and raise typed expected
+```text
+verified file set
+-> exact representation identity
+
+verified file set + successful loader return
+-> loadability
+
+verified file set + core artifact validator
+-> semantic validity for the reserved artifact type
+```
+
+- [ ] Update [the protocol](ProvenanceS1_v3.md) to state that a generic artifact
+  loader proves loadability from the exact verified file set.
+- [ ] Reserve core semantic validation for protocol-owned artifact values such
+  as `resume_state`.
+- [ ] Define bundle completeness as enumeration of every regular file beneath
+  the declared artifact root at publication time.
+- [ ] Define bundle minimality as an authoring and review requirement tied to
+  actual consumer needs.
+- [ ] Update verifier errors and documentation to use `loadability` and
+  `semantic validity` at their exact scopes.
+- [ ] Add `test_generic_loader_establishes_loadability` to
+  [verifier tests](../tests/test_verifier.py).
+- [ ] Add `test_resume_state_receives_core_semantic_validation` to
+  [verifier tests](../tests/test_verifier.py).
+
+### 0.2 Metric semantics
+
+- [ ] Freeze `MetricKind` as `training`, `evaluation`, or `diagnostic`.
+- [ ] Freeze `MetricProduction` as `during_stage` or `after_stage`.
+- [ ] Freeze `MetricVerification` as `execution` or `recompute`.
+- [ ] Define `execution` as provenance for the producing stage invocation and
+  immutable measurement bytes.
+- [ ] Define `recompute` as a fresh invocation from the frozen implementation,
+  declared dependencies, frozen parameters, and effective runtime contract.
+- [ ] Require every recomputed floating-point metric to declare an exact,
+  absolute-tolerance, or relative-tolerance comparator.
+- [ ] Require benchmark criteria to use `kind=evaluation`,
+  `production=after_stage`, and `verification=recompute`.
+- [ ] Define metric dependency bindings by exact input or artifact name and
+  data role.
+- [ ] Define the immutable recomputation evidence stored with a benchmark
+  result.
+
+### 0.3 Execution and isolation
+
+The release backend is an OCI container worker running on a pre-provisioned GCE
+host. A `trusted_local` backend supports development and reports host-level
+filesystem and network scope in its execution capabilities.
+
+- [ ] Create `docs/EXECUTION_SECURITY.md` with the threat model, supported GCE
+  host assumptions, privilege model, process tree, mounts, credentials, network
+  policy, timeout behavior, signal behavior, and capability matrix.
+- [ ] Replace loader-only trust with one `ExecutionPolicy` covering stage
+  entrypoints, loaders, metrics, and parameter validators.
+- [ ] Give internal-stage containers read-only source and input mounts, declared
+  writable output mounts, and disabled network access.
+- [ ] Route download-stage traffic through a runner-owned proxy that permits the
+  scheme, host, and port declared by `RemoteFileRef`.
+- [ ] Define GPU passthrough and runtime evidence for the supported GCE profile.
+- [ ] Define preflight behavior for every unavailable required capability.
+- [ ] Name one adversarial test for path escape, symlink escape, undeclared
+  writes, undeclared reads, network egress, credential access, timeout, and
+  signal propagation.
+
+### 0.4 Durable attempt lifecycle
+
+VIPER 0.1 assigns one active coordinator to each run. The coordinator owns an
+exclusive workspace lock while an attempt is active.
+
+The durable states are:
+
+```text
+allocated
+-> preflighting
+-> running_stage
+-> publishing_stage
+-> closing_attempt
+-> publishing_attempt_files
+-> publishing_terminal_run
+-> terminal
+```
+
+- [ ] Create `docs/ATTEMPT_LIFECYCLE.md` with the allowed transition table.
+- [ ] Define the durable journal entry written before and after every external
+  side effect.
+- [ ] Derive idempotency keys from run ID, attempt ID, operation, target, and
+  content digest.
+- [ ] Make the local journal authoritative for an active attempt.
+- [ ] Make each verified immutable snapshot authoritative for its published
+  content.
+- [ ] Make the published `ResolvedRun` authoritative for terminal run history.
+- [ ] Allocate attempt IDs under the exclusive run lock.
+- [ ] Define recovery after process death at every transition.
+- [ ] Permit recovery to adopt a remote snapshot after verifying its
+  idempotency key and complete file set.
+- [ ] Preserve a local terminal document after terminal publication failure.
+- [ ] Add `resume-publication` as the recovery operation for that document.
+- [ ] Record `preempted` and let explicit retry policy allocate the next
+  attempt.
+- [ ] Define cancellation request, worker acknowledgement, grace period, and
+  terminal outcome.
+
+### 0.5 Runtime information flow
+
+- [ ] Define the permitted data roles for every stage kind in one versioned
+  policy.
+- [ ] Give each worker access to the declared inputs permitted for that stage.
+- [ ] Keep evaluation and benchmark inputs outside training-stage mounts and
+  contexts.
+- [ ] Bind every metric dependency to an exact input or artifact and data role.
+- [ ] Return a stable preflight failure for every prohibited dependency.
+- [ ] Add one plan-level test and one worker-context test for each prohibited
+  information flow.
+
+### 0.6 Contract-freeze gate
+
+- [ ] The protocol, application API, execution-security design, and attempt
+  lifecycle use one vocabulary.
+- [ ] Every proposed field has one producing actor and one consuming actor.
+- [ ] Every verification claim names the values compared and the code that
+  compares them.
+- [ ] Every downstream roadmap item links to its governing contract.
+- [ ] The contract commit passes Ruff, Pyright, protocol tests, and verifier
+  tests.
+
+**Executable gate**
+
+```text
+python -m pytest tests/test_protocol.py tests/test_verifier.py tests/test_execution_policy.py tests/test_attempt_lifecycle.py -q
+```
+
+**Commit boundaries**
+
+1. `Freeze artifact and metric contracts`
+2. `Freeze execution, information-flow, and attempt contracts`
+
+## Phase 1. Repair CI and define the public package surface
+
+### 1.1 Public import inventory
+
+- [ ] List every supported public module and name in `docs/PUBLIC_API.md`.
+- [ ] Add explicit `__all__` declarations to each supported public module.
+- [ ] Keep root `viper` exports limited to supported modules and convenience
+  names.
+- [ ] Add installed-wheel import tests for every listed public name.
+- [ ] Add application and runner exports in the commits that create those
+  modules.
+
+### 1.2 Serialization terminology
+
+`serialize_record()` appears in the current README and therefore receives a
+compatibility path.
+
+- [ ] Add `serialize_document()` as the canonical public name.
+- [ ] Retain `serialize_record()` as a deprecated alias through the 0.1 release.
+- [ ] Emit one documented deprecation warning from the alias.
+- [ ] Test identical bytes from both names.
+- [ ] Schedule alias removal through the version policy.
+
+### 1.3 Continuous integration
+
+- [ ] Replace the stale `viper.records` wheel import in
+  [CI](../.github/workflows/ci.yml) with a supported public import.
+- [ ] Run the CI matrix for every Python version advertised by
+  [package metadata](../pyproject.toml).
+- [ ] Keep Ruff, Pyright, pytest, build, metadata, and installed-wheel checks in
+  every matrix entry where the dependency set supports them.
+- [ ] Require successful remote CI for the exact release commit.
+
+**Executable gate**
+
+```text
+python -m pytest tests/test_public_api.py tests/test_cli.py -q
+python -m build
+python -m twine check dist/*
+```
+
+**Commit boundaries**
+
+1. `Define supported VIPER imports`
+2. `Rename document serialization with compatibility`
+3. `Repair the supported Python CI matrix`
+
+## Phase 2. Freeze application errors and JSON encoding
+
+### 2.1 Call boundaries
+
+- [ ] Typed Python functions accept validated Pydantic request objects.
+- [ ] Pydantic raises request-construction errors to typed Python callers.
+- [ ] A raw `dispatch(operation, payload)` entrypoint validates mappings for CLI
+  and agent callers.
+- [ ] Application operations raise `ViperError` for expected operational
   failures.
-- [ ] Route every CLI command through the application API and add JSON output
-  without removing concise human output.
-- [ ] Add schema discovery for every authored and resolved record accepted by
-  the installed package.
-- [ ] Add capability discovery that reports the installed protocol version,
-  supported stage kinds, commands, environment types, and storage types.
+- [ ] Python callers receive unexpected implementation exceptions with their
+  original types.
+- [ ] The CLI converts parser, request, expected operation, and unexpected
+  failures into their corresponding result types.
 
-## Runner
+### 2.2 Failure model
 
-### Implemented operations
+- [ ] Define `FailureOrigin` as `request`, `application`, `cli`, or `internal`.
+- [ ] Keep `OperationName` limited to callable application operations.
+- [ ] Permit `operation=None` for syntax failures that occur before subcommand
+  resolution.
+- [ ] Define stable error codes for parsing, validation, retrieval, conflict,
+  execution, verification, publication, cancellation, and internal faults.
+- [ ] Define a cause-redaction policy that emits approved messages and fields.
+- [ ] Keep credentials, local secret-bearing paths, raw subprocess output, and
+  unapproved URLs outside serialized failures.
 
-- [x] Implement plan authoring for experiment, variant, run, and stage files.
-- [x] Invoke one stage entrypoint with the exact stage spec selected by its
-  `RunStageRef`.
-- [x] Add the installed `viper` command for authoring, stage execution, and
-  verification.
-- [x] Run artifact loaders only for explicitly trusted source repositories.
+### 2.3 Deterministic JSON
 
-### Remaining implementation order
+- [ ] Encode UTF-8 with one trailing newline.
+- [ ] Emit fields in model-definition order.
+- [ ] Encode paths with POSIX separators.
+- [ ] Encode datetimes as UTC RFC 3339 values.
+- [ ] Encode bytes with URL-safe Base64.
+- [ ] Encode sets as sorted arrays.
+- [ ] Preserve mapping order only where the schema assigns semantic order.
+- [ ] Add golden JSON fixtures for every success and failure family.
 
-Implement the remaining runner work in the following order. Each unfinished
-step depends on the completed steps above it.
+**Executable gate**
 
-- [ ] Define the runner interfaces that retrieve immutable files, materialize
-  stage inputs, and publish immutable files. Define the attempt workspace and
-  every path the runner may write.
-- [ ] Preflight the complete `RunSpec`: retrieve and verify every authored
-  record needed before execution, resolve each stage environment, check input
-  availability, and validate every planned output path.
-- [ ] Materialize `StoredInputRef` and `FutureInputRef` values from verified
-  artifacts at the paths declared by the consuming stage.
-- [ ] Apply `RunSpec.reproducibility` to every stage process and select the
-  shared `RunSpec.environment` or the stage's declared environment override.
-- [ ] Invoke the existing single-stage operation for every stage in
-  `RunSpec.stages`, in order.
-- [ ] Construct the concrete `ResolvedSpec` from the authored stage spec,
-  verified inputs, realized environment, execution context, command, output
-  files, and completion time.
-- [ ] Publish one stage-result snapshot containing the `ResolvedSpec` and every
-  file belonging to each declared artifact. Record the resulting
-  `ResolvedStageRef` in the active `RunAttempt`.
-- [ ] Invoke each declared metric implementation with its typed context and
-  write its `Measurement` records.
-- [ ] Close the attempt, then publish its measurement files, standard-output
-  log, and standard-error log. Record their exact references in `RunAttempt`.
-- [ ] Write the terminal run `resolved.yaml`, retain every attempt, and set
-  `successful_attempt_id` only when one attempt completed successfully.
-- [ ] Add an acceptance test that executes a complete multi-stage run, verifies
-  the terminal `resolved.yaml`, and rejects a tampered stage artifact.
+```text
+python -m pytest tests/test_application_errors.py tests/test_application_json.py -q
+```
 
-## Agent operations
+**Commit:** `Define application failures and JSON encoding`
 
-- [ ] Add `preflight`, `status`, `plan diff`, `lineage`, and `compare runs`
-  operations with validated JSON results.
-- [ ] Add an optional agent-protocol adapter only after the Python API and JSON
-  CLI expose the complete runner and verifier operations.
+## Phase 3. Implement the application API and CLI
 
-## Internal modularization
+### 3.1 Application operations
 
-- [ ] Preserve `viper.protocol` and `viper.verifier` as public import paths.
-- [ ] After the complete runner acceptance test passes, divide `protocol.py`
-  into internal modules for shared types, plans, stages, artifacts, runs,
-  measurements, and benchmarks. Re-export the supported names from
-  `viper.protocol`.
-- [ ] Divide verifier internals by the protocol objects they verify: files, plans,
-  stages, runs, promoted artifacts, and benchmarks. Keep the existing public
-  verification functions available from `viper.verifier`.
+- [ ] Implement `validate_stage()` for one authored stage document.
+- [ ] Implement `validate_resolved_stage()` for one resolved stage document.
+- [ ] Implement `validate_run_spec()` for one `RunSpec` document.
+- [ ] Implement `freeze_run()` for canonical plan authoring.
+- [ ] Implement `execute_stage()` as the existing single-stage operation.
+- [ ] Implement `verify_run()`, `verify_benchmark()`, and `verify_pointer()`.
+- [ ] Implement `get_schema()` through an explicit name-to-model registry.
+- [ ] Implement `get_capabilities()` through an explicit capability registry.
+- [ ] Return one validated success model from every operation.
+- [ ] Document each operation beside its implementation.
 
-## Distribution
+### 3.2 CLI parser and rendering
 
-- [ ] Add the owner-approved license and author metadata.
-- [x] Add version policy and release notes.
-- [x] Build the source distribution and wheel.
-- [x] Run metadata checks on both distributions.
-- [x] Install the wheel into an isolated target and run an import smoke test
-  against the declared dependencies in the `mantra` environment.
-- [x] Add continuous integration for Ruff, Pyright, pytest, build, and installed
-  wheel validation.
-- [ ] Publish to TestPyPI with an owner-provided token and verify installation.
+- [ ] Make `--json` a global option accepted before the subcommand.
+- [ ] Override parser exit behavior and convert syntax failures into
+  `CliFailure`.
+- [ ] Emit usage text in human mode.
+- [ ] Emit one JSON document in JSON mode.
+- [ ] Route warnings into the result model in JSON mode.
+- [ ] Limit CLI responsibilities to parsing, request construction, dispatch,
+  rendering, and exit-code selection.
+- [ ] Capture standard output, standard error, and exit status for every command
+  in [CLI tests](../tests/test_cli.py).
+
+**Executable gate**
+
+```text
+python -m pytest tests/test_application.py tests/test_cli.py -q
+```
+
+**Commit boundaries**
+
+1. `Implement the VIPER application API`
+2. `Route the VIPER CLI through the application API`
+
+## Phase 4. Implement workspace, storage, and publication primitives
+
+### 4.1 Frozen plan reference
+
+- [ ] Make `RunRequest` identify the frozen plan through a Git repository,
+  commit, and `RunSpec` path.
+- [ ] Retrieve the `RunSpec` and every `RunStageRef` from that immutable plan
+  snapshot.
+- [ ] Verify the relationship between the plan snapshot and
+  `RunSpec.source`.
+- [ ] Keep local draft paths inside the authoring operation.
+
+### 4.2 Attempt workspace
+
+- [ ] Define the workspace root, control directory, source mount, verified input
+  cache, stage directories, artifact roots, measurement files, logs, and local
+  terminal document.
+- [ ] Resolve every path beneath the workspace root.
+- [ ] Reject path escape, symlink escape, and overlapping roots.
+- [ ] Write control files atomically.
+- [ ] Acquire one exclusive run lock before attempt allocation.
+- [ ] Preserve recovery inputs until terminal publication succeeds.
+
+### 4.3 Retrieval
+
+- [ ] Define a byte-retrieval protocol for Git and Hugging Face references.
+- [ ] Verify every retrieved SHA-256 and byte count.
+- [ ] Store verified content in a content-addressed local cache.
+- [ ] Reuse verified cached bytes during materialization.
+- [ ] Add in-memory, Git, and Hugging Face retrieval tests.
+
+### 4.4 Publication
+
+Each publication request contains repository, repository type, expected parent
+revision, canonical path set, content digests, and idempotency key.
+
+- [ ] Publish stage snapshots, attempt files, terminal runs, and benchmark
+  results through one interface.
+- [ ] Record the idempotency key in the remote commit metadata.
+- [ ] Adopt an existing commit carrying the same key after verifying its
+  complete file set.
+- [ ] Reject an existing key paired with different content.
+- [ ] Define publication idempotence as one logical result reference for one
+  idempotency key and content set.
+- [ ] Verify every returned immutable reference after publication.
+- [ ] Add in-memory and Hugging Face publication tests for first write, replay,
+  conflict, crash adoption, and parent-revision movement.
+
+### 4.5 Durable journal
+
+- [ ] Append state transitions and external-effect intents before execution.
+- [ ] Append verified results after each effect.
+- [ ] Flush and synchronize each journal entry.
+- [ ] Reconstruct the active attempt solely from the journal and verified remote
+  references.
+- [ ] Add crash-recovery tests at every external-effect boundary.
+
+### 4.6 Worker interface and development backend
+
+- [ ] Define one worker request containing the frozen source, effective
+  environment, execution policy, mounts, context path, command, timeout, and
+  cancellation channel.
+- [ ] Define one worker result containing runtime evidence, output identities,
+  exit status, signal, timestamps, and captured logs.
+- [ ] Implement `trusted_local` for development execution through the worker
+  interface.
+- [ ] Report its host filesystem and network scope through capability
+  discovery.
+- [ ] Add lifecycle, timeout, cancellation, context, and output-discovery tests.
+
+**Executable gate**
+
+```text
+python -m pytest tests/test_workspace.py tests/test_storage.py tests/test_publication.py tests/test_journal.py tests/test_worker.py -q
+```
+
+**Commit boundaries**
+
+1. `Define immutable run requests and workspaces`
+2. `Implement verified retrieval and caching`
+3. `Implement idempotent result publication`
+4. `Implement durable attempt journaling`
+5. `Define workers and trusted local execution`
+
+## Phase 5. Implement project extension interfaces
+
+Each increment lands with its protocol fields, public interface, worker
+behavior, focused tests, guide, and executable example.
+
+Project code may use any repository layout. Every frozen implementation is
+identified by a repository-relative Python path and top-level symbol. The
+decorator, subclass, and parameter-model interfaces add authoring metadata to
+ordinary project code.
+
+### 5.1 Stage entrypoints
+
+- [ ] Set `VIPER_CONTEXT_PATH` to the versioned context JSON file.
+- [ ] Set the worker current directory to the attempt workspace.
+- [ ] Add the frozen source root to `sys.path`.
+- [ ] Select the interpreter from the effective environment.
+- [ ] Map each input name to one mounted path in the context.
+- [ ] Map each artifact name to one writable path in the context.
+- [ ] Define exit status, timeout, termination signal, and cancellation result.
+- [ ] Add a minimal project entrypoint example and worker test.
+
+### 5.2 Artifact loaders
+
+- [ ] Load the selected module and top-level `load(path)` symbol from the frozen
+  source snapshot.
+- [ ] Verify source repository, commit, path, SHA-256, and byte count before
+  invocation.
+- [ ] Invoke the loader through the worker interface.
+- [ ] Supply one materialized file path or bundle root.
+- [ ] Validate reserved artifact values through their core validators.
+- [ ] Return a typed loadability result for generic artifacts.
+- [ ] Add tests for trust, tampering, import failure, callable failure, and
+  reserved-value validation.
+
+### 5.3 Metrics
+
+- [ ] Implement `MetricImplementationRef` with path, symbol, SHA-256, and byte
+  count.
+- [ ] Implement the stateless metric decorator.
+- [ ] Implement `StatefulMetric` for values accumulated across updates.
+- [ ] Resolve imports from the frozen source snapshot and effective
+  environment.
+- [ ] Build typed contexts from the metric's declared dependency bindings.
+- [ ] Provide the runner-owned sink path through the execution context.
+- [ ] Write one sequence-numbered JSON Lines measurement per append.
+- [ ] Flush and synchronize each accepted append before acknowledging it.
+- [ ] Close and validate the complete stream before publication.
+- [ ] Recompute post-stage metrics through the worker interface.
+- [ ] Apply the metric's declared comparator.
+- [ ] Add stateless, stateful, diagnostic, recomputation, comparator, crash,
+  ordering, and tampering tests.
+
+### 5.4 Parameter validation
+
+- [ ] Keep the universal stage parameter classes fieldless and extensible.
+- [ ] Let projects bind a concrete Pydantic parameter model to a stage kind.
+- [ ] Resolve parameter classes from the frozen source snapshot.
+- [ ] Execute project validators through the worker interface.
+- [ ] Record validator implementation identity in the frozen plan.
+- [ ] Validate stage parameters during authoring and preflight.
+- [ ] Add trust, import, validation, and tampering tests.
+
+**Executable gate**
+
+```text
+python -m pytest tests/test_entrypoints.py tests/test_artifact_loaders.py tests/test_metrics.py tests/test_parameter_models.py -q
+```
+
+**Commit boundaries**
+
+1. `Define project stage entrypoints`
+2. `Define loadable artifact implementations`
+3. `Implement frozen project metrics`
+4. `Implement project parameter validation`
+
+## Phase 6. Implement the OCI isolation worker
+
+- [ ] Detect the OCI runtime and required GCE host capabilities.
+- [ ] Build the worker image from the frozen environment lock.
+- [ ] Mount source and inputs read-only.
+- [ ] Mount declared outputs and control files at explicit writable paths.
+- [ ] Apply user, group, process, memory, CPU, GPU, and timeout limits.
+- [ ] Disable network access for internal stages, loaders, metrics, and
+  parameter validators.
+- [ ] Route download traffic through the allow-list proxy.
+- [ ] Supply operation-specific credentials through ephemeral mounted secrets.
+- [ ] Capture command, image digest, mount map, capabilities, environment, exit
+  status, signal, and timestamps.
+- [ ] Implement graceful cancellation followed by enforced termination after
+  the declared grace period.
+- [ ] Run the adversarial matrix from `docs/EXECUTION_SECURITY.md`.
+
+**Executable gate**
+
+```text
+python -m pytest tests/test_isolation_worker.py -q
+```
+
+A live GCE isolation smoke test also passes before release.
+
+**Commit:** `Implement the GCE OCI execution worker`
+
+## Phase 7. Implement preflight and verified input materialization
+
+### 7.1 Preflight result
+
+- [ ] Define stable `PreflightCheckCode` values.
+- [ ] Return one `PreflightReport` containing every check result, target,
+  severity, and evidence reference.
+- [ ] Use `pass`, `warning`, and `failure` statuses.
+- [ ] Define `ready` as the absence of failure results.
+- [ ] Reserve application failures for conditions that prevent preflight from
+  completing its report.
+
+### 7.2 Complete checks
+
+- [ ] Retrieve and verify the plan, stage specs, experiment, variant, benchmark,
+  source implementations, environment lock, stored pointers, and stored
+  artifacts.
+- [ ] Reuse the verified content-addressed cache during execution.
+- [ ] Validate stage order, unique identities, future-input producers, data
+  roles, output paths, environment selection, runtime controls, metric
+  dependencies, loader bindings, parameter bindings, and isolation
+  capabilities.
+- [ ] Inspect static source properties directly.
+- [ ] Execute project validators through isolated workers.
+- [ ] Give every check one fixture mutation and expected result in
+  `tests/test_preflight.py`.
+
+### 7.3 Materialization
+
+- [ ] Materialize stored inputs at `StoredInputRef.path`.
+- [ ] Materialize future artifacts at their canonical producer paths inside the
+  consumer workspace.
+- [ ] Include the input-name-to-path mapping in the execution context.
+- [ ] Verify each materialized file after writing it.
+- [ ] Preserve read-only permissions on source and inputs.
+- [ ] Enumerate bundle members from the complete resolved member list.
+
+**Executable gate**
+
+```text
+python -m pytest tests/test_preflight.py tests/test_materialization.py -q
+```
+
+**Commit boundaries**
+
+1. `Implement complete-plan preflight`
+2. `Materialize verified stage inputs`
+
+## Phase 8. Implement the runtime bootstrap and controls
+
+```text
+runner
+-> launch VIPER bootstrap
+-> apply process controls
+-> initialize supported generator services
+-> load frozen project entrypoint
+-> pass typed context
+-> execute stage
+```
+
+- [ ] Apply environment variables and process-level numerical controls before
+  importing project code.
+- [ ] Initialize Python, NumPy, PyTorch CPU, PyTorch CUDA, and loader generators
+  from the global run seed.
+- [ ] Expose generator services through the public VIPER runtime context.
+- [ ] Require stateful training loaders to use
+  `torchdata.stateful_dataloader.StatefulDataLoader` for resumable execution.
+- [ ] Record the realized GCE machine type, machine image, GPU model, GPU count,
+  driver, CUDA runtime, Python interpreter, package lock digest, parallelism,
+  and numerical controls.
+- [ ] Compare the realized evidence with the effective stage environment and
+  run-wide reproducibility controls.
+- [ ] Capture one checkpoint at the terminal boundary of each training stage.
+- [ ] State checkpoint continuation as inter-stage continuation.
+- [ ] Add deterministic initialization, next-batch restoration, terminal
+  checkpoint, environment mismatch, and GCE evidence tests.
+
+**Executable gate**
+
+```text
+python -m pytest tests/test_runtime_bootstrap.py tests/test_resume.py -q
+```
+
+**Commit:** `Apply runtime controls through the VIPER bootstrap`
+
+## Phase 9. Implement durable run orchestration
+
+### 9.1 Attempt execution
+
+- [ ] Acquire the run lock and allocate the next attempt ID.
+- [ ] Create and synchronize the initial journal entry.
+- [ ] Run complete preflight and store its report.
+- [ ] Execute each stage selected by `RunSpec.stages` in order.
+- [ ] Publish and verify each stage snapshot before recording its
+  `ResolvedStageRef`.
+- [ ] Invoke during-stage and post-stage metrics at their declared production
+  points.
+- [ ] Close measurements and logs before attempt-file publication.
+- [ ] Construct the final `RunAttempt` with `succeeded`, `failed`, `preempted`,
+  or `cancelled` status.
+- [ ] Publish attempt files and verify their references.
+- [ ] Construct and publish terminal `resolved.yaml`.
+- [ ] Set `successful_attempt_id` exactly when one attempt succeeds.
+
+### 9.2 Recovery
+
+- [ ] Resume from every durable state using the journal.
+- [ ] Adopt verified stage and attempt-file snapshots created before a crash.
+- [ ] Resume terminal publication from the preserved local document.
+- [ ] Reconcile orphaned snapshots by idempotency key.
+- [ ] Require an explicit retry policy after failed, preempted, or cancelled
+  attempts.
+- [ ] Preserve each previous attempt in the next terminal run.
+
+### 9.3 Logs
+
+- [ ] Write one standard-output file and one standard-error file per stage
+  invocation.
+- [ ] Include attempt ID and stage ID in each canonical log path.
+- [ ] Preserve logs from interrupted stages.
+- [ ] Publish every closed log in the attempt-file snapshot.
+
+### 9.4 Acceptance
+
+- [ ] Add one complete two-stage run using a stored input and a future input.
+- [ ] Produce one metric, stage snapshots, attempt files, and terminal
+  `resolved.yaml`.
+- [ ] Verify the terminal run through the public application operation.
+- [ ] Reject tampered input, artifact, metric, log, and resolved-spec bytes.
+- [ ] Add crash recovery after each publication boundary.
+- [ ] Add preemption, cancellation, retry, and resume-publication tests.
+
+**Executable gate**
+
+```text
+python -m pytest tests/test_runner.py tests/test_run_acceptance.py -q
+```
+
+**Commit boundaries**
+
+1. `Execute frozen multi-stage runs`
+2. `Publish terminal run provenance`
+3. `Recover interrupted VIPER attempts`
+
+## Phase 10. Implement benchmark execution and recomputation
+
+- [ ] Implement `execute_benchmark()` to run one independent confirmation from
+  the same frozen candidate plan.
+- [ ] Keep `verify_benchmark()` as verification of supplied immutable evidence.
+- [ ] Recompute each benchmark metric from its declared dependency list, typed
+  context, frozen implementation, parameters, and comparator.
+- [ ] Publish recomputed values and implementation identities in one immutable
+  benchmark evidence file.
+- [ ] Add the evidence reference to `BenchmarkResult`.
+- [ ] Define estimator parity and prediction parity as equality of the complete
+  resolved artifact descriptions: canonical paths, hashes, byte counts, and
+  bundle membership.
+- [ ] Apply benchmark thresholds after recomputation and parity checks.
+- [ ] Add pass, threshold failure, recomputation mismatch, estimator mismatch,
+  prediction mismatch, source mismatch, and reused-attempt tests.
+
+**Executable gate**
+
+```text
+python -m pytest tests/test_benchmark_execution.py tests/test_benchmark_verification.py -q
+```
+
+**Commit boundaries**
+
+1. `Execute independent benchmark confirmations`
+2. `Verify recomputed benchmark evidence`
+
+## Phase 11. Add agent inspection and controlled mutation
+
+### 11.1 Immutable inspection
+
+- [ ] Implement `plan_diff()` from two frozen plans.
+- [ ] Implement upstream `lineage()` from supplied immutable records.
+- [ ] Implement `compare_runs()` from two verified terminal runs.
+- [ ] Return validated JSON models with stable field names and ordering.
+
+### 11.2 Active coordination
+
+- [ ] Implement `status()` from a coordinator identity, workspace identity, and
+  access policy.
+- [ ] Derive the next permitted operation from the durable attempt state.
+- [ ] Build downstream lineage through an explicit published index.
+- [ ] Add dry-run result models that list exact reads and writes for `run`,
+  `retry`, `resume-publication`, and `promote`.
+- [ ] Require the caller to submit the matching dry-run identity with each
+  mutation.
+
+**Executable gate**
+
+```text
+python -m pytest tests/test_inspection.py tests/test_coordination.py -q
+```
+
+**Commit boundaries**
+
+1. `Add immutable VIPER inspection operations`
+2. `Add coordinator status and dry-run mutations`
+
+## Phase 12. Split internals at established dependency boundaries
+
+- [ ] Use the Phase 1 public import inventory as the compatibility contract.
+- [ ] Keep pure Pydantic protocol validation separate from retrieval, worker
+  execution, and remote verification.
+- [ ] Split `protocol.py` only where the frozen metric and runner contracts
+  produce stable module boundaries.
+- [ ] Split verifier internals into file, plan, stage, run, promoted-artifact,
+  and benchmark verification modules.
+- [ ] Re-export supported names through `viper.protocol` and `viper.verifier`.
+- [ ] Run installed-wheel import and complete verifier acceptance tests after
+  each split.
+- [ ] Defer any split whose boundary remains coupled after Phase 11.
+
+**Executable gate**
+
+```text
+python -m pytest tests/test_public_api.py tests/test_verifier_acceptance.py -q
+```
+
+**Commit boundaries**
+
+1. `Modularize VIPER protocol internals`
+2. `Modularize VIPER verifier internals`
+
+## Phase 13. Complete documentation and release validation
+
+Documentation lands with each public increment. Phase 13 performs the final
+cross-document pass.
+
+### 13.1 Documentation
+
+- [ ] Reconcile README, protocol, application API, public API, execution
+  security, attempt lifecycle, development guide, examples, and this roadmap.
+- [ ] Include one complete user-project example from authoring through verified
+  execution.
+- [ ] Include extension guides for entrypoints, loaders, metrics, and parameter
+  models.
+- [ ] Include agent guides for schema discovery, preflight, inspection, dry-run,
+  and mutation.
+- [ ] Classify `viper init` as release-blocking or post-0.1.
+- [ ] Run link, example, prose, and rendered-document checks.
+
+### 13.2 Deterministic release checks
+
+- [ ] Run Ruff, Pyright, and the complete pytest suite.
+- [ ] Build the source distribution and wheel from a temporary checkout.
+- [ ] Run metadata checks on both distributions.
+- [ ] Install the wheel into a clean environment for every advertised Python
+  version.
+- [ ] Run public-import, CLI, schema, capability, and complete-run smoke tests
+  from each installed wheel.
+- [ ] Confirm successful remote CI for the exact release commit.
+
+### 13.3 Platform and publication checks
+
+- [ ] Run a complete live GCE execution through the OCI worker.
+- [ ] Verify the published run from a clean client environment.
+- [ ] Add owner-approved license and author metadata.
+- [ ] Publish to TestPyPI with owner-provided credentials.
+- [ ] Install and verify the TestPyPI distribution.
 - [ ] Publish the approved release to PyPI.
+- [ ] Install and verify the PyPI distribution.
+- [ ] Tag the verified release commit according to the version policy.
+
+### 13.4 Release report
+
+Publish one report with separate results for:
+
+- deterministic local validation;
+- installed-wheel validation;
+- remote CI matrix;
+- live GCE execution;
+- TestPyPI publication; and
+- PyPI publication.
+
+**Commit:** `Prepare VIPER 0.1 release candidate`
+
+## Current execution charter
+
+The active six-hour session is defined in the
+[August 22 execution charter](8-22-OVERNIGHT_PLAN.md). The charter selects the
+largest coherent prefix of this roadmap that fits the available time and ends
+with a complete validation and Git handoff.
