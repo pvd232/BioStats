@@ -182,7 +182,14 @@ contracts remain in the release roadmap.
 | Complete preflight reporting | `tests/test_preflight.py::test_preflight_reports_all_plan_failures` | Passed |
 | Two-stage publication and verification | `tests/test_runner_acceptance.py::test_two_stage_local_run_writes_and_verifies_terminal_result` | Passed |
 | Tampered artifact rejection | The tamper assertion in `test_two_stage_local_run_writes_and_verifies_terminal_result` | Passed |
-| Installed distribution | Isolated module imports, application exports, capability discovery, and command help in `.github/workflows/ci.yml` | Passed locally; remote matrix pending |
+| Installed distribution | Isolated module imports, application exports, capability discovery, and command help in `.github/workflows/ci.yml` | Passed locally and in remote CI on Python 3.11, 3.12, 3.13, and 3.14 |
 
 The audit added focused serialization compatibility coverage, enforced journal
 transitions, and isolated installed-wheel imports from the repository checkout.
+
+The final cross-platform pass found that the repository-wide `build/` ignore
+rule excluded the canonical build-stage examples from Git. The ignore rule now
+targets the root package-build directory, and the example documents are
+tracked. Pyright now receives the active Python interpreter explicitly, which
+removes the former machine-specific Conda paths. Remote CI passed all four
+advertised Python versions on commit `21fa542`.

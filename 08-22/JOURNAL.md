@@ -207,3 +207,18 @@ ac1cdff  Add attempt status and verified run comparison
 Implement project parameter-model binding. This gives user-defined stages a
 typed extension point while preserving the frozen implementation identity,
 preflight checks, and verifier guarantees.
+
+## Cross-platform closure
+
+The remote matrix exposed two build-stage example files that existed locally
+and were excluded from Git by the repository-wide `build/` ignore rule. The
+rule now applies only to the root package-build directory, and both canonical
+build-stage documents are tracked.
+
+The same pass removed absolute Mac Conda paths from `pyrightconfig.json`.
+Local development and CI now pass the active Python interpreter to Pyright.
+
+Commit `21fa542` passed the complete GitHub Actions matrix on Python 3.11,
+3.12, 3.13, and 3.14. Each job passed Ruff, Pyright, 119 tests, 13 subtests,
+distribution builds, metadata checks, isolated wheel imports, capability
+discovery, and CLI smoke checks.

@@ -103,7 +103,7 @@ freeze
 -> verify the terminal run
 ```
 
-The validated boundary includes 109 tests and 13 subtests, Ruff, Pyright,
+The validated boundary includes 119 tests and 13 subtests, Ruff, Pyright,
 source and wheel builds, metadata checks, and an installed-wheel capability
 smoke test. The release path still requires recovery semantics, hardened OCI
 execution, live GCE validation, benchmark execution, complete extension
@@ -282,7 +282,7 @@ compatibility path.
 
 - [x] Replace the stale `viper.records` wheel import in
   [CI](../.github/workflows/ci.yml) with a supported public import.
-- [ ] Run the CI matrix for every Python version advertised by
+- [x] Run the CI matrix for every Python version advertised by
   [package metadata](../pyproject.toml).
 - [x] Keep Ruff, Pyright, pytest, build, metadata, and installed-wheel checks in
   every matrix entry where the dependency set supports them.
