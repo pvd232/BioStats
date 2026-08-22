@@ -8,13 +8,10 @@
     "exclude": [
         "archive"
     ],
-    "venvPath": "/Users/machina/miniconda3/envs",
-    "venv": "mantra",
     "pythonVersion": "3.11",
     "typeCheckingMode": "standard",
     "extraPaths": [
         ".",
-        "examples/project/src",
-        "/Users/machina/miniconda3/envs/mantra/lib/python3.14/site-packages"
+        "examples/project/src"
     ]
 }

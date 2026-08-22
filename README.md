@@ -162,7 +162,7 @@ Conda environment described in the [development guide](docs/DEVELOPMENT.md):
 
 ```bash
 ruff check viper tests examples/project/src tools
-pyright
+pyright --pythonpath "$(command -v python)"
 python -m pytest -q
 ```
 

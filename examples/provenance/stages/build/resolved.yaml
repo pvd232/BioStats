@@ -1,0 +1,128 @@
+artifacts:
+  prior:
+    kind: bundle
+    members:
+      - file:
+          bytes: 9
+          path: experiments/model_eval/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAB/artifacts/priors/toy/adjacency.bin
+          sha256: 35e786aa7fb8aa695052d4825d1bc1638d5b09aeb1c912814bf5efac2cc3f244
+        relative_path: adjacency.bin
+      - file:
+          bytes: 12
+          path: experiments/model_eval/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAB/artifacts/priors/toy/metadata.json
+          sha256: 72f39b7d47fac6b95fbccde5a571d46e207102e59d544ce32b53eaa4cae60f7f
+        relative_path: metadata.json
+command:
+  - python
+  - features/build_prior.py
+  - experiments/model_eval/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAB/stages/build/spec.yaml
+completed_at: "2026-08-20T21:10:00Z"
+environment:
+  compute:
+    kind: cpu
+  kind: gce
+  lockfile:
+    bytes: 13
+    sha256: 3c2f134d506eaabc7f88a3e16c96d59f406471419ecda997602a042899cc13c8
+    stored_at:
+      commit: "4444444444444444444444444444444444444444"
+      kind: git
+      path: environment.yml
+      repository: https://github.com/example/mantra
+  machine_image:
+    id: "123456789"
+    name: mantra-image
+    project: mantra-project
+  machine_type: n2-standard-8
+execution_context:
+  backend:
+    device: cpu
+    kind: cpu
+  cpu:
+    architecture: x86_64
+    instruction_features: [avx2]
+    model: Intel Cascade Lake
+  determinism:
+    cublas_workspace_config: ":4096:8"
+    cudnn_benchmark: false
+    cudnn_deterministic: true
+    deterministic_algorithms: true
+    deterministic_warn_only: false
+  host:
+    guest_os_name: debian
+    guest_os_version: "12"
+    kernel_release: "6.1"
+    machine_type: n2-standard-8
+    provider: gce
+    zone: us-central1-a
+  numerical_runtime:
+    blas: {implementation: openblas, version: 0.3.30}
+    lapack: {implementation: openblas, version: 0.3.30}
+    native_thread_pools:
+      - {implementation: openblas, threads: 1, version: 0.3.30}
+    numpy_version: 2.3.0
+    python_version: 3.14.0
+    pytorch_version: 2.8.0
+  parallelism:
+    dataloader:
+      workers: 0
+      prefetch_factor: null
+      persistent_workers: false
+      in_order: true
+    process_count: 1
+    torch_interop_threads: 1
+    torch_intraop_threads: 1
+  precision:
+    autocast_dtype: null
+    autocast_enabled: false
+    cudnn_allow_tf32: false
+    float32_matmul_precision: highest
+  randomness:
+    dataloader_seed: 42
+    numpy_seed: 42
+    python_seed: 42
+    torch_seed: 42
+inputs:
+  dataset:
+    kind: stored
+    pointer:
+      bytes: 450
+      kind: artifact_pointer
+      sha256: 359f3f5136e4a27ad6f54b532ecf861100e3f95c28e24f10b2785299e9a32692
+      stored_at:
+        commit: "4444444444444444444444444444444444444444"
+        kind: git
+        path: inputs/datasets/toy/current.pointer.yaml
+        repository: https://github.com/example/mantra
+kind: build
+schema_version: 1
+source:
+  bytes: 8
+  sha256: e2824b547eab952da1f090d78a01e5354c309b1e0141c2a4c98ec49265492cef
+  stored_at:
+    commit: "4444444444444444444444444444444444444444"
+    kind: git
+    path: features/build_prior.py
+    repository: https://github.com/example/mantra
+spec:
+  artifacts:
+    prior:
+      data_role: training
+      kind: bundle
+      loader: project/loaders/prior_bundle.py
+      path: experiments/model_eval/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAB/artifacts/priors/toy
+  environment: null
+  inputs:
+    dataset:
+      data_role: training
+      kind: stored
+      path: inputs/datasets/toy/current.bin
+      pointer:
+        commit: "4444444444444444444444444444444444444444"
+        kind: git
+        path: inputs/datasets/toy/current.pointer.yaml
+        repository: https://github.com/example/mantra
+  kind: build
+  params: {}
+  schema_version: 1
+  script: features/build_prior.py

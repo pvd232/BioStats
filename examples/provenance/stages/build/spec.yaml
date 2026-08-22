@@ -1,0 +1,21 @@
+artifacts:
+  prior:
+    data_role: training
+    kind: bundle
+    loader: project/loaders/prior_bundle.py
+    path: experiments/model_eval/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAB/artifacts/priors/toy
+environment: null
+inputs:
+  dataset:
+    data_role: training
+    kind: stored
+    path: inputs/datasets/toy/current.bin
+    pointer:
+      commit: "4444444444444444444444444444444444444444"
+      kind: git
+      path: inputs/datasets/toy/current.pointer.yaml
+      repository: https://github.com/example/mantra
+kind: build
+params: {}
+schema_version: 1
+script: features/build_prior.py
