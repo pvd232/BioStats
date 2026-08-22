@@ -11,6 +11,7 @@ from viper.protocol import (
     RESUME_STATE,
     BuildParams,
     BuildSpec,
+    DownloadParams,
     DownloadSpec,
     FutureInputRef,
     RemoteFileRef,
@@ -151,6 +152,7 @@ def test_future_input_uses_canonical_producer_path(tmp_path: Path) -> None:
     """Resolve one consumer input to the materialized producer artifact."""
     producer = DownloadSpec(
         script="project/download.py",
+        parameter_model=parameter_model_ref("download"),
         inputs={
             "remote": RemoteFileRef.model_validate(
                 {
@@ -165,6 +167,7 @@ def test_future_input_uses_canonical_producer_path(tmp_path: Path) -> None:
                 "artifacts/datasets/main/data.bin"
             )
         },
+        params=DownloadParams(),
     )
     consumer = BuildSpec(
         script="project/build.py",

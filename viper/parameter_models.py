@@ -13,7 +13,7 @@ from typing import cast
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
-from .protocol import InternalSpec, ParameterModelRef, ParameterSet
+from .protocol import ParameterizedSpec, ParameterModelRef, ParameterSet
 from .serialization import load_stage_spec
 from .worker import ExecutionPolicy, WorkerRequest, execute_worker
 
@@ -92,7 +92,7 @@ def validate_parameters(
 def validate_stage_parameters(
     repository_root: Path,
     stage_spec_path: Path,
-    stage: InternalSpec,
+    stage: ParameterizedSpec,
     *,
     timeout_seconds: float | None = None,
 ) -> dict[str, JsonValue]:
@@ -147,8 +147,8 @@ def validate_loaded_stage_parameters(
 ) -> dict[str, JsonValue]:
     """Load one stage specification and validate its selected parameter class."""
     stage = load_stage_spec(stage_spec_path)
-    if not isinstance(stage, InternalSpec):
-        raise ParameterModelError("parameter validation requires an internal stage")
+    if not isinstance(stage, ParameterizedSpec):
+        raise ParameterModelError("parameter validation requires a parameterized stage")
     return validate_stage_parameters(
         repository_root,
         stage_spec_path,

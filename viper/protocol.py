@@ -1260,18 +1260,28 @@ class BaseSpec(ProtocolModel):
         return self
 
 
-class DownloadSpec(BaseSpec):
+class ParameterizedSpec(BaseSpec):
+    """Request an operation governed by one project-defined parameter model."""
+
+    parameter_model: ParameterModelRef
+
+
+class DownloadParams(ParameterSet):
+    """Parameters consumed by one project-defined download procedure."""
+
+
+class DownloadSpec(ParameterizedSpec):
     """Request retrieval of one remote input into declared artifacts."""
 
     kind: Literal["download"] = "download"  # pyright: ignore[reportIncompatibleVariableOverride]
     inputs: dict[InputName, RemoteFileRef] = Field(min_length=1, max_length=1)
+    params: DownloadParams
 
 
-class InternalSpec(BaseSpec):
+class InternalSpec(ParameterizedSpec):
     """Request a stage that consumes stored or prior-stage artifacts."""
 
     inputs: dict[InputName, InternalInputRef] = Field(min_length=1)
-    parameter_model: ParameterModelRef
 
     @model_validator(mode="after")
     def validate_local_path_collisions(self) -> InternalSpec:
@@ -1488,6 +1498,14 @@ class EvaluateSpec(InternalSpec):
         return self
 
 
+class DownloadVariantStageParams(ProtocolModel):
+    """Bind one download stage to its selected variant parameters."""
+
+    kind: Literal["download"] = "download"
+    stage_id: StageId
+    params: DownloadParams
+
+
 class BuildVariantStageParams(ProtocolModel):
     """Bind one build stage to its selected variant parameters."""
 
@@ -1521,7 +1539,8 @@ class EvaluateVariantStageParams(ProtocolModel):
 
 
 VariantStageParams = Annotated[
-    BuildVariantStageParams
+    DownloadVariantStageParams
+    | BuildVariantStageParams
     | EmbedVariantStageParams
     | TrainVariantStageParams
     | EvaluateVariantStageParams,

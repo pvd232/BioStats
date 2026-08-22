@@ -34,6 +34,7 @@ Available core bases:
 
 | Stage | Base class |
 | --- | --- |
+| Download | `DownloadParams` |
 | Build | `BuildParams` |
 | Embed | `EmbedParams` |
 | Train | `TrainParams` |
@@ -41,7 +42,7 @@ Available core bases:
 
 ## Bind the class
 
-Each internal stage spec includes a `parameter_model` reference.
+Every stage spec includes a `parameter_model` reference.
 
 ```yaml
 kind: train
@@ -73,10 +74,16 @@ exact class selected by the stage.
 | Verify | Source bytes match the frozen identity and define the selected top-level class |
 
 The worker imports project code inside a separate process. The trusted-local
-backend gives that process the same repository and environment access as the
-stage command. OCI isolation will apply the same parameter-model interface
-inside the release execution boundary.
+backend gives the parameter-validation worker the same repository and
+environment access as the stage command. OCI isolation will apply the same
+parameter-model interface inside the release execution boundary.
 
 Validation uses strict Pydantic types. The class output must equal the frozen
 JSON mapping exactly. Include every effective default in `params`; this keeps
 the plan and the values received by project code identical.
+
+This contract proves parameter identity and validity before the stage process
+starts. The current stage interface supplies the spec path to project code.
+Project code must still load that file itself. A typed stage-context API remains
+open implementation work; [HTTP Retrieval Contract](HTTP_RETRIEVAL_CONTRACT.md)
+defines the corresponding runner-owned boundary for download stages.

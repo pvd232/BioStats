@@ -1922,6 +1922,12 @@ files.
 ### Variant declaration
 
 ```python
+class DownloadVariantStageParams(ProtocolModel):
+    kind: Literal["download"] = "download"
+    stage_id: StageId
+    params: DownloadParams
+
+
 class BuildVariantStageParams(ProtocolModel):
     kind: Literal["build"] = "build"
     stage_id: StageId
@@ -1947,7 +1953,8 @@ class EvaluateVariantStageParams(ProtocolModel):
 
 
 VariantStageParams = Annotated[
-    BuildVariantStageParams
+    DownloadVariantStageParams
+    | BuildVariantStageParams
     | EmbedVariantStageParams
     | TrainVariantStageParams
     | EvaluateVariantStageParams,
@@ -2071,11 +2078,6 @@ train stages consume stored or same-run artifacts.
 ### Stage specifications
 
 ```python
-class DownloadSpec(BaseSpec):
-    kind: Literal["download"] = "download"
-    inputs: dict[InputName, RemoteFileRef] = Field(min_length=1, max_length=1)
-
-
 class ParameterSet(BaseModel):
     model_config = ConfigDict(extra="allow", frozen=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
@@ -2089,9 +2091,22 @@ class ParameterModelRef(ProtocolModel):
     bytes: int = Field(gt=0)
 
 
-class InternalSpec(BaseSpec):
-    inputs: dict[InputName, InternalInputRef] = Field(min_length=1)
+class ParameterizedSpec(BaseSpec):
     parameter_model: ParameterModelRef
+
+
+class DownloadParams(ParameterSet):
+    """Parameters consumed by one project-defined download procedure."""
+
+
+class DownloadSpec(ParameterizedSpec):
+    kind: Literal["download"] = "download"
+    inputs: dict[InputName, RemoteFileRef] = Field(min_length=1, max_length=1)
+    params: DownloadParams
+
+
+class InternalSpec(ParameterizedSpec):
+    inputs: dict[InputName, InternalInputRef] = Field(min_length=1)
 
 
 class BuildParams(ParameterSet):
@@ -2139,8 +2154,8 @@ Spec = Annotated[
 ]
 ```
 
-Each core parameter class preserves a versioned JSON mapping. Every internal
-stage selects a project-owned Pydantic subclass through `parameter_model`.
+Each core parameter class preserves a versioned JSON mapping. Every stage
+selects a project-owned Pydantic subclass through `parameter_model`.
 The subclass may declare fields, types, defaults, constraints, and
 cross-field validators for that stage implementation.
 

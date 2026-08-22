@@ -15,7 +15,7 @@ from .protocol import (
     BaseSpec,
     BundleArtifactSpec,
     ExecutionContext,
-    InternalSpec,
+    ParameterizedSpec,
     ResolvedArtifact,
     ResolvedBundleArtifact,
     ResolvedBundleMember,
@@ -129,7 +129,7 @@ def execute_stage_process(
     if not script_path.is_file():
         raise StageExecutionError(f"stage entrypoint is missing: {stage_spec.script}")
 
-    if isinstance(stage_spec, InternalSpec):
+    if isinstance(stage_spec, ParameterizedSpec):
         try:
             validate_stage_parameters(
                 root,

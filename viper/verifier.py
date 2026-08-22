@@ -35,6 +35,7 @@ from .protocol import (
     BenchmarkSpec,
     BuildSpec,
     DataRole,
+    DownloadSpec,
     EmbedSpec,
     EvaluateSpec,
     ExperimentSpec,
@@ -46,6 +47,7 @@ from .protocol import (
     LocalFileRef,
     LocalStageResultSnapshotRef,
     Measurement,
+    ParameterizedSpec,
     RepoRelPath,
     ResolvedArtifact,
     ResolvedBaseSpec,
@@ -787,7 +789,10 @@ def verify_run_plan_relationships(
     parameterized_stages = {
         stage_id: stage
         for stage_id, stage in stages.items()
-        if isinstance(stage, (BuildSpec, EmbedSpec, TrainSpec, EvaluateSpec))
+        if isinstance(
+            stage,
+            (DownloadSpec, BuildSpec, EmbedSpec, TrainSpec, EvaluateSpec),
+        )
     }
     variant_params = {stage.stage_id: stage for stage in variant.stage_params}
 
@@ -904,10 +909,10 @@ def verify_parameter_model_references(
     *,
     fetcher: StorageFetcher | None = None,
 ) -> None:
-    """Verify each internal stage's parameter class against frozen source bytes."""
+    """Verify each parameterized stage's class against frozen source bytes."""
     retrieve = fetch_storage_bytes if fetcher is None else fetcher
     for stage_id, stage in stages.items():
-        if not isinstance(stage, InternalSpec):
+        if not isinstance(stage, ParameterizedSpec):
             continue
         reference = stage.parameter_model
         location = GitFileRef(

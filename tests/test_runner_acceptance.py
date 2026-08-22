@@ -17,7 +17,9 @@ from viper.local_store import LocalArtifactStore
 from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
+    DownloadParams,
     DownloadSpec,
+    DownloadVariantStageParams,
     ExperimentSpec,
     FutureInputRef,
     GitFileRef,
@@ -149,7 +151,13 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         experiment_id="example",
         variant_id="baseline",
         levels={},
-        stage_params=(TrainVariantStageParams(stage_id="train", params=train_params),),
+        stage_params=(
+            DownloadVariantStageParams(
+                stage_id="download",
+                params=DownloadParams(),
+            ),
+            TrainVariantStageParams(stage_id="train", params=train_params),
+        ),
     )
     source_files = {
         "environment.yml": b"name: viper-test\n",
@@ -171,6 +179,11 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             b"    epochs: int = Field(gt=0)\n"
             b"    batch_size: int = Field(gt=0)\n"
             b"    learning_rate: float = Field(gt=0)\n"
+        ),
+        "project/parameters/download.py": (
+            b"from viper.protocol import DownloadParams\n\n"
+            b"class TinyDownloadParameters(DownloadParams):\n"
+            b'    """Validate the download parameters used by this project."""\n'
         ),
         "jobs/download.py": (
             "from pathlib import Path\n"
@@ -213,6 +226,14 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     )
     download = DownloadSpec(
         script="jobs/download.py",
+        parameter_model=ParameterModelRef(
+            path="project/parameters/download.py",
+            symbol="TinyDownloadParameters",
+            sha256=hashlib.sha256(
+                source_files["project/parameters/download.py"]
+            ).hexdigest(),
+            bytes=len(source_files["project/parameters/download.py"]),
+        ),
         inputs={
             "source": RemoteFileRef.model_validate(
                 {"url": "https://example.com/prior", "version": "v1"}
@@ -225,6 +246,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
                 data_role="training",
             )
         },
+        params=DownloadParams(),
     )
     train = TrainSpec(
         script="jobs/train.py",

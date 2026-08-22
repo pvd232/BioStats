@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from .parameter_models import ParameterValidationContext, validate_parameters
-from .protocol import InternalSpec
+from .protocol import ParameterizedSpec
 from .serialization import load_stage_spec
 
 
@@ -20,8 +20,8 @@ def main() -> int:
         Path(context_path).read_text(encoding="utf-8")
     )
     stage = load_stage_spec(context.stage_spec_path)
-    if not isinstance(stage, InternalSpec):
-        raise ValueError("parameter validation requires an internal stage")
+    if not isinstance(stage, ParameterizedSpec):
+        raise ValueError("parameter validation requires a parameterized stage")
     reference = stage.parameter_model
     validated = validate_parameters(
         Path.cwd() / reference.path,

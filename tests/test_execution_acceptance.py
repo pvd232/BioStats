@@ -6,10 +6,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from viper.protocol import (
+    DownloadParams,
     DownloadSpec,
+    ParameterModelRef,
+    RemoteFileRef,
     ResolvedSingleFileArtifact,
     RunSpec,
     RunStageRef,
+    SingleFileArtifactSpec,
 )
 from viper.serialization import serialize_document
 from viper.stage_execution import execute_stage_process
@@ -24,26 +28,35 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
     def test_stage_command_writes_and_hashes_its_declared_artifact(self) -> None:
         """Run a download stage and record the exact bytes it produces."""
         artifact_path = f"{RUN_ROOT}/artifacts/datasets/tiny/dataset.bin"
-        spec = DownloadSpec.model_validate(
-            {
-                "kind": "download",
-                "script": "jobs/ingest_tiny.py",
-                "inputs": {
-                    "source": {
-                        "kind": "remote",
+        parameter_source = (
+            b"from viper.protocol import DownloadParams\n\n"
+            b"class TinyDownloadParameters(DownloadParams):\n"
+            b'    """Validate parameters for the execution fixture."""\n'
+        )
+        spec = DownloadSpec(
+            script="jobs/ingest_tiny.py",
+            parameter_model=ParameterModelRef(
+                path="project/parameters/download.py",
+                symbol="TinyDownloadParameters",
+                sha256=hashlib.sha256(parameter_source).hexdigest(),
+                bytes=len(parameter_source),
+            ),
+            inputs={
+                "source": RemoteFileRef.model_validate(
+                    {
                         "url": "https://example.com/tiny-v1",
                         "version": "v1",
                     }
-                },
-                "artifacts": {
-                    "dataset": {
-                        "kind": "file",
-                        "path": artifact_path,
-                        "loader": "project/loaders/bytes_file.py",
-                        "data_role": "training",
-                    }
-                },
-            }
+                )
+            },
+            artifacts={
+                "dataset": SingleFileArtifactSpec(
+                    path=artifact_path,
+                    loader="project/loaders/bytes_file.py",
+                    data_role="training",
+                )
+            },
+            params=DownloadParams(),
         )
 
         with TemporaryDirectory() as directory:
@@ -56,6 +69,9 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
                 "target.parent.mkdir(parents=True, exist_ok=True)\n"
                 "target.write_bytes(b'tiny dataset')\n"
             )
+            parameter_path = root / spec.parameter_model.path
+            parameter_path.parent.mkdir(parents=True)
+            parameter_path.write_bytes(parameter_source)
             stage_path = root / f"{RUN_ROOT}/stages/download/spec.yaml"
             stage_path.parent.mkdir(parents=True)
             stage_raw = serialize_document(spec)

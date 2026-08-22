@@ -41,7 +41,9 @@ from viper.protocol import (
     CPUContext,
     DataLoaderConfiguration,
     DataRole,
+    DownloadParams,
     DownloadSpec,
+    DownloadVariantStageParams,
     EvaluateParams,
     EvaluateSpec,
     EvaluateVariantStageParams,
@@ -551,6 +553,7 @@ def publish_producer_run(
     run_root = "experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA"
     download = DownloadSpec(
         script="pipelines/download.py",
+        parameter_model=parameter_model_ref("download"),
         inputs={
             "archive": RemoteFileRef(
                 kind="remote",
@@ -578,6 +581,7 @@ def publish_producer_run(
                 data_role=evaluation_role,
             ),
         },
+        params=DownloadParams(),
     )
     train = TrainSpec(
         script="training/fit.py",
@@ -631,6 +635,9 @@ def publish_producer_run(
         variant_id="baseline",
         levels={},
         stage_params=(
+            DownloadVariantStageParams(
+                kind="download", stage_id="download", params=download.params
+            ),
             TrainVariantStageParams(
                 kind="train", stage_id="train", params=train.params
             ),
@@ -647,6 +654,12 @@ def publish_producer_run(
 
     add_loader(store, PRODUCER_SOURCE_COMMIT, "bytes_file")
     add_loader(store, PRODUCER_SOURCE_COMMIT, "resume_state")
+    add_source_file(
+        store,
+        PRODUCER_SOURCE_COMMIT,
+        parameter_model_ref("download").path,
+        parameter_model_source("download"),
+    )
     add_source_file(
         store,
         PRODUCER_SOURCE_COMMIT,

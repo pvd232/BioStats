@@ -23,7 +23,7 @@ from .protocol import (
     EnvironmentSpec,
     ExperimentSpec,
     GitSource,
-    InternalSpec,
+    ParameterizedSpec,
     ReproducibilitySpec,
     RNGSeed,
     RunSpec,
@@ -163,7 +163,7 @@ def freeze_run_plan(
             source = root / source
         raw_source = source.read_bytes()
         spec = SPEC_ADAPTER.validate_python(parse_yaml_bytes(raw_source))
-        if isinstance(spec, InternalSpec):
+        if isinstance(spec, ParameterizedSpec):
             reference = spec.parameter_model
             model_path = root / reference.path
             model_raw = model_path.read_bytes()

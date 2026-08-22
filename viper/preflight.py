@@ -21,6 +21,7 @@ from .protocol import (
     GitFileRef,
     InternalSpec,
     LocalEnvironmentSpec,
+    ParameterizedSpec,
     RunSpec,
     StorageModel,
 )
@@ -228,7 +229,7 @@ def preflight_local_plan(repository_root: Path, run_spec_path: Path) -> Prefligh
             )
         )
 
-        if isinstance(stage, InternalSpec):
+        if isinstance(stage, ParameterizedSpec):
             parameter_identity_valid = False
             parameter_validation_valid = False
             parameter_reference = stage.parameter_model
