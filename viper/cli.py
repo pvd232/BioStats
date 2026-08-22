@@ -55,6 +55,13 @@ def build_parser() -> argparse.ArgumentParser:
     freeze.add_argument("draft", type=Path)
     freeze.add_argument("--repository-root", type=Path, default=Path.cwd())
 
+    preflight = commands.add_parser(
+        "preflight",
+        help="inspect every applicable check before local execution",
+    )
+    preflight.add_argument("run_spec", type=Path)
+    preflight.add_argument("--repository-root", type=Path, default=Path.cwd())
+
     execute = commands.add_parser(
         "execute-stage",
         help="run one stage from a frozen local run plan",
@@ -104,6 +111,7 @@ def _operation_and_payload(
         "validate-resolved-stage": "validate_resolved_stage",
         "validate-run": "validate_run_spec",
         "freeze-run": "freeze_run",
+        "preflight": "preflight",
         "execute-stage": "execute_stage",
         "run-local": "run_local",
         "verify-run": "verify_run",
@@ -130,6 +138,14 @@ def _human_success(result: SuccessModel) -> str:
     if result.operation == "freeze_run":
         files = getattr(result, "files")
         return f"froze run {getattr(result, 'run_id')} in {len(files)} files"
+    if result.operation == "preflight":
+        checks = getattr(result, "checks")
+        failures = sum(check.status == "failure" for check in checks)
+        return (
+            "preflight ready"
+            if failures == 0
+            else f"preflight found {failures} failures"
+        )
     if result.operation == "execute_stage":
         artifacts = getattr(result, "artifacts")
         count = sum(

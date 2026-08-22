@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from .authoring import freeze_run_plan, load_run_plan_draft
 from .ids import RunId, StageId
+from .preflight import PreflightCheck, preflight_local_plan
 from .protocol import (
     ArtifactPointer,
     BenchmarkResult,
@@ -38,6 +39,7 @@ OperationName = Literal[
     "validate_resolved_stage",
     "validate_run_spec",
     "freeze_run",
+    "preflight",
     "execute_stage",
     "run_local",
     "verify_run",
@@ -154,6 +156,22 @@ class FreezeRunSuccess(SuccessModel):
     files: tuple[Path, ...]
 
 
+class PreflightRequest(ApplicationModel):
+    """Select one local frozen plan for complete pre-execution inspection."""
+
+    run_spec: Path
+    repository_root: Path
+
+
+class PreflightSuccess(SuccessModel):
+    """Return every applicable check and the resulting readiness decision."""
+
+    operation: Literal["preflight"] = "preflight"  # pyright: ignore[reportIncompatibleVariableOverride]
+    run_id: RunId | None
+    ready: bool
+    checks: tuple[PreflightCheck, ...]
+
+
 class ExecuteStageRequest(ApplicationModel):
     """Select one stage from a frozen local run plan."""
 
@@ -267,9 +285,34 @@ class CapabilitiesSuccess(SuccessModel):
 SCHEMA_REGISTRY: dict[str, Any] = {
     "ArtifactPointer": ArtifactPointer,
     "BenchmarkResult": BenchmarkResult,
+    "CapabilitiesRequest": CapabilitiesRequest,
+    "CapabilitiesSuccess": CapabilitiesSuccess,
+    "ExecuteStageRequest": ExecuteStageRequest,
+    "ExecuteStageSuccess": ExecuteStageSuccess,
+    "FreezeRunRequest": FreezeRunRequest,
+    "FreezeRunSuccess": FreezeRunSuccess,
+    "PreflightRequest": PreflightRequest,
+    "PreflightSuccess": PreflightSuccess,
     "ResolvedRun": ResolvedRun,
+    "RunLocalRequest": RunLocalRequest,
+    "RunLocalSuccess": RunLocalSuccess,
     "RunSpec": RunSpec,
+    "SchemaRequest": SchemaRequest,
+    "SchemaSuccess": SchemaSuccess,
     "Spec": Spec,
+    "ValidateResolvedStageRequest": ValidateResolvedStageRequest,
+    "ValidateResolvedStageSuccess": ValidateResolvedStageSuccess,
+    "ValidateRunSpecRequest": ValidateRunSpecRequest,
+    "ValidateRunSpecSuccess": ValidateRunSpecSuccess,
+    "ValidateStageRequest": ValidateStageRequest,
+    "ValidateStageSuccess": ValidateStageSuccess,
+    "VerifyBenchmarkRequest": VerifyBenchmarkRequest,
+    "VerifyBenchmarkSuccess": VerifyBenchmarkSuccess,
+    "VerifyPointerRequest": VerifyPointerRequest,
+    "VerifyPointerSuccess": VerifyPointerSuccess,
+    "VerifyRunRequest": VerifyRunRequest,
+    "VerifyRunSuccess": VerifyRunSuccess,
+    "ViperFailure": ViperFailure,
 }
 
 OPERATIONS: tuple[OperationName, ...] = (
@@ -277,6 +320,7 @@ OPERATIONS: tuple[OperationName, ...] = (
     "validate_resolved_stage",
     "validate_run_spec",
     "freeze_run",
+    "preflight",
     "execute_stage",
     "run_local",
     "verify_run",
@@ -362,6 +406,16 @@ def freeze_run(request: FreezeRunRequest) -> FreezeRunSuccess:
     return FreezeRunSuccess(run_id=frozen.run.run_id, files=frozen.files)
 
 
+def preflight(request: PreflightRequest) -> PreflightSuccess:
+    """Inspect one complete local plan before allocating a run attempt."""
+    report = preflight_local_plan(request.repository_root, request.run_spec)
+    return PreflightSuccess(
+        run_id=report.run_id,
+        ready=report.ready,
+        checks=report.checks,
+    )
+
+
 def execute_stage(request: ExecuteStageRequest) -> ExecuteStageSuccess:
     """Execute one selected stage and identify its declared outputs."""
     try:
@@ -410,13 +464,22 @@ def run_local(request: RunLocalRequest) -> RunLocalSuccess:
             request.run_spec,
             timeout_seconds=request.timeout_seconds,
         )
-    except LocalRunError as exc:
+    except (LocalRunError, StageExecutionError) as exc:
         raise ViperError(
             ViperFailure(
                 operation="run_local",
                 origin="application",
                 code="execution_failed",
                 message="local run failed",
+            )
+        ) from exc
+    except VerificationError as exc:
+        raise ViperError(
+            ViperFailure(
+                operation="run_local",
+                origin="application",
+                code="verification_failed",
+                message="local run verification failed",
             )
         ) from exc
     except (OSError, ValueError, yaml.YAMLError) as exc:
@@ -568,6 +631,7 @@ REQUEST_REGISTRY: dict[OperationName, RequestType] = {
     "validate_resolved_stage": ValidateResolvedStageRequest,
     "validate_run_spec": ValidateRunSpecRequest,
     "freeze_run": FreezeRunRequest,
+    "preflight": PreflightRequest,
     "execute_stage": ExecuteStageRequest,
     "run_local": RunLocalRequest,
     "verify_run": VerifyRunRequest,
@@ -582,6 +646,7 @@ HANDLER_REGISTRY: dict[OperationName, Handler] = {
     "validate_resolved_stage": validate_resolved_stage,
     "validate_run_spec": validate_run_spec,
     "freeze_run": freeze_run,
+    "preflight": preflight,
     "execute_stage": execute_stage,
     "run_local": run_local,
     "verify_run": verify_run,

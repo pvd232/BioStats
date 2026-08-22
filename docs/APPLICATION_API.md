@@ -1,186 +1,131 @@
 # `viper.application`
 
-**Status:** Proposed application contract. Implementation is tracked in the
-[publication checklist](PUBLICATION_TODO.md).
-
-`viper.application` is the typed Python interface for plan authoring, stage
-execution, provenance verification, and API discovery.
-
-Each function accepts a Pydantic request model, returns a Pydantic result model,
-and raises `ViperError` for an expected application failure. The `viper` command
-calls the same functions.
-
-Every result model includes `status="ok"` and the function's `operation` name.
+`viper.application` is VIPER's public operation layer. Python callers pass a
+typed request model to a function. The `viper` command validates a mapping,
+calls the same function, and renders its result.
 
 ## Operations
 
-| Operation | Purpose | CLI command |
-|---|---|---|
-| [`validate_stage()`](#validate_stage) | Validate an authored stage specification. | `viper validate-stage` |
-| [`validate_resolved_stage()`](#validate_resolved_stage) | Validate a resolved stage specification. | `viper validate-resolved-stage` |
-| [`validate_run_spec()`](#validate_run_spec) | Validate a frozen run specification. | `viper validate-run` |
-| [`freeze_run()`](#freeze_run) | Create a frozen run specification and its stage specifications. | `viper freeze-run` |
-| [`execute_stage()`](#execute_stage) | Execute one stage from a frozen run. | `viper execute-stage` |
-| [`verify_run()`](#verify_run) | Verify a terminal run and its provenance chain. | `viper verify-run` |
-| [`verify_benchmark()`](#verify_benchmark) | Verify benchmark criteria and independent confirmation. | `viper verify-benchmark` |
-| [`verify_pointer()`](#verify_pointer) | Resolve and verify a promoted artifact. | `viper verify-pointer` |
-| [`get_schema()`](#get_schema) | Return the JSON Schema for a public VIPER type. | `viper schema` |
-| [`get_capabilities()`](#get_capabilities) | Return the installed VIPER capabilities. | `viper capabilities` |
+| Python | CLI | Result |
+| --- | --- | --- |
+| `validate_stage(request)` | `viper validate-stage` | Validated stage kind |
+| `validate_resolved_stage(request)` | `viper validate-resolved-stage` | Validated resolved-stage kind |
+| `validate_run_spec(request)` | `viper validate-run` | Run ID and ordered stage IDs |
+| `freeze_run(request)` | `viper freeze-run` | Canonical stage and run specification paths |
+| `preflight(request)` | `viper preflight` | Every applicable check and one readiness value |
+| `execute_stage(request)` | `viper execute-stage` | Command, artifacts, standard output, and standard error |
+| `run_local(request)` | `viper run-local` | Verified terminal run and attempt journal paths |
+| `verify_run(request)` | `viper verify-run` | Verified run, attempt, stage, and measurement summary |
+| `verify_benchmark(request)` | `viper verify-benchmark` | Verified benchmark and confirmation summary |
+| `verify_pointer(request)` | `viper verify-pointer` | Verified artifact file count |
+| `get_schema(request)` | `viper schema` | JSON Schema for one registered public type |
+| `get_capabilities(request)` | `viper capabilities` | Operations and execution backends in this installation |
 
-## `validate_stage()`
+Every success contains `status="ok"` and the function's `operation` name.
+
+## Validate documents
 
 ```python
 validate_stage(request: ValidateStageRequest) -> ValidateStageSuccess
-```
-
-Loads the YAML document at `request.path` and validates it as a `Spec`.
-
-### Parameters
-
-| Field | Type | Description |
-|---|---|---|
-| `path` | `Path` | Local path to an authored stage specification. |
-
-### Returns
-
-`ValidateStageSuccess`
-
-| Field | Type | Description |
-|---|---|---|
-| `path` | `Path` | Validated path. |
-| `stage_kind` | `StageKind` | `download`, `build`, `embed`, `train`, or `evaluate`. |
-
-### Errors
-
-`invalid_document`, `not_found`, `io_failed`
-
-## `validate_resolved_stage()`
-
-```python
 validate_resolved_stage(
     request: ValidateResolvedStageRequest,
 ) -> ValidateResolvedStageSuccess
+validate_run_spec(request: ValidateRunSpecRequest) -> ValidateRunSpecSuccess
 ```
 
-Loads the YAML document at `request.path` and validates it as a `ResolvedSpec`.
+Each request supplies `path: Path`. The stage operations return `path` and
+`stage_kind`. Run validation returns `path`, `run_id`, and the ordered
+`stage_ids`.
 
-### Parameters
+Expected errors: `invalid_document`, `not_found`, `io_failed`.
 
-| Field | Type | Description |
-|---|---|---|
-| `path` | `Path` | Local path to a resolved stage specification. |
-
-### Returns
-
-`ValidateResolvedStageSuccess`
-
-| Field | Type | Description |
-|---|---|---|
-| `path` | `Path` | Validated path. |
-| `stage_kind` | `StageKind` | `download`, `build`, `embed`, `train`, or `evaluate`. |
-
-### Errors
-
-`invalid_document`, `not_found`, `io_failed`
-
-## `validate_run_spec()`
-
-```python
-validate_run_spec(
-    request: ValidateRunSpecRequest,
-) -> ValidateRunSpecSuccess
-```
-
-Loads the YAML document at `request.path` and validates it as a `RunSpec`.
-
-### Parameters
-
-| Field | Type | Description |
-|---|---|---|
-| `path` | `Path` | Local path to a frozen run specification. |
-
-### Returns
-
-`ValidateRunSpecSuccess`
-
-| Field | Type | Description |
-|---|---|---|
-| `path` | `Path` | Validated path. |
-| `run_id` | `RunId` | Run identity. |
-| `stage_ids` | `tuple[StageId, ...]` | Stage identities in execution order. |
-
-### Errors
-
-`invalid_document`, `not_found`, `io_failed`
-
-## `freeze_run()`
+## Freeze a run plan
 
 ```python
 freeze_run(request: FreezeRunRequest) -> FreezeRunSuccess
 ```
 
-Loads a `RunPlanDraft`, validates its stage sources, writes each canonical stage
-specification, and writes the hash-bound `RunSpec`.
+| Request field | Type | Meaning |
+| --- | --- | --- |
+| `draft` | `Path` | `RunPlanDraft` YAML document |
+| `repository_root` | `Path` | Root for source paths and canonical run paths |
 
-### Parameters
+The operation validates each stage draft, writes its canonical `spec.yaml`,
+records its SHA-256 and byte count in `RunSpec.stages`, and writes the run
+`spec.yaml`. The result contains `run_id` and every written path.
 
-| Field | Type | Description |
-|---|---|---|
-| `draft` | `Path` | Local path to the `RunPlanDraft`. |
-| `repository_root` | `Path` | Root used to resolve source and destination paths. |
+Expected errors: `invalid_document`, `not_found`, `write_conflict`, `io_failed`.
 
-### Returns
+## Preflight a local plan
 
-`FreezeRunSuccess`
+```python
+preflight(request: PreflightRequest) -> PreflightSuccess
+```
 
-| Field | Type | Description |
-|---|---|---|
-| `run_id` | `RunId` | Frozen run identity. |
-| `files` | `tuple[Path, ...]` | Stage and run specification files written by the operation. |
+| Request field | Type | Meaning |
+| --- | --- | --- |
+| `run_spec` | `Path` | Frozen run `spec.yaml` |
+| `repository_root` | `Path` | Local repository root |
 
-### Errors
+The result contains `run_id`, `ready`, and every `PreflightCheck`. Each check
+contains a stable `code`, `status`, `target`, and `message`. `ready` is true
+when the report contains zero failures.
 
-`invalid_document`, `not_found`, `write_conflict`, `io_failed`
-
-## `execute_stage()`
+## Execute one stage
 
 ```python
 execute_stage(request: ExecuteStageRequest) -> ExecuteStageSuccess
 ```
 
-Loads the selected `RunStageRef`, verifies the referenced stage specification,
-executes its script, and hashes every declared artifact file.
+| Request field | Type | Meaning |
+| --- | --- | --- |
+| `run_spec` | `Path` | Frozen run `spec.yaml` |
+| `stage_id` | `StageId` | Stage selected from `RunSpec.stages` |
+| `repository_root` | `Path` | Local repository root |
+| `timeout_seconds` | `float | None` | Process deadline |
 
-### Parameters
+VIPER verifies the stage-spec bytes, applies the run controls through
+`viper.stage_worker`, invokes the project entrypoint, and hashes every declared
+artifact file. The result contains `stage_id`, `command`, `artifacts`, `stdout`,
+and `stderr`.
 
-| Field | Type | Description |
-|---|---|---|
-| `run_spec` | `Path` | Local path to the frozen `RunSpec`. |
-| `stage_id` | `StageId` | Stage selected from `RunSpec.stages`. |
-| `repository_root` | `Path` | Working directory for the stage process. |
-| `timeout_seconds` | `float \| None` | Maximum process duration in seconds. `None` leaves process duration unrestricted. |
+Expected errors: `invalid_document`, `not_found`, `io_failed`,
+`execution_failed`.
 
-### Returns
+## Execute a complete local run
 
-`ExecuteStageSuccess`
+```python
+run_local(request: RunLocalRequest) -> RunLocalSuccess
+```
 
-| Field | Type | Description |
-|---|---|---|
-| `stage_id` | `StageId` | Executed stage identity. |
-| `command` | `tuple[str, ...]` | Exact process command. |
-| `started_at` | `AwareDatetime` | Process start time. |
-| `completed_at` | `AwareDatetime` | Process completion time. |
-| `artifacts` | `dict[ArtifactName, ResolvedArtifact]` | Declared artifacts and their file identities. |
-| `stdout` | `bytes` | Captured standard output. |
-| `stderr` | `bytes` | Captured standard error. |
+| Request field | Type | Meaning |
+| --- | --- | --- |
+| `run_spec` | `Path` | Frozen run `spec.yaml` present in the current Git commit |
+| `repository_root` | `Path` | Local Git repository root |
+| `timeout_seconds` | `float | None` | Per-stage process deadline |
 
-JSON output encodes `stdout` and `stderr` with URL-safe Base64.
+The trusted-local runner performs these operations in order:
 
-### Errors
+```text
+preflight plan
+-> acquire run lock
+-> materialize verified inputs
+-> execute stages in RunSpec order
+-> invoke after-stage metrics
+-> publish immutable local snapshots
+-> write attempt logs and measurements
+-> write resolved.yaml
+-> verify the complete terminal run
+```
 
-`invalid_document`, `not_found`, `io_failed`, `execution_failed`
+The result contains `run_id`, `resolved_run`, and `journal`. Output snapshots
+live under `.viper/store/<content digest>/`. Attempt control files live under
+`.viper/workspaces/<run ID>/attempt-<attempt ID>/`.
 
-## `verify_run()`
+Expected errors: `execution_failed`, `verification_failed`, `invalid_document`,
+`not_found`, `io_failed`.
+
+## Verify published evidence
 
 ```python
 verify_run(
@@ -188,75 +133,13 @@ verify_run(
     *,
     fetcher: StorageFetcher | None = None,
 ) -> VerifyRunSuccess
-```
 
-Loads a `ResolvedRun`, retrieves its referenced files, verifies the complete run
-plan and every attempt, and reconstructs artifacts with approved loaders.
-
-### Parameters
-
-| Field | Type | Description |
-|---|---|---|
-| `path` | `Path` | Local path to the terminal `ResolvedRun`. |
-| `trusted_loader_repositories` | `frozenset[str]` | Source repository URLs approved to supply executable artifact loaders. |
-| `fetcher` | `StorageFetcher \| None` | Byte retrieval function. `None` selects `fetch_storage_bytes()`. |
-
-### Returns
-
-`VerifyRunSuccess`
-
-| Field | Type | Description |
-|---|---|---|
-| `run_id` | `RunId` | Verified run identity. |
-| `run_status` | `succeeded \| failed \| cancelled` | Terminal run status. |
-| `successful_attempt_id` | `int \| None` | Successful attempt identity. |
-| `stage_ids` | `tuple[StageId, ...]` | Verified stage identities. |
-| `measurement_count` | `int` | Verified measurement count. |
-
-### Errors
-
-`invalid_document`, `not_found`, `io_failed`, `verification_failed`
-
-## `verify_benchmark()`
-
-```python
 verify_benchmark(
     request: VerifyBenchmarkRequest,
     *,
     fetcher: StorageFetcher | None = None,
 ) -> VerifyBenchmarkSuccess
-```
 
-Loads a `BenchmarkResult`, verifies its selected run, checks the independent
-confirmation attempt, compares declared artifacts, and applies every metric
-criterion in the `BenchmarkSpec`.
-
-### Parameters
-
-| Field | Type | Description |
-|---|---|---|
-| `path` | `Path` | Local path to the `BenchmarkResult`. |
-| `trusted_loader_repositories` | `frozenset[str]` | Source repository URLs approved to supply executable artifact loaders. |
-| `fetcher` | `StorageFetcher \| None` | Byte retrieval function. `None` selects `fetch_storage_bytes()`. |
-
-### Returns
-
-`VerifyBenchmarkSuccess`
-
-| Field | Type | Description |
-|---|---|---|
-| `benchmark_id` | `BenchmarkId` | Verified benchmark identity. |
-| `run_id` | `RunId` | Candidate run identity. |
-| `benchmark_status` | `passed \| failed` | Recorded benchmark result. |
-| `confirmation_attempt_id` | `int` | Independent confirmation attempt identity. |
-
-### Errors
-
-`invalid_document`, `not_found`, `io_failed`, `verification_failed`
-
-## `verify_pointer()`
-
-```python
 verify_pointer(
     request: VerifyPointerRequest,
     *,
@@ -264,143 +147,57 @@ verify_pointer(
 ) -> VerifyPointerSuccess
 ```
 
-Loads an `ArtifactPointer`, verifies its producer run, selects the named stage
-artifact, verifies its files, and invokes its approved loader.
+Each request supplies `path` and `trusted_loader_repositories`. A supplied
+`fetcher` retrieves exact bytes for Git, Hugging Face, or local storage
+references. Verification checks the connected plan, stage results, inputs,
+artifacts, measurements, logs, runtime controls, and terminal selection.
+Metrics with `verification="recompute"` run again from frozen implementation
+code, verified dependencies, and frozen parameters. VIPER applies the metric's
+declared comparator to the recorded and recomputed values.
 
-### Parameters
+Expected errors: `invalid_document`, `not_found`, `io_failed`,
+`verification_failed`.
 
-| Field | Type | Description |
-|---|---|---|
-| `path` | `Path` | Local path to the `ArtifactPointer`. |
-| `trusted_loader_repositories` | `frozenset[str]` | Source repository URLs approved to supply executable artifact loaders. |
-| `expected_data_role` | `DataRole \| None` | Required artifact data role. |
-| `materialization_path` | `RepoRelPath \| None` | Repository-relative loader path for the verified files. |
-| `fetcher` | `StorageFetcher \| None` | Byte retrieval function. `None` selects `fetch_storage_bytes()`. |
-
-### Returns
-
-`VerifyPointerSuccess`
-
-| Field | Type | Description |
-|---|---|---|
-| `run` | `ResolvedRunRef` | Producer run reference. |
-| `stage_id` | `StageId` | Producer stage identity. |
-| `artifact_name` | `ArtifactName` | Selected artifact name. |
-| `data_role` | `DataRole` | Verified artifact data role. |
-| `snapshot` | `StageResultSnapshotRef` | Snapshot containing the artifact files. |
-| `files` | `tuple[SnapshotFileRef, ...]` | Verified artifact files. |
-
-### Errors
-
-`invalid_document`, `not_found`, `io_failed`, `verification_failed`
-
-## `get_schema()`
+## Discover schemas and capabilities
 
 ```python
 get_schema(request: SchemaRequest) -> SchemaSuccess
-```
-
-Returns the [JSON Schema Draft 2020-12](https://json-schema.org/draft/2020-12)
-generated by [Pydantic](https://docs.pydantic.dev/latest/concepts/json_schema/)
-for one public VIPER type.
-
-### Parameters
-
-| Field | Type | Description |
-|---|---|---|
-| `schema_type` | `SchemaTypeName` | Registered request, result, error, authored-document, or resolved-document type. |
-
-### Returns
-
-`SchemaSuccess`
-
-| Field | Type | Description |
-|---|---|---|
-| `schema_type` | `SchemaTypeName` | Requested type name. |
-| `dialect` | `https://json-schema.org/draft/2020-12/schema` | Schema dialect. |
-| `schema` | `dict[str, JsonValue]` | Generated schema. |
-
-### Errors
-
-`invalid_request`
-
-## `get_capabilities()`
-
-```python
 get_capabilities(request: CapabilitiesRequest) -> CapabilitiesSuccess
 ```
 
-Returns the operations and protocol types supported by the installed VIPER
-package.
+`SchemaRequest.name` selects one key in `SCHEMA_REGISTRY`. `SchemaSuccess`
+returns `name` and `json_schema`.
 
-### Parameters
+`CapabilitiesRequest` has zero fields. `CapabilitiesSuccess` returns the
+protocol version, callable operations, and installed execution backends.
 
-`CapabilitiesRequest` is an empty model.
+## Failures
 
-### Returns
+Expected application failures raise `ViperError`. Its `failure` field is a
+`ViperFailure`:
 
-`CapabilitiesSuccess`
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `status` | `"error"` | Result status |
+| `operation` | `OperationName | None` | Selected operation |
+| `origin` | `request | application | cli | internal` | Layer that produced the failure |
+| `code` | `ErrorCode` | Stable machine-readable category |
+| `message` | `str` | Public explanation |
+| `details` | `dict[str, object]` | Structured public evidence |
 
-| Field | Type | Description |
-|---|---|---|
-| `package_version` | `str` | Installed VIPER package version. |
-| `protocol_schema_versions` | `tuple[ProtocolSchemaVersion, ...]` | Supported protocol schema versions. |
-| `operations` | `tuple[OperationName, ...]` | Supported application operations. |
-| `schema_types` | `tuple[SchemaTypeName, ...]` | Types available through `get_schema()`. |
-| `stage_kinds` | `tuple[StageKind, ...]` | Supported stage kinds. |
-| `environment_kinds` | `tuple[EnvironmentKind, ...]` | Supported environment kinds. |
-| `storage_kinds` | `tuple[StorageKind, ...]` | Supported storage kinds. |
+`dispatch(operation, payload)` returns `ViperFailure` for invalid mappings and
+expected operation failures. Direct function calls receive Pydantic validation
+errors during request construction and `ViperError` during execution.
 
-## Errors
+## JSON CLI
 
-Application functions raise `ViperError`. Its `failure` attribute contains:
+Place `--json` before the command:
 
-| Field | Type | Description |
-|---|---|---|
-| `status` | `Literal["error"]` | Error result marker. |
-| `operation` | `OperationName` | Failed operation. |
-| `code` | `ErrorCode` | Stable programmatic error code. |
-| `target` | `str` | Path or protocol document associated with the failure. |
-| `cause` | `str` | Specific failed condition. |
+```bash
+viper --json capabilities
+viper --json preflight experiments/example/runs/baseline/<run_id>/spec.yaml
+viper --json run-local experiments/example/runs/baseline/<run_id>/spec.yaml
+```
 
-| Code | Meaning |
-|---|---|
-| `invalid_request` | Request-model validation failed. |
-| `invalid_document` | YAML parsing or protocol-model validation failed. |
-| `not_found` | A required local or referenced file is absent. |
-| `write_conflict` | Authoring selected an existing path containing different bytes. |
-| `io_failed` | Local or remote byte transfer failed. |
-| `execution_failed` | The stage timed out, exited unsuccessfully, or omitted a declared artifact. |
-| `verification_failed` | A provenance relationship, file identity, loader policy, or benchmark result failed verification. |
-| `internal_error` | The CLI caught an unexpected implementation fault. |
-
-Python callers receive unexpected exceptions with their original types.
-
-## CLI output
-
-Human-readable output is the default. `--json` writes one result model to
-standard output or one error model to standard error.
-
-Command parsing errors use `status="error"`, `operation="cli"`,
-`code="invalid_request"`, `target=null`, and a concrete `cause`.
-
-| Exit status | Meaning |
-|---|---|
-| `0` | Operation succeeded. |
-| `1` | VIPER operation failed. |
-| `2` | Command syntax or request validation failed. |
-
-## Shared types
-
-Application models are frozen Pydantic models with unknown fields rejected.
-JSON serialization encodes byte fields with URL-safe Base64.
-
-| Type | Values |
-|---|---|
-| `StageKind` | `download`, `build`, `embed`, `train`, `evaluate` |
-| `EnvironmentKind` | `gce` |
-| `StorageKind` | `git`, `huggingface` |
-| `ProtocolSchemaVersion` | `1` |
-
-`SchemaTypeName` is generated from the application schema registry. The same
-registry supplies `get_schema()` and `get_capabilities()`.
+JSON mode writes one UTF-8 document with one trailing newline. Successes use
+exit status `0`. Failures use exit status `1`.
