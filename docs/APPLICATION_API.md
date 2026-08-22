@@ -15,6 +15,8 @@ calls the same function, and renders its result.
 | `preflight(request)` | `viper preflight` | Every applicable check and one readiness value |
 | `execute_stage(request)` | `viper execute-stage` | Command, artifacts, standard output, and standard error |
 | `run_local(request)` | `viper run-local` | Verified terminal run and attempt journal paths |
+| `plan_diff(request)` | `viper plan-diff` | Ordered leaf differences between two complete frozen plans |
+| `lineage(request)` | `viper lineage` | Verified stages, inputs, artifacts, and their directed relationships |
 | `verify_run(request)` | `viper verify-run` | Verified run, attempt, stage, and measurement summary |
 | `verify_benchmark(request)` | `viper verify-benchmark` | Verified benchmark and confirmation summary |
 | `verify_pointer(request)` | `viper verify-pointer` | Verified artifact file count |
@@ -82,7 +84,7 @@ execute_stage(request: ExecuteStageRequest) -> ExecuteStageSuccess
 | `run_spec` | `Path` | Frozen run `spec.yaml` |
 | `stage_id` | `StageId` | Stage selected from `RunSpec.stages` |
 | `repository_root` | `Path` | Local repository root |
-| `timeout_seconds` | `float | None` | Process deadline |
+| `timeout_seconds` | positive `float` or `None` | Process deadline |
 
 VIPER verifies the stage-spec bytes, applies the run controls through
 `viper.stage_worker`, invokes the project entrypoint, and hashes every declared
@@ -102,7 +104,7 @@ run_local(request: RunLocalRequest) -> RunLocalSuccess
 | --- | --- | --- |
 | `run_spec` | `Path` | Frozen run `spec.yaml` present in the current Git commit |
 | `repository_root` | `Path` | Local Git repository root |
-| `timeout_seconds` | `float | None` | Per-stage process deadline |
+| `timeout_seconds` | positive `float` or `None` | Per-stage process deadline |
 
 The trusted-local runner performs these operations in order:
 
@@ -124,6 +126,49 @@ live under `.viper/store/<content digest>/`. Attempt control files live under
 
 Expected errors: `execution_failed`, `verification_failed`, `invalid_document`,
 `not_found`, `io_failed`.
+
+## Compare frozen plans
+
+```python
+plan_diff(request: PlanDiffRequest) -> PlanDiffSuccess
+```
+
+| Request field | Type | Meaning |
+| --- | --- | --- |
+| `left_run_spec` | `Path` | First frozen run `spec.yaml` |
+| `left_repository_root` | `Path` | Repository containing the first plan |
+| `right_run_spec` | `Path` | Second frozen run `spec.yaml` |
+| `right_repository_root` | `Path` | Repository containing the second plan |
+
+VIPER verifies every referenced stage file against its `RunStageRef`, then
+compares the run specs and stage-spec contents. Each `PlanChange` contains a
+stable dotted `path`, a `kind` of `added`, `removed`, or `changed`, and the
+applicable values from each plan.
+
+Expected errors: `invalid_document`.
+
+## Inspect run lineage
+
+```python
+lineage(
+    request: LineageRequest,
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> LineageSuccess
+```
+
+The request supplies a terminal run path and the source repositories permitted
+to execute frozen metric and loader code. VIPER verifies the complete run
+before constructing the graph.
+
+Each node identifies a stage, input, artifact, or promoted input selection.
+Each directed edge has one relation:
+
+- `produces`: stage to artifact;
+- `selects`: artifact or promoted selection to stage input;
+- `consumes`: stage input to consuming stage.
+
+Expected errors: `invalid_document`, `verification_failed`.
 
 ## Verify published evidence
 
@@ -179,8 +224,8 @@ Expected application failures raise `ViperError`. Its `failure` field is a
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `status` | `"error"` | Result status |
-| `operation` | `OperationName | None` | Selected operation |
-| `origin` | `request | application | cli | internal` | Layer that produced the failure |
+| `operation` | `OperationName` or `None` | Selected operation |
+| `origin` | `request`, `application`, `cli`, or `internal` | Layer that produced the failure |
 | `code` | `ErrorCode` | Stable machine-readable category |
 | `message` | `str` | Public explanation |
 | `details` | `dict[str, object]` | Structured public evidence |
@@ -197,6 +242,8 @@ Place `--json` before the command:
 viper --json capabilities
 viper --json preflight experiments/example/runs/baseline/<run_id>/spec.yaml
 viper --json run-local experiments/example/runs/baseline/<run_id>/spec.yaml
+viper --json plan-diff <left-spec.yaml> <right-spec.yaml>
+viper --json lineage <resolved.yaml> --trust-loader-source <repository>
 ```
 
 JSON mode writes one UTF-8 document with one trailing newline. Completed

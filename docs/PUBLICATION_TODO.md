@@ -87,6 +87,28 @@ contract freeze
 - [x] Add focused protocol, verifier, resume, metric, loader, authoring, CLI,
   and single-stage execution tests.
 
+## Trusted-local milestone: August 22, 2026
+
+The current package provides a complete successful-run path on one trusted
+local host:
+
+```text
+freeze
+-> preflight
+-> execute ordered stages
+-> materialize verified inputs
+-> invoke frozen metrics
+-> publish immutable local evidence
+-> write resolved.yaml
+-> verify the terminal run
+```
+
+The validated boundary includes 105 tests and 13 subtests, Ruff, Pyright,
+source and wheel builds, metadata checks, and an installed-wheel capability
+smoke test. The release path still requires recovery semantics, hardened OCI
+execution, live GCE validation, benchmark execution, complete extension
+binding, and publication credentials.
+
 ## Phase 0. Freeze the blocking contracts
 
 Every later phase consumes these contracts. Finish Phase 0 before adding

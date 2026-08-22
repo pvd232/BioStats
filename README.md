@@ -28,6 +28,7 @@ both named `viper`.
 | [serialization](viper/serialization.py) | Encodes protocol documents and parses duplicate-key-safe YAML | `serialize_document()`, `parse_yaml_bytes()`, `load_stage_spec()`, `load_resolved_stage()` |
 | [examples](examples/) | Supplies a user-project extension tree and loadable protocol records | Project code plus download and build records |
 | [identifiers](viper/ids.py) | Defines run and human-readable identifier types | `RunId`, `HumanId` |
+| [inspection](viper/inspection.py) | Compares complete frozen plans through stable machine-readable paths | `plan_diff()` |
 | [metrics](viper/metrics.py) | Defines project metric decorators, stateful metrics, comparison, and measurement output | `metric()`, `StatefulMetric`, `MeasurementSink` |
 | [worker](viper/worker.py) | Executes one project command through an execution backend | `WorkerRequest`, `execute_worker()` |
 | [workspace](viper/workspace.py) | Creates bounded attempt directories and exclusive run ownership | `AttemptWorkspace` |
@@ -129,6 +130,10 @@ benchmark data from entering a training stage.
 - `run_local(repository_root, run_spec_path)` executes every stage, publishes
   immutable stage results, writes the terminal `resolved.yaml`, and verifies
   the completed run.
+- `plan_diff(...)` verifies and compares two RunSpecs and every stage spec they
+  identify.
+- `lineage(...)` verifies one terminal run and returns its directed upstream
+  provenance graph.
 
 ## Run locally
 

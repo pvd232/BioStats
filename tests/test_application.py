@@ -26,6 +26,8 @@ def test_application_schema_and_capability_discovery() -> None:
     assert "validate_run_spec" in capabilities.operations
     assert "preflight" in capabilities.operations
     assert "run_local" in capabilities.operations
+    assert "plan_diff" in capabilities.operations
+    assert "lineage" in capabilities.operations
     assert capabilities.execution_backends == ("trusted_local",)
 
 

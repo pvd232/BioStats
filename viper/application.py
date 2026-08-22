@@ -12,6 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from .authoring import freeze_run_plan, load_run_plan_draft
 from .ids import RunId, StageId
+from .inspection import InspectionError, LineageEdge, LineageNode, PlanChange
+from .inspection import lineage as build_lineage
+from .inspection import plan_diff as compare_frozen_plans
 from .preflight import PreflightCheck, preflight_local_plan
 from .protocol import (
     ArtifactPointer,
@@ -42,6 +45,8 @@ OperationName = Literal[
     "preflight",
     "execute_stage",
     "run_local",
+    "plan_diff",
+    "lineage",
     "verify_run",
     "verify_benchmark",
     "verify_pointer",
@@ -209,6 +214,25 @@ class RunLocalSuccess(SuccessModel):
     journal: Path
 
 
+class PlanDiffRequest(ApplicationModel):
+    """Select two complete frozen plans for deterministic comparison."""
+
+    left_run_spec: Path
+    left_repository_root: Path
+    right_run_spec: Path
+    right_repository_root: Path
+
+
+class PlanDiffSuccess(SuccessModel):
+    """Return every leaf value that differs between two frozen plans."""
+
+    operation: Literal["plan_diff"] = "plan_diff"  # pyright: ignore[reportIncompatibleVariableOverride]
+    left_run_id: RunId
+    right_run_id: RunId
+    identical: bool
+    changes: tuple[PlanChange, ...]
+
+
 class VerificationRequest(PathRequest):
     """Select a document and source repositories trusted to supply code."""
 
@@ -228,6 +252,19 @@ class VerifyRunSuccess(SuccessModel):
     successful_attempt_id: int | None
     stage_ids: tuple[StageId, ...]
     measurement_count: int
+
+
+class LineageRequest(VerificationRequest):
+    """Select one terminal run whose verified upstream lineage is requested."""
+
+
+class LineageSuccess(SuccessModel):
+    """Return the verified upstream graph of one successful run."""
+
+    operation: Literal["lineage"] = "lineage"  # pyright: ignore[reportIncompatibleVariableOverride]
+    run_id: RunId
+    nodes: tuple[LineageNode, ...]
+    edges: tuple[LineageEdge, ...]
 
 
 class VerifyBenchmarkRequest(VerificationRequest):
@@ -291,6 +328,10 @@ SCHEMA_REGISTRY: dict[str, Any] = {
     "ExecuteStageSuccess": ExecuteStageSuccess,
     "FreezeRunRequest": FreezeRunRequest,
     "FreezeRunSuccess": FreezeRunSuccess,
+    "LineageRequest": LineageRequest,
+    "LineageSuccess": LineageSuccess,
+    "PlanDiffRequest": PlanDiffRequest,
+    "PlanDiffSuccess": PlanDiffSuccess,
     "PreflightRequest": PreflightRequest,
     "PreflightSuccess": PreflightSuccess,
     "ResolvedRun": ResolvedRun,
@@ -323,6 +364,8 @@ OPERATIONS: tuple[OperationName, ...] = (
     "preflight",
     "execute_stage",
     "run_local",
+    "plan_diff",
+    "lineage",
     "verify_run",
     "verify_benchmark",
     "verify_pointer",
@@ -492,6 +535,36 @@ def run_local(request: RunLocalRequest) -> RunLocalSuccess:
     )
 
 
+def plan_diff(request: PlanDiffRequest) -> PlanDiffSuccess:
+    """Compare two frozen plans, including their referenced stage specs."""
+    try:
+        result = compare_frozen_plans(
+            request.left_repository_root,
+            request.left_run_spec,
+            request.right_repository_root,
+            request.right_run_spec,
+        )
+    except (InspectionError, OSError, ValueError, yaml.YAMLError) as exc:
+        raise ViperError(
+            ViperFailure(
+                operation="plan_diff",
+                origin="application",
+                code="invalid_document",
+                message="frozen plans could not be compared",
+                details={
+                    "left_run_spec": request.left_run_spec.as_posix(),
+                    "right_run_spec": request.right_run_spec.as_posix(),
+                },
+            )
+        ) from exc
+    return PlanDiffSuccess(
+        left_run_id=result.left_run_id,
+        right_run_id=result.right_run_id,
+        identical=result.identical,
+        changes=result.changes,
+    )
+
+
 def _policy(repositories: frozenset[str]) -> VerificationPolicy:
     """Construct the verifier policy carried by one application request."""
     return VerificationPolicy(trusted_loader_repositories=repositories)
@@ -528,6 +601,39 @@ def verify_run(
         successful_attempt_id=resolved.successful_attempt_id,
         stage_ids=tuple(verified.resolved_stages),
         measurement_count=len(verified.measurements),
+    )
+
+
+def lineage(
+    request: LineageRequest,
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> LineageSuccess:
+    """Verify one terminal run and return its upstream lineage graph."""
+    try:
+        resolved = _load_model(request.path, ResolvedRun)
+        assert isinstance(resolved, ResolvedRun)
+        verified = verify_run_result(
+            resolved,
+            policy=_policy(request.trusted_loader_repositories),
+            fetcher=fetcher,
+        )
+    except VerificationError as exc:
+        raise ViperError(
+            ViperFailure(
+                operation="lineage",
+                origin="application",
+                code="verification_failed",
+                message="run verification failed before lineage construction",
+            )
+        ) from exc
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        raise _document_error("lineage", request.path, exc) from exc
+    result = build_lineage(verified)
+    return LineageSuccess(
+        run_id=result.run_id,
+        nodes=result.nodes,
+        edges=result.edges,
     )
 
 
@@ -634,6 +740,8 @@ REQUEST_REGISTRY: dict[OperationName, RequestType] = {
     "preflight": PreflightRequest,
     "execute_stage": ExecuteStageRequest,
     "run_local": RunLocalRequest,
+    "plan_diff": PlanDiffRequest,
+    "lineage": LineageRequest,
     "verify_run": VerifyRunRequest,
     "verify_benchmark": VerifyBenchmarkRequest,
     "verify_pointer": VerifyPointerRequest,
@@ -649,6 +757,8 @@ HANDLER_REGISTRY: dict[OperationName, Handler] = {
     "preflight": preflight,
     "execute_stage": execute_stage,
     "run_local": run_local,
+    "plan_diff": plan_diff,
+    "lineage": lineage,
     "verify_run": verify_run,
     "verify_benchmark": verify_benchmark,
     "verify_pointer": verify_pointer,
@@ -706,6 +816,14 @@ __all__ = [
     "ExecuteStageSuccess",
     "FreezeRunRequest",
     "FreezeRunSuccess",
+    "LineageRequest",
+    "LineageSuccess",
+    "PlanDiffRequest",
+    "PlanDiffSuccess",
+    "PreflightRequest",
+    "PreflightSuccess",
+    "RunLocalRequest",
+    "RunLocalSuccess",
     "SchemaRequest",
     "SchemaSuccess",
     "ValidateResolvedStageRequest",
@@ -727,7 +845,11 @@ __all__ = [
     "freeze_run",
     "get_capabilities",
     "get_schema",
+    "lineage",
+    "plan_diff",
+    "preflight",
     "result_json_bytes",
+    "run_local",
     "validate_resolved_stage",
     "validate_run_spec",
     "validate_stage",

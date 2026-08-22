@@ -136,3 +136,38 @@ later sessions:
 - [ ] Push every commit and verify local `HEAD` equals its upstream.
 - [ ] Write a new dated journal entry with results, open gates, and the exact
   next action.
+
+## Observed completion
+
+The trusted-local vertical slice reached the session outcome:
+
+- Typed Python operations and the JSON CLI expose validation, freezing,
+  preflight, stage execution, complete local execution, verification, schema
+  discovery, and capability discovery.
+- The runner executes two ordered stages, materializes a same-run input,
+  invokes a frozen metric, publishes immutable snapshots, writes logs and
+  measurements, writes the terminal `resolved.yaml`, and verifies the result.
+- The verifier recomputes metrics that declare `verification="recompute"` and
+  applies their declared comparators.
+- The acceptance suite rejects altered artifact bytes.
+- Ruff, Pyright, 105 tests, 13 subtests, package builds, metadata checks, and an
+  installed-wheel smoke test pass.
+
+## Phase 2: read-only agent operations
+
+Phase 2 uses the verified plan and run evidence through deterministic JSON
+operations. These operations inspect immutable inputs and leave execution
+state unchanged.
+
+1. `plan_diff()` compares two complete frozen plans, including the exact stage
+   specs named by each RunSpec.
+2. `lineage()` returns the verified upstream path from each stage input to its
+   source artifact and producing stage.
+3. `status()` summarizes the latest durable attempt-journal entry and the next
+   valid coordinator action.
+4. `compare_runs()` compares two verified terminal runs after plan, input,
+   artifact, and measurement verification.
+
+Implementation begins with `plan_diff()` and `lineage()`. They have a read-only
+authority surface and let an agent explain why two plans differ and where each
+run input originated.

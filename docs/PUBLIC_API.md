@@ -10,6 +10,7 @@ exercise each path before release.
 | `viper.application` | Typed operations, requests, successes, failures, schema discovery, and capability discovery |
 | `viper.authoring` | Canonical experiment, variant, benchmark, stage, and run-plan documents |
 | `viper.ids` | Validated identifier types |
+| `viper.inspection` | Deterministic comparison of complete frozen plans |
 | `viper.journal` | Synchronized attempt-state journals |
 | `viper.local_store` | Immutable repository-local files and stage snapshots |
 | `viper.materialization` | Verified stored-input and same-run input materialization |
@@ -32,6 +33,7 @@ exercise each path before release.
 viper.application
 viper.authoring
 viper.ids
+viper.inspection
 viper.journal
 viper.local_store
 viper.materialization
