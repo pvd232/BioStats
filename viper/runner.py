@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
+import tempfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +24,7 @@ from .protocol import (
     DownloadSpec,
     ExperimentSpec,
     GitFileRef,
+    HuggingFaceFileRef,
     InternalSpec,
     LocalEnvironmentSpec,
     RemoteFileRef,
@@ -51,6 +54,8 @@ from .stage_execution import StageProcessResult, execute_stage_process
 from .verifier import (
     VerificationPolicy,
     VerifiedArtifact,
+    fetch_git_file_bytes,
+    fetch_huggingface_file_bytes,
     verify_promoted_artifact,
     verify_run_result,
 )
@@ -86,20 +91,53 @@ def _git(repository_root: Path, *arguments: str) -> bytes:
 class LocalRunFetcher:
     """Retrieve frozen Git source and repository-local immutable outputs."""
 
-    def __init__(self, repository_root: Path, store: LocalArtifactStore) -> None:
+    def __init__(
+        self,
+        repository_root: Path,
+        store: LocalArtifactStore,
+        source_repository: str,
+    ) -> None:
         """Bind retrieval to one local Git checkout and output store."""
         self.repository_root = repository_root.resolve()
         self.store = store
+        self.source_repository = source_repository
 
     def __call__(self, location: StorageModel) -> bytes:
         """Retrieve one file from its declared immutable backend."""
         if isinstance(location, GitFileRef):
+            if str(location.repository) != self.source_repository:
+                return fetch_git_file_bytes(location)
             return _git(
                 self.repository_root,
                 "show",
                 f"{location.commit}:{location.path}",
             )
+        if isinstance(location, HuggingFaceFileRef):
+            return fetch_huggingface_file_bytes(location)
         return self.store.fetch(location)
+
+
+def _write_synchronized(path: Path, raw: bytes) -> None:
+    """Atomically write and synchronize one local control or terminal file."""
+    if path.exists():
+        if path.read_bytes() == raw:
+            return
+        raise LocalRunError(f"refusing to replace different bytes at {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as temporary_file:
+            temporary_file.write(raw)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_name, path)
+    finally:
+        temporary_path = Path(temporary_name)
+        if temporary_path.exists():
+            temporary_path.unlink()
 
 
 def _resolved_git_file(
@@ -310,6 +348,9 @@ def run_local(
     run = RunSpec.model_validate(parse_yaml_bytes(run_raw))
     if not isinstance(run.environment, LocalEnvironmentSpec):
         raise LocalRunError("trusted local execution requires a local environment")
+    origin = _git(root, "remote", "get-url", "origin").decode().strip()
+    if origin != str(run.source.repository):
+        raise LocalRunError("local Git origin differs from RunSpec.source.repository")
     preflight = preflight_local_plan(root, run_path)
     if not preflight.ready:
         failed_codes = ", ".join(
@@ -323,7 +364,7 @@ def run_local(
         raise LocalRunError("RunSpec bytes are absent from the current Git commit")
 
     store = LocalArtifactStore(root)
-    fetcher = LocalRunFetcher(root, store)
+    fetcher = LocalRunFetcher(root, store, str(run.source.repository))
     policy = VerificationPolicy(
         trusted_loader_repositories=frozenset({str(run.source.repository)})
     )
@@ -350,11 +391,19 @@ def run_local(
     log_files: dict[str, bytes] = {}
     try:
         journal.append("allocated", "attempt allocated", recorded_at=attempt_started)
+        preflight_path = workspace.control / "preflight.json"
+        _write_synchronized(
+            preflight_path,
+            f"{preflight.model_dump_json()}\n".encode(),
+        )
         journal.append(
             "preflighting",
-            "frozen plan located in Git",
+            "preflight passed and frozen plan located in Git",
             recorded_at=datetime.now(UTC),
-            details={"plan_commit": plan_commit},
+            details={
+                "plan_commit": plan_commit,
+                "report": preflight_path.relative_to(workspace.root).as_posix(),
+            },
         )
         for stage_reference in run.stages:
             stage = load_stage_spec(root / stage_reference.spec)
@@ -469,6 +518,15 @@ def run_local(
         for path in measurement_paths:
             attempt_files[path.relative_to(root).as_posix()] = path.read_bytes()
         attempt_references = store.resolved_files(attempt_files)
+        attempt_commit = (
+            attempt_references[0].stored_at.commit if attempt_references else None
+        )
+        journal.append(
+            "publishing_attempt_files",
+            "attempt files published",
+            recorded_at=datetime.now(UTC),
+            details={"commit": attempt_commit},
+        )
         measurement_references = tuple(
             reference
             for reference in attempt_references
@@ -508,10 +566,14 @@ def run_local(
         )
         terminal_raw = serialize_document(resolved_run)
         terminal_path = run_path.parent / "resolved.yaml"
-        if terminal_path.exists() and terminal_path.read_bytes() != terminal_raw:
-            raise LocalRunError("terminal resolved run path contains different bytes")
-        terminal_path.write_bytes(terminal_raw)
-        workspace.terminal.write_bytes(terminal_raw)
+        journal.append(
+            "publishing_terminal_run",
+            "terminal run publication started",
+            recorded_at=datetime.now(UTC),
+            details={"path": terminal_path.relative_to(root).as_posix()},
+        )
+        _write_synchronized(terminal_path, terminal_raw)
+        _write_synchronized(workspace.terminal, terminal_raw)
         verify_run_result(resolved_run, policy=policy, fetcher=fetcher)
         journal.append(
             "terminal",

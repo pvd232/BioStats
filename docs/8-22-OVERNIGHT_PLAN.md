@@ -150,7 +150,7 @@ The trusted-local vertical slice reached the session outcome:
 - The verifier recomputes metrics that declare `verification="recompute"` and
   applies their declared comparators.
 - The acceptance suite rejects altered artifact bytes.
-- Ruff, Pyright, 105 tests, 13 subtests, package builds, metadata checks, and an
+- Ruff, Pyright, 109 tests, 13 subtests, package builds, metadata checks, and an
   installed-wheel smoke test pass.
 
 ## Phase 2: read-only agent operations

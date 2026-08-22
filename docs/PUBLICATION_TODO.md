@@ -103,7 +103,7 @@ freeze
 -> verify the terminal run
 ```
 
-The validated boundary includes 105 tests and 13 subtests, Ruff, Pyright,
+The validated boundary includes 109 tests and 13 subtests, Ruff, Pyright,
 source and wheel builds, metadata checks, and an installed-wheel capability
 smoke test. The release path still requires recovery semantics, hardened OCI
 execution, live GCE validation, benchmark execution, complete extension

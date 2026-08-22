@@ -32,7 +32,7 @@ def _artifact(path: str) -> SingleFileArtifactSpec:
 
 
 def test_preflight_reports_all_plan_failures(tmp_path: Path) -> None:
-    """Return independent failures for missing scripts, loaders, and producers."""
+    """Return every independent plan, source, environment, and stage failure."""
     run_root = "experiments/example/runs/baseline/01JABCDEFGHJKMNPQRSTVWXYZ0"
     stage = TrainSpec(
         script="project/build.py",
@@ -129,7 +129,17 @@ def test_preflight_reports_all_plan_failures(tmp_path: Path) -> None:
     report = preflight_local_plan(tmp_path, run_path)
 
     failures = {check.code for check in report.checks if check.status == "failure"}
-    assert failures == {"stage.script", "artifact.loader", "input.future"}
+    assert failures == {
+        "artifact.loader",
+        "environment.local",
+        "input.future",
+        "metric.implementation",
+        "plan.git_identity",
+        "plan.records",
+        "plan.relationships",
+        "source.repository",
+        "stage.script",
+    }
     assert not report.ready
 
 

@@ -9,6 +9,7 @@ import pytest
 
 from tests.fixtures import resume_state
 from viper.authoring import RunPlanDraft, StageDraft, freeze_run_plan
+from viper.journal import DurableJournal
 from viper.local_store import LocalArtifactStore
 from viper.protocol import (
     PARAMETERS,
@@ -18,6 +19,7 @@ from viper.protocol import (
     FutureInputRef,
     GitFileRef,
     GitSource,
+    HuggingFaceFileRef,
     LocalEnvironmentSpec,
     MetricParams,
     MetricSpec,
@@ -84,6 +86,30 @@ def _reproducibility() -> ReproducibilitySpec:
             },
         }
     )
+
+
+def test_local_fetcher_dispatches_hugging_face_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retrieve a Hugging Face input through its declared remote backend."""
+    reference = HuggingFaceFileRef(
+        repository="example/dataset",
+        commit="a" * 40,
+        path="data.bin",
+        repo_type="dataset",
+    )
+    monkeypatch.setattr(
+        "viper.runner.fetch_huggingface_file_bytes",
+        lambda location: b"remote bytes",
+    )
+    fetcher = LocalRunFetcher(
+        tmp_path,
+        LocalArtifactStore(tmp_path),
+        REPOSITORY,
+    )
+
+    assert fetcher(reference) == b"remote bytes"
 
 
 def test_two_stage_local_run_writes_and_verifies_terminal_result(
@@ -248,6 +274,21 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     assert len(result.resolved_run.attempts[0].resolved_stages) == 2
     assert len(result.resolved_run.attempts[0].measurement_files) == 1
     assert result.journal_path.is_file()
+    assert (result.journal_path.parent / "preflight.json").is_file()
+    assert tuple(
+        entry.state for entry in DurableJournal(result.journal_path).read()
+    ) == (
+        "allocated",
+        "preflighting",
+        "running_stage",
+        "publishing_stage",
+        "running_stage",
+        "publishing_stage",
+        "closing_attempt",
+        "publishing_attempt_files",
+        "publishing_terminal_run",
+        "terminal",
+    )
 
     first_snapshot = result.resolved_run.attempts[0].resolved_stages[0].snapshot
     assert first_snapshot.kind == "local"
@@ -265,5 +306,5 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             policy=VerificationPolicy(
                 trusted_loader_repositories=frozenset({REPOSITORY})
             ),
-            fetcher=LocalRunFetcher(root, store),
+            fetcher=LocalRunFetcher(root, store, REPOSITORY),
         )

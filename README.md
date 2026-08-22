@@ -22,7 +22,7 @@ both named `viper`.
 | [plan authoring](viper/authoring.py) | Writes canonical experiment, variant, benchmark, stage, and frozen run-plan files | `freeze_run_plan()`, `write_experiment_spec()`, `write_variant_spec()` |
 | [stage execution](viper/stage_execution.py) | Invokes one canonical stage command and hashes every declared output file | `execute_stage_process()` |
 | [local runner](viper/runner.py) | Executes and verifies a complete frozen run in a trusted local environment | `run_local()` |
-| [preflight](viper/preflight.py) | Checks source, environment, stages, inputs, outputs, and metrics before execution | `preflight_local_plan()` |
+| [preflight](viper/preflight.py) | Checks the committed plan, source repository, environment kind, stage identities, code paths, plan relationships, and metric implementations | `preflight_local_plan()` |
 | [local storage](viper/local_store.py) | Publishes immutable stage snapshots and run files beneath `.viper/store` | `LocalArtifactStore` |
 | [installed command](viper/cli.py) | Exposes authoring, preflight, execution, validation, verification, and discovery | `viper preflight`, `viper run-local`, `viper verify-run` |
 | [serialization](viper/serialization.py) | Encodes protocol documents and parses duplicate-key-safe YAML | `serialize_document()`, `parse_yaml_bytes()`, `load_stage_spec()`, `load_resolved_stage()` |
