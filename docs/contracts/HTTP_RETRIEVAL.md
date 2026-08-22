@@ -195,7 +195,7 @@ identified artifact files during one recorded invocation.
 | Variant binding | Include `DownloadVariantStageParams` in the selected stage-parameter mapping. |
 | Preflight | Validate request policy, parameter identity, secret availability, and retrieval limits. |
 | Runner | Execute HTTP through the controlled client and store response bodies before stage invocation. |
-| Stage interface | Deliver typed `DownloadParams` and verified response handles through `DownloadStageContext`. |
+| Stage interface | Extend `StageContext` as `DownloadContext`, carrying typed `DownloadParams` and verified response handles. |
 | Isolation | Deny direct stage network access and route retrieval through the controlled client. |
 | Resolved result | Publish the complete ordered exchange sequence and response identities. |
 | Verifier | Apply the named HTTP, parameter, source, and artifact checks. |
@@ -230,6 +230,6 @@ response length; verification must fail on SHA-256.
    validation.
 2. Add the frozen request and resolved exchange models.
 3. Add the controlled client and immutable response storage.
-4. Add `DownloadStageContext` and route project download code through it.
+4. Add `DownloadContext` and route project download code through it.
 5. Enforce the network policy in preflight and the execution backend.
 6. Add verifier rules and executable acceptance cases.

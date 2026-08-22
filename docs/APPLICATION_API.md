@@ -4,6 +4,17 @@
 typed request model to a function. The `viper` command validates a mapping,
 calls the same function, and renders its result.
 
+Project stage modules use the root `viper.run(stage_callable)` adapter defined
+by [Process startup](contracts/PROCESS_STARTUP.md). That adapter and the
+installed command both delegate complete-run coordination to
+`viper.application.run(request)`. The callable argument binds the launched
+module to one frozen stage. The application operation executes the complete
+ordered run plan.
+
+The execution names in this document are the approved 0.1 surface. The current
+package still exposes `run_local()` and `viper run-local`; the execution-contract
+increment replaces those pre-release names.
+
 ## Operations
 
 | Python | CLI | Result |
@@ -14,7 +25,7 @@ calls the same function, and renders its result.
 | `freeze_run(request)` | `viper freeze-run` | Canonical stage and run specification paths |
 | `preflight(request)` | `viper preflight` | Every applicable check and one readiness value |
 | `execute_stage(request)` | `viper execute-stage` | Command, artifacts, standard output, and standard error |
-| `run_local(request)` | `viper run-local` | Verified terminal run and attempt journal paths |
+| `run(request)` | `viper run` | Verified terminal run and attempt journal paths |
 | `plan_diff(request)` | `viper plan-diff` | Ordered leaf differences between two complete frozen plans |
 | `lineage(request)` | `viper lineage` | Verified stages, inputs, artifacts, and their directed relationships |
 | `status(request)` | `viper status` | Latest durable attempt state and permitted successor states |
@@ -60,7 +71,7 @@ records its SHA-256 and byte count in `RunSpec.stages`, and writes the run
 
 Expected errors: `invalid_document`, `not_found`, `write_conflict`, `io_failed`.
 
-## Preflight a local plan
+## Preflight a plan
 
 ```python
 preflight(request: PreflightRequest) -> PreflightSuccess
@@ -69,7 +80,7 @@ preflight(request: PreflightRequest) -> PreflightSuccess
 | Request field | Type | Meaning |
 | --- | --- | --- |
 | `run_spec` | `Path` | Frozen run `spec.yaml` |
-| `repository_root` | `Path` | Local repository root |
+| `repository_root` | `Path` | Repository root on the active execution host |
 
 The result contains `run_id`, `ready`, and every `PreflightCheck`. Each check
 contains a stable `code`, `status`, `target`, and `message`. `ready` is true
@@ -85,30 +96,30 @@ execute_stage(request: ExecuteStageRequest) -> ExecuteStageSuccess
 | --- | --- | --- |
 | `run_spec` | `Path` | Frozen run `spec.yaml` |
 | `stage_id` | `StageId` | Stage selected from `RunSpec.stages` |
-| `repository_root` | `Path` | Local repository root |
+| `repository_root` | `Path` | Repository root on the active execution host |
 | `timeout_seconds` | positive `float` or `None` | Process deadline |
 
 VIPER verifies the stage-spec bytes, applies the run controls through
-`viper.stage_worker`, invokes the project entrypoint, and hashes every declared
-artifact file. The result contains `stage_id`, `command`, `artifacts`, `stdout`,
-and `stderr`.
+`viper.stage_worker`, invokes the frozen stage callable, and hashes every
+declared artifact file. The result contains `stage_id`, `command`, `artifacts`,
+`stdout`, and `stderr`.
 
 Expected errors: `invalid_document`, `not_found`, `io_failed`,
 `execution_failed`.
 
-## Execute a complete local run
+## Execute a complete run
 
 ```python
-run_local(request: RunLocalRequest) -> RunLocalSuccess
+run(request: RunRequest) -> RunSuccess
 ```
 
 | Request field | Type | Meaning |
 | --- | --- | --- |
 | `run_spec` | `Path` | Frozen run `spec.yaml` present in the current Git commit |
-| `repository_root` | `Path` | Local Git repository root |
+| `repository_root` | `Path` | Git repository root on the active execution host |
 | `timeout_seconds` | positive `float` or `None` | Per-stage process deadline |
 
-The trusted-local runner performs these operations in order:
+The coordinator performs these operations in order:
 
 ```text
 preflight plan
@@ -125,6 +136,11 @@ preflight plan
 The result contains `run_id`, `resolved_run`, and `journal`. Output snapshots
 live under `.viper/store/<content digest>/`. Attempt control files live under
 `.viper/workspaces/<run ID>/attempt-<attempt ID>/`.
+
+The active host may satisfy `LocalEnvironmentSpec` or `GCEEnvironmentSpec`.
+The [cloud-execution contract](contracts/CLOUD_EXECUTION.md) defines GCE runtime
+observation. The [process-startup contract](contracts/PROCESS_STARTUP.md)
+defines the child process used by both Python and CLI callers.
 
 Expected errors: `execution_failed`, `verification_failed`, `invalid_document`,
 `not_found`, `io_failed`.
@@ -283,7 +299,7 @@ Place `--json` before the command:
 ```bash
 viper --json capabilities
 viper --json preflight experiments/example/runs/baseline/<run_id>/spec.yaml
-viper --json run-local experiments/example/runs/baseline/<run_id>/spec.yaml
+viper --json run experiments/example/runs/baseline/<run_id>/spec.yaml
 viper --json plan-diff <left-spec.yaml> <right-spec.yaml>
 viper --json lineage <resolved.yaml> --trust-loader-source <repository>
 viper --json status <journal.jsonl>

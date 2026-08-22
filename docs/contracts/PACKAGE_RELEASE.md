@@ -9,9 +9,9 @@ VIPER 0.1.
 ## Required claim
 
 Installing `viper-provenance==0.1.0a1` provides the documented Python API and
-CLI. A user can create or open a project, execute the published acceptance
-path outside the source checkout, and receive the documented machine-readable
-results.
+CLI. A user can create or open a project, execute a decorated stage through
+ordinary Python, execute the same frozen plan through the installed command,
+and receive equivalent verified results outside the source checkout.
 
 ## Current gap
 
@@ -26,6 +26,10 @@ Release freezes the import names listed in
 [`PUBLIC_API.md`](../PUBLIC_API.md), the CLI commands, JSON result schemas,
 stable error codes, and capability-discovery output. Every documented name must
 exist in the installed wheel.
+
+The public project interface includes the stage decorators, typed stage
+contexts, and `viper.run(stage_callable)`. The CLI delegates execution to the
+same application coordinator.
 
 ## Optional project scaffold
 
@@ -62,6 +66,7 @@ The release candidate must satisfy each check:
 |---|---|
 | Public imports | Every name in `PUBLIC_API.md` imports from the installed wheel. |
 | CLI | Every command returns documented human output, JSON, and exit status. |
+| Python execution | The generated project's decorated stage executes through `python train.py` and returns a verified result. |
 | Metadata | License, authors, URLs, classifiers, and version are complete. |
 | Builds | Source distribution and wheel build while generated metadata remains untracked. |
 | Wheel acceptance | The generated project passes the complete local acceptance path in a clean environment. |
@@ -80,7 +85,8 @@ publishing](https://packaging.python.org/en/latest/guides/section-build-and-publ
 |---|---|
 | Metadata | Add the approved license, authors, project URLs, classifiers, and `0.1.0a1` version. |
 | Public API | Freeze imports, result schemas, errors, exit statuses, and capability discovery. |
-| CLI | Implement `viper init` and every release-gated operation. |
+| Python execution | Export stage decorators, typed contexts, and `viper.run(stage_callable)`. |
+| CLI | Implement `viper init` and route every command through the application API. |
 | Template | Add one maintained runnable project template. |
 | CI | Build, install, and exercise the wheel from outside the checkout. |
 | Release | Publish to TestPyPI, validate, tag, and publish the exact artifacts to PyPI. |
@@ -89,8 +95,10 @@ publishing](https://packaging.python.org/en/latest/guides/section-build-and-publ
 
 A clean environment installs the candidate wheel. The command
 `viper init tiny-project --package tiny_project` creates the example. The
-example freezes, preflights, runs, verifies, and emits valid JSON through the
-installed command. The same wheel completes the live GCE smoke case.
+example freezes and preflights one plan. `python train.py` executes its decorated
+stage through `viper.run(stage_callable)`. `viper run` executes the complete
+plan through the same coordinator and emits valid JSON. Both results pass
+terminal verification. The same wheel completes the live GCE smoke case.
 
 Deleting one documented public import causes the installed-wheel test to fail.
 

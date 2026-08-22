@@ -22,7 +22,7 @@ both named `viper`.
 | [training resume](viper/resume.py) | Captures, serializes, restores, and validates optimizer, generator, and stateful-loader state | `capture_resume_state()`, `restore_resume_state()` |
 | [plan authoring](viper/authoring.py) | Writes canonical experiment, variant, benchmark, stage, and frozen run-plan files | `freeze_run_plan()`, `write_experiment_spec()`, `write_variant_spec()` |
 | [stage execution](viper/stage_execution.py) | Invokes one canonical stage command and hashes every declared output file | `execute_stage_process()` |
-| [local runner](viper/runner.py) | Executes and verifies a complete frozen run in a trusted local environment | `run_local()` |
+| [current runner](viper/runner.py) | Executes and verifies a complete frozen run in the implemented trusted-local environment | `run_local()` |
 | [preflight](viper/preflight.py) | Checks the committed plan, source repository, environment kind, stage identities, code paths, plan relationships, and metric implementations | `preflight_local_plan()` |
 | [local storage](viper/local_store.py) | Publishes immutable stage snapshots and run files beneath `.viper/store` | `LocalArtifactStore` |
 | [installed command](viper/cli.py) | Exposes authoring, preflight, execution, validation, verification, and discovery | `viper preflight`, `viper run-local`, `viper verify-run` |
@@ -136,7 +136,7 @@ benchmark data from entering a training stage.
 - `lineage(...)` verifies one terminal run and returns its directed upstream
   provenance graph.
 
-## Run locally
+## Current local execution
 
 Freeze the plan, inspect it, then execute it from the project repository:
 
@@ -155,6 +155,37 @@ The local runner creates an exclusive attempt workspace, applies the run-wide
 reproducibility controls, invokes each stage through the VIPER runtime
 bootstrap, materializes declared inputs, publishes immutable results, and runs
 the complete verifier before returning success.
+
+## Approved 0.1 execution interface
+
+Project code will declare stage callables with VIPER decorators and execute them
+through ordinary Python:
+
+```python
+import viper
+
+
+@viper.train_stage(parameter_model=TrainParameters)
+def train(context: viper.StageContext[TrainParameters]) -> None:
+    ...
+
+
+if __name__ == "__main__":
+    viper.run(train)
+```
+
+```bash
+python train.py --run <run-spec> --stage train
+```
+
+The installed `viper run <run-spec>` command will execute a complete plan
+through the same application coordinator. Local and GCE execution use the same
+interfaces. The user invokes VIPER inside the selected host; VIPER records and
+verifies that host's realized environment.
+
+The approved mechanics live in the [stage-invocation](docs/contracts/STAGE_INVOCATION.md),
+[process-startup](docs/contracts/PROCESS_STARTUP.md), and
+[cloud-execution](docs/contracts/CLOUD_EXECUTION.md) contracts.
 
 ## Validation
 
@@ -176,10 +207,10 @@ rejection.
 
 ## Current boundaries
 
-- `LocalEnvironmentSpec` powers the trusted local runner.
-- `GCEEnvironmentSpec` defines the remote environment contract. Single-host GCE
-  execution remains a 0.1 release task; OCI confinement follows as stable
-  hardening.
+- `LocalEnvironmentSpec` powers the implemented trusted-local runner.
+- `GCEEnvironmentSpec` defines the in-place cloud environment contract.
+  Single-host GCE observation and execution remain a 0.1 release task; OCI
+  confinement follows as stable hardening.
 - Every internal stage binds its versioned JSON parameters to an exact
   project-owned Pydantic class. VIPER validates the class and values during
   plan freezing, preflight, and execution.
@@ -197,6 +228,7 @@ rejection.
 - Artifact loaders execute Python from the Git commit named by `RunSpec.source`.
   Verification therefore accepts only run sources trusted to execute in the
   verifier process.
-- The trusted local runner completes successful attempts from preflight through
-  terminal publication and verification. Failed-attempt publication, retry,
-  and single-host GCE execution remain 0.1 release tasks.
+- The trusted-local runner completes successful attempts from preflight through
+  terminal publication and verification. The approved 0.1 surface generalizes
+  that coordinator to `viper.run(stage_callable)`, `viper run`, and in-place
+  GCE execution. Failed-attempt publication and retry remain 0.1 release tasks.

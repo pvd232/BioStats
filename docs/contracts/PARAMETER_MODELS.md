@@ -47,11 +47,16 @@ Available core bases:
 
 ## Bind the class
 
-Every stage spec includes a `parameter_model` reference.
+Every stage spec includes a `parameter_model` reference. The approved 0.1
+stage-invocation form binds that model beside the callable that receives it:
 
 ```yaml
 kind: train
-script: project/training/fit.py
+implementation:
+  path: project/training/fit.py
+  symbol: train
+  sha256: 4d93d67ed414c12b8bf130e915d417e801577cc1f59b163060728151d08ad9a5
+  bytes: 2468
 parameter_model:
   path: project/parameters/transformer.py
   symbol: TransformerTrainParameters
@@ -69,27 +74,30 @@ params:
 repository and commit. The path, symbol, digest, and byte count identify the
 exact class selected by the stage.
 
+Current pre-release stage records use `script` for their execution target. The
+[Stage invocation](STAGE_INVOCATION.md) migration replaces that field with the
+`implementation` reference shown above.
+
 ## Enforcement
 
 | Operation | Check |
 | --- | --- |
 | Freeze | Local class bytes match the selected source commit; the class accepts the parameters |
 | Preflight | Class identity and parameter validity receive separate check results |
-| Execute | A dedicated worker validates the parameters before the stage process starts |
+| Execute | The controlled child validates the parameters before constructing `StageContext` |
 | Verify | Source bytes match the frozen identity and define the selected top-level class |
 
-The worker imports project code inside a separate process. The trusted-local
-backend gives the parameter-validation worker the same repository and
-environment access as the stage command. OCI isolation will apply the same
-parameter-model interface inside the release execution boundary.
+The worker imports project code inside the child process defined by
+[Process startup](PROCESS_STARTUP.md). Local and GCE execution use the same
+parameter-model interface. OCI isolation will apply that interface inside its
+confinement boundary.
 
 Validation uses strict Pydantic types. The class output must equal the frozen
 JSON mapping exactly. Include every effective default in `params`; this keeps
 the plan and the values received by project code identical.
 
-This contract proves parameter identity and validity before the stage process
-starts. The current stage interface supplies the spec path to project code.
-Project code must still load that file itself. A typed stage-context API remains
-open implementation work; [Stage invocation](STAGE_INVOCATION.md) defines that
-handoff. [HTTP retrieval](HTTP_RETRIEVAL.md) applies the same handoff to verified
-response bodies.
+This contract proves parameter identity and validity. The current stage
+interface supplies the spec path to project code, which reloads the document.
+[Stage invocation](STAGE_INVOCATION.md) defines typed delivery of the validated
+value to the decorated callable. [HTTP retrieval](HTTP_RETRIEVAL.md) applies the
+same handoff to verified response bodies.

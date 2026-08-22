@@ -24,7 +24,7 @@ task-scoped Git commit and a successful push.
 10. [Phase 6: OCI isolation](#phase-6-implement-the-oci-isolation-worker)
 11. [Phase 7: preflight and input materialization](#phase-7-implement-preflight-and-verified-input-materialization)
 12. [Phase 8: runtime bootstrap](#phase-8-implement-the-runtime-bootstrap-and-controls)
-13. [Phase 9: durable orchestration](#phase-9-implement-durable-run-orchestration)
+13. [Phase 9: durable execution](#phase-9-implement-durable-run-execution)
 14. [Phase 10: benchmark execution](#phase-10-implement-benchmark-execution-and-recomputation)
 15. [Phase 11: agent operations](#phase-11-add-agent-inspection-and-controlled-mutation)
 16. [Phase 12: internal modules](#phase-12-split-internals-at-established-dependency-boundaries)
@@ -36,13 +36,14 @@ task-scoped Git commit and a successful push.
 VIPER 0.1 is ready when a user can freeze a run plan, execute it on a
 pre-provisioned GCE host, publish its immutable results, verify its complete
 lineage, execute a benchmark confirmation, and inspect the result through the
-Python API or JSON CLI.
+decorated Python interface, application API, or JSON CLI.
 
 The shortest release path is:
 
 ```text
 contract freeze
 -> typed stage invocation
+-> controlled process startup
 -> controlled HTTP retrieval
 -> metric and artifact closure
 -> failed attempts and retry
@@ -60,6 +61,7 @@ mechanics for every 0.1 release gate.
 | Priority | Work | Reason |
 |---|---|---|
 | 0.1 required | Typed stage invocation | Connects validated project parameters to the callable that receives them. |
+| 0.1 required | Controlled process startup | Applies frozen process and numerical controls before a stage callable executes. |
 | 0.1 required | Controlled HTTP retrieval | Connects each declared request to the response bytes consumed by a download stage. |
 | 0.1 required | Metric and artifact closure | Fixes metric dependencies and states the exact artifact guarantee established by each check. |
 | 0.1 required | Failed attempts and retry | Preserves failures and lets a user rerun the same frozen plan safely. |
@@ -68,15 +70,16 @@ mechanics for every 0.1 release gate.
 | 0.1 required | Distribution acceptance | Proves the installed wheel and CLI complete the documented user path. |
 | 0.1 convenience | `viper init` | Creates a runnable starter project while preserving repository-relative source paths. |
 | Stable hardening | OCI mounts and network confinement | Supports a strong information-flow claim against untrusted project code. |
-| Stable reliability | Crash adoption, publication recovery, cancellation, and preemption | Preserves remote attempts across coordinator and host failures. |
+| Stable reliability | Crash adoption, publication recovery, cancellation, and preemption | Preserves interrupted attempts across coordinator and host failures. |
 | Later scale | Distributed execution and durable object-store publication | Supports multi-host training and long-lived remote results. |
 | Later autonomy | Epoch-completion oversight and agent mutation dry-runs | Adds supervised execution claims for highly autonomous runs. |
 | Later maintenance | Internal protocol and verifier splits | Reduces maintenance cost after public boundaries stabilize. |
 | Later interface | Additional built-ins and graphical interfaces | Lowers setup effort after the execution contract is complete. |
 
-The minimal GCE contract uses one trusted, pre-provisioned VM. It extends the
-working local coordinator to remote compute. The OCI worker supplies a separate
-confinement guarantee and is scheduled after 0.1.
+The minimal GCE contract uses one trusted, pre-provisioned VM. The user invokes
+VIPER inside that host through the same Python or CLI interface used locally.
+The OCI worker supplies a separate confinement guarantee and is scheduled after
+0.1.
 
 ## Completed foundation
 
@@ -187,26 +190,30 @@ verified file set + core artifact validator
 - [ ] Define the immutable recomputation evidence stored with a benchmark
   result.
 
-### 0.3 Execution backends
+### 0.3 Execution hosts and process boundary
 
-The 0.1 cloud backend runs on one trusted, pre-provisioned GCE host. The OCI
-worker becomes the stable-release confinement backend.
+VIPER 0.1 executes on the active trusted host. That host may be a local machine
+or a pre-provisioned GCE instance. The OCI worker adds the stable-release
+confinement boundary.
 
 The [HTTP retrieval contract](contracts/HTTP_RETRIEVAL.md) defines the frozen
 request, resolved exchange, controlled-client, and verifier changes for
 download stages.
 
-The [cloud execution contract](contracts/CLOUD_EXECUTION.md) defines the 0.1
-GCE transport, remote runtime evidence, and live acceptance profile.
+The [process-startup contract](contracts/PROCESS_STARTUP.md) defines the shared
+child process used by Python and CLI execution. The
+[cloud execution contract](contracts/CLOUD_EXECUTION.md) defines in-place GCE
+runtime observation, verification, and the live acceptance profile.
 
-- [ ] Extract the working local orchestration into a backend-neutral
-  coordinator.
-- [ ] Add the `run_gce` application and CLI operation.
-- [ ] Build and verify the bounded GCE execution bundle.
-- [ ] Transfer the bundle and invoke the remote runner through the documented
-  Google Cloud transport.
+- [ ] Rename the complete-run application operation from `run_local` to `run`.
+- [ ] Generalize preflight and the coordinator across local and GCE
+  environments.
+- [ ] Add the decorated `viper.run(stage_callable)` project interface.
+- [ ] Route `viper run` through the same application coordinator.
+- [ ] Apply every stage's process-start environment in a controlled child.
+- [ ] Replace the GCE machine-image fields with immutable boot-image identity.
+- [ ] Allow the existing CPU or CUDA compute union on local environments.
 - [ ] Record and verify realized GCE host state.
-- [ ] Pull and verify remote result revisions when requested.
 - [ ] Run one live GCE acceptance profile from the installed wheel.
 
 Phase 6 owns OCI mounts, network confinement, secrets, resource limits, and
@@ -385,6 +392,7 @@ python -m pytest tests/test_application_errors.py tests/test_application_json.py
 - [x] Implement `get_capabilities()` through an explicit capability registry.
 - [x] Return one validated success model from every operation.
 - [x] Document each operation beside its implementation.
+- [ ] Replace the pre-release `run_local()` operation with host-neutral `run()`.
 
 ### 3.2 CLI parser and rendering
 
@@ -492,7 +500,7 @@ python -m pytest tests/test_workspace.py tests/test_storage.py tests/test_public
 2. `Implement verified retrieval and caching`
 3. `Implement idempotent result publication`
 4. `Implement durable attempt journaling`
-5. `Define workers and trusted local execution`
+5. `Define workers and trusted single-host execution`
 
 ## Phase 5. Implement project extension interfaces
 
@@ -506,6 +514,10 @@ ordinary project code.
 
 ### 5.1 Stage entrypoints
 
+- [ ] Add `StageImplementationRef` with repository-relative path, top-level
+  symbol, SHA-256, and byte count.
+- [ ] Add one decorator for each stage kind.
+- [ ] Export typed stage contexts and `viper.run(stage_callable)`.
 - [ ] Set `VIPER_CONTEXT_PATH` to the versioned context JSON file.
 - [ ] Set the worker current directory to the attempt workspace.
 - [ ] Add the frozen source root to `sys.path`.
@@ -573,8 +585,8 @@ python -m pytest tests/test_parameter_models.py tests/test_authoring.py tests/te
 
 ## Phase 6. Implement the OCI isolation worker
 
-This phase targets the stable confinement release. VIPER 0.1 ships the trusted,
-single-host GCE backend defined by the cloud execution contract.
+This phase targets the stable confinement release. VIPER 0.1 ships trusted,
+in-place single-host execution defined by the cloud execution contract.
 
 - [ ] Detect the OCI runtime and required GCE host capabilities.
 - [ ] Build the worker image from the frozen environment lock.
@@ -599,7 +611,7 @@ python -m pytest tests/test_isolation_worker.py -q
 
 A live GCE isolation smoke test also passes before release.
 
-**Commit:** `Implement the GCE OCI execution worker`
+**Commit:** `Implement the OCI confinement worker`
 
 ## Phase 7. Implement preflight and verified input materialization
 
@@ -652,23 +664,26 @@ python -m pytest tests/test_preflight.py tests/test_materialization.py -q
 ## Phase 8. Implement the runtime bootstrap and controls
 
 ```text
-runner
--> launch VIPER bootstrap
+Python entrypoint or CLI
+-> application coordinator
+-> launch controlled child
 -> apply process controls
 -> initialize supported generator services
--> load frozen project entrypoint
--> pass typed context
--> execute stage
+-> load frozen decorated callable
+-> construct typed context
+-> invoke callable
 ```
 
-- [ ] Apply environment variables and process-level numerical controls before
-  importing project code.
+- [ ] Derive the canonical process-start environment from the frozen run.
+- [ ] Apply that environment when the coordinator launches the stage child.
+- [ ] Require direct stage modules to keep import-time execution declarative.
+- [ ] Import and invoke the decorated callable inside the controlled child.
 - [ ] Initialize Python, NumPy, PyTorch CPU, PyTorch CUDA, and loader generators
   from the global run seed.
 - [ ] Expose generator services through the public VIPER runtime context.
 - [ ] Require stateful training loaders to use
   `torchdata.stateful_dataloader.StatefulDataLoader` for resumable execution.
-- [ ] Record the realized GCE machine type, machine image, GPU model, GPU count,
+- [ ] Record the realized GCE machine type, boot image, GPU model, GPU count,
   driver, CUDA runtime, Python interpreter, package lock digest, parallelism,
   and numerical controls.
 - [ ] Compare the realized evidence with the effective stage environment and
@@ -684,9 +699,9 @@ runner
 python -m pytest tests/test_runtime_bootstrap.py tests/test_resume.py -q
 ```
 
-**Commit:** `Apply runtime controls through the VIPER bootstrap`
+**Commit:** `Apply runtime controls through VIPER process startup`
 
-## Phase 9. Implement durable run orchestration
+## Phase 9. Implement durable run execution
 
 ### 9.1 Attempt execution
 
@@ -866,7 +881,7 @@ cross-document pass.
 
 ### 13.3 Platform and publication checks
 
-- [ ] Run a complete live GCE execution through the trusted single-host backend.
+- [ ] Run a complete live GCE execution through the trusted single-host path.
 - [ ] Verify the published run from a clean client environment.
 - [ ] Add owner-approved license and author metadata.
 - [ ] Publish to TestPyPI with owner-provided credentials.

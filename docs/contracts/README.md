@@ -23,6 +23,7 @@ Each contract uses one status:
 |---|---|---|
 | [Parameter models](PARAMETER_MODELS.md) | Implemented | Project parameter identity and validation |
 | [Stage invocation](STAGE_INVOCATION.md) | Approved | Typed delivery of validated stage parameters and paths |
+| [Process startup](PROCESS_STARTUP.md) | Approved | Run-wide controls applied before each stage callable executes |
 | [HTTP retrieval](HTTP_RETRIEVAL.md) | Approved | Controlled delivery of verified HTTP response bytes |
 | [Metric provenance](METRIC_PROVENANCE.md) | Approved | Exact metric dependencies, execution, and recomputation |
 | [Artifact validation](ARTIFACT_VALIDATION.md) | Approved | File identity, loadability, and reserved semantic validation |

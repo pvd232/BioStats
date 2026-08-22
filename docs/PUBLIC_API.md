@@ -1,7 +1,9 @@
 # Public Python API
 
-VIPER 0.1 supports the modules and names listed here. Installed-wheel tests
-exercise each path before release.
+This document defines the approved VIPER 0.1 Python surface. Installed-wheel
+tests exercise each path before release. The current pre-release package still
+uses the local-only execution names; the stage-invocation increment adds
+`viper.stages`, the root stage interface, and the host-neutral `run` operation.
 
 ## Modules
 
@@ -16,12 +18,13 @@ exercise each path before release.
 | `viper.materialization` | Verified stored-input and same-run input materialization |
 | `viper.metrics` | Decorated functions, stateful metrics, comparison, and measurement output |
 | `viper.parameter_models` | Project parameter-class loading, identity checks, and validation |
-| `viper.preflight` | Complete-plan checks for trusted local execution |
+| `viper.preflight` | Complete-plan checks for the active single-host environment |
 | `viper.protocol` | Authored and resolved protocol models |
 | `viper.resume` | Training resume-state capture, persistence, and restoration |
-| `viper.runner` | Complete trusted-local run execution and publication |
+| `viper.runner` | Complete trusted single-host run execution and publication |
 | `viper.serialization` | Duplicate-key-safe parsing and canonical document encoding |
-| `viper.stage_execution` | One local stage-process invocation |
+| `viper.stage_execution` | One controlled stage-process invocation on the active host |
+| `viper.stages` | Stage decorators, typed contexts, and direct Python execution |
 | `viper.verifier` | Run, benchmark, and promoted-artifact verification |
 | `viper.worker` | Project command execution through the selected backend |
 | `viper.workspace` | Bounded attempt directories and exclusive run ownership |
@@ -45,9 +48,26 @@ viper.protocol
 viper.resume
 viper.runner
 viper.stage_execution
+viper.stages
 viper.worker
 viper.workspace
 ```
+
+The root package also exposes the project-facing stage interface:
+
+```python
+viper.download_stage
+viper.build_stage
+viper.embed_stage
+viper.train_stage
+viper.evaluate_stage
+viper.StageContext
+viper.DownloadContext
+viper.run
+```
+
+`viper.run(stage_callable)` is the ordinary Python adapter. The complete-plan
+application operation remains `viper.application.run(request)`.
 
 Import concrete classes and functions from their owning module. For example:
 

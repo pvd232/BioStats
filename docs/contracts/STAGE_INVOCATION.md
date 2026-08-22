@@ -2,29 +2,40 @@
 
 ## Status
 
-Project parameter identity and validation are implemented. Typed delivery to
-the stage implementation is approved for VIPER 0.1.
+Project parameter identity and validation are implemented. Decorated callable
+identity and typed delivery are approved for VIPER 0.1.
 
 ## Required claim
 
-VIPER verifies that the selected stage implementation received the exact
-parameter value accepted by the stage's frozen parameter model.
+VIPER verifies that the exact stage callable frozen by the plan received the
+parameter value, input paths, and artifact paths accepted for that stage.
 
 ## Current gap
 
 The parameter worker validates `ParameterizedSpec.params` and writes the
-effective mapping. The stage process performs that validation before launch.
-[`stage_worker.py`](../../viper/stage_worker.py) then gives the project script
-the stage-spec path through `sys.argv`. The project script loads and interprets
-the file itself.
+effective mapping. The stage process repeats that validation before launch.
+[`stage_worker.py`](../../viper/stage_worker.py) then supplies the stage-spec
+path through `sys.argv` and executes `BaseSpec.script` with `runpy.run_path()`.
 
-The validated value leaves runner custody before stage invocation. A successful
-stage therefore establishes parameter validity and stage execution as separate
-facts. Typed delivery remains unsupported.
+The project script reloads and interprets the stage document. The completed
+stage therefore establishes parameter validity and script execution as separate
+facts. The current resolved stage lacks evidence that one identified callable
+received the validated value.
 
 ## Contract models
 
-`StageContext` is the user-facing runtime value for one stage invocation:
+`StageImplementationRef` identifies one top-level callable in the project
+source:
+
+```python
+class StageImplementationRef(ProtocolModel):
+    path: PythonRepoRelPath
+    symbol: PythonSymbol
+    sha256: Sha256
+    bytes: int = Field(gt=0)
+```
+
+`StageContext` carries one validated stage invocation:
 
 ```python
 ParamsT = TypeVar("ParamsT", bound=ParameterSet)
@@ -41,72 +52,107 @@ class StageContext(ProtocolModel, Generic[ParamsT]):
     artifacts: dict[ArtifactName, Path]
 ```
 
-`StageCallable` is a top-level project function:
+Each parameterized stage replaces `BaseSpec.script` with:
 
 ```python
-def run(context: StageContext[ProjectParams]) -> None:
-    ...
+implementation: StageImplementationRef
 ```
 
-The frozen stage identifies the function by repository-relative path and
-top-level symbol. The source commit, path, symbol, SHA-256, and byte count fix
-the implementation.
+The source commit, path, symbol, SHA-256, and byte count identify the callable.
+
+## Project interface
+
+The project decorates an ordinary top-level function:
+
+```python
+import viper
+
+
+@viper.train_stage(parameter_model=TrainParameters)
+def train(context: viper.StageContext[TrainParameters]) -> None:
+    ...
+
+
+if __name__ == "__main__":
+    viper.run(train)
+```
+
+The decorator records the stage kind and parameter-model class for authoring.
+Plan freezing resolves the function to `StageImplementationRef` and confirms
+that the selected `ParameterModelRef` identifies the same class.
+
+`viper.run(train)` starts the [process-startup contract](PROCESS_STARTUP.md).
+The installed `viper run` command reaches the same coordinator when a user or
+agent executes a complete plan.
 
 ## Execution
 
-The stage worker performs this sequence:
+The controlled child performs this sequence:
 
 ```text
-load frozen stage spec
--> verify parameter-model bytes
+load the frozen stage spec
+-> verify callable and parameter-model bytes
 -> validate params into the selected project class
--> load the selected stage callable
+-> import the selected top-level callable
+-> confirm its decorator metadata
 -> construct StageContext with the typed parameter object
--> call run(context)
+-> invoke the callable once
 -> record the completed invocation
 ```
 
-The stage callable receives validated parameters directly. Input and artifact
-paths come from the same context.
+The callable receives validated parameters directly. The same context supplies
+the materialized input paths and writable artifact paths selected for that
+attempt.
 
 ## Persisted evidence
 
-`ResolvedBaseSpec` stores a `StageInvocationReceipt` containing the stage
-implementation identity, parameter-model identity, canonical parameter digest,
-canonical binding digest, start time, completion time, and process outcome.
+`ResolvedBaseSpec` stores a `StageInvocationReceipt` containing:
 
-The canonical binding replaces each runtime path with its repository-relative
-logical path before hashing. Absolute workspace paths exist only in the
-user-facing runtime value.
+```python
+class StageInvocationReceipt(ProtocolModel):
+    implementation: StageImplementationRef
+    parameter_model: ParameterModelRef
+    parameter_digest: Sha256
+    context_digest: Sha256
+    started_at: AwareDatetime
+    completed_at: AwareDatetime
+    outcome: Literal["succeeded", "failed"]
+```
+
+The canonical context replaces each absolute workspace path with its logical
+input or artifact path before hashing. Absolute paths exist only in the runtime
+`StageContext`.
 
 ## Verification
 
 | Check | Rule |
 |---|---|
-| `stage.implementation` | The receipt identifies the implementation frozen by the stage spec and run source. |
+| `stage.implementation` | The receipt identifies the callable frozen by the stage spec and run source. |
+| `stage.decorator` | The callable's decorator kind and parameter-model class agree with the frozen stage. |
 | `parameter_model.identity` | The receipt identifies the frozen parameter model. |
-| `parameter.value` | The canonical digest of the delivered mapping equals the digest of `stage.params`. |
-| `stage.context` | The receipt binding digest equals the canonical binding reconstructed from the resolved inputs and outputs. |
+| `parameter.value` | The delivered parameter digest equals the canonical digest of `stage.params`. |
+| `stage.context` | The receipt context digest equals the binding reconstructed from the resolved inputs and artifacts. |
 | `stage.outcome` | A successful resolved stage has one successful invocation receipt. |
 
-These checks establish delivery to the callable. Project tests establish how
-the callable uses each parameter.
+These checks establish typed delivery to the callable. Project tests establish
+how the callable uses each field while producing its scientific result.
 
 ## Propagation
 
 | Surface | Required change |
 |---|---|
-| Protocol | Add stage implementation identity and `StageInvocationReceipt`. |
-| Authoring | Resolve the top-level callable and freeze its exact bytes. |
-| Runtime | Add `StageContext` and invoke the callable with the validated project parameter object. |
+| Protocol | Add `StageImplementationRef` and `StageInvocationReceipt`; replace `BaseSpec.script` on parameterized stages. |
+| Decorators | Add one decorator for each stage kind and expose its frozen metadata. |
+| Authoring | Resolve the top-level callable and freeze its exact identity. |
+| Runtime | Add typed contexts and invoke the callable with the validated project parameter object. |
 | Persistence | Store the canonical parameter and context digests in the resolved stage. |
-| Verification | Apply the five stage-invocation checks. |
+| Verification | Apply the six stage-invocation checks. |
 | Tests | Replace constant fixture scripts with callables that assert typed parameters and declared paths. |
-| Documentation | Show the callable interface in the project extension guide. |
+| Documentation | Show direct Python execution and the whole-plan CLI adapter. |
 
 ## Acceptance case
 
-`TinyTrainParameters.epochs` is `3`. VIPER calls `train(context)` with
+`TinyTrainParameters.epochs` equals `3`. VIPER calls `train(context)` with
 `context.params.epochs == 3`. The fixture writes the value `3` into a declared
 artifact, and terminal verification accepts the invocation receipt.
 
@@ -115,8 +161,9 @@ while preserving the frozen stage spec. `parameter.value` fails.
 
 ## Implementation order
 
-1. Add the context and invocation-receipt models.
-2. Add stage-callable loading and typed context construction.
-3. Route every parameterized stage through the callable interface.
-4. Add verifier rules and acceptance coverage.
-5. Remove the script-path argument handoff after examples migrate.
+1. Add the implementation-reference, context, and invocation-receipt models.
+2. Add the stage decorators and authoring-time callable resolution.
+3. Add callable loading and typed context construction.
+4. Route every parameterized stage through the callable interface.
+5. Add verifier rules and acceptance coverage.
+6. Remove the script-path entrypoint after examples migrate.
