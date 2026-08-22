@@ -16,6 +16,7 @@ ROOT_MODULES = (
     "local_store",
     "materialization",
     "metrics",
+    "parameter_models",
     "preflight",
     "protocol",
     "runner",
