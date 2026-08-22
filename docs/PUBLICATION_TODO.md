@@ -168,6 +168,10 @@ The release backend is an OCI container worker running on a pre-provisioned GCE
 host. A `trusted_local` backend supports development and reports host-level
 filesystem and network scope in its execution capabilities.
 
+The [HTTP retrieval contract](HTTP_RETRIEVAL_CONTRACT.md) defines the frozen
+request, resolved exchange, controlled-client, and verifier changes for
+download stages.
+
 - [ ] Create `docs/EXECUTION_SECURITY.md` with the threat model, supported GCE
   host assumptions, privilege model, process tree, mounts, credentials, network
   policy, timeout behavior, signal behavior, and capability matrix.
