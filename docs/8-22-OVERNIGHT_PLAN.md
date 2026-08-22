@@ -128,13 +128,13 @@ later sessions:
 
 ## Shutdown checklist
 
-- [ ] Stop feature work at 5:45.
-- [ ] Run the smallest focused checks for each completed boundary.
-- [ ] Run Ruff, Pyright, and the complete pytest suite.
-- [ ] Build and inspect the wheel when package surfaces changed.
-- [ ] Commit completed boundaries with task-scoped messages.
-- [ ] Push every commit and verify local `HEAD` equals its upstream.
-- [ ] Write a new dated journal entry with results, open gates, and the exact
+- [x] Stop feature work for the final validation and handoff.
+- [x] Run the smallest focused checks for each completed boundary.
+- [x] Run Ruff, Pyright, and the complete pytest suite.
+- [x] Build and inspect the wheel when package surfaces changed.
+- [x] Commit completed boundaries with task-scoped messages.
+- [x] Push every commit and verify local `HEAD` equals its upstream.
+- [x] Write a new dated journal entry with results, open gates, and the exact
   next action.
 
 ## Observed completion
