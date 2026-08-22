@@ -79,8 +79,14 @@ def validate_parameters(
     raw = path.read_bytes()
     verify_parameter_model_bytes(reference, raw)
     model = load_parameter_model(path, reference.symbol, expected_base)
-    validated = model.model_validate(params.model_dump(mode="python"))
-    return cast(dict[str, JsonValue], validated.model_dump(mode="json"))
+    frozen = cast(dict[str, JsonValue], params.model_dump(mode="json"))
+    validated = model.model_validate(frozen, strict=True)
+    effective = cast(dict[str, JsonValue], validated.model_dump(mode="json"))
+    if effective != frozen:
+        raise ParameterModelError(
+            "frozen parameters must contain every effective project-model value"
+        )
+    return effective
 
 
 def validate_stage_parameters(

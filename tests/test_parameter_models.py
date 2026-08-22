@@ -78,6 +78,47 @@ def test_parameter_model_rejects_invalid_project_values(tmp_path: Path) -> None:
         )
 
 
+def test_parameter_model_rejects_implicit_defaults(tmp_path: Path) -> None:
+    """Require every effective project-model value in the frozen mapping."""
+    raw = (
+        b"from viper.protocol import TrainParams\n\n"
+        b"class DefaultedTrainParams(TrainParams):\n"
+        b"    epochs: int\n"
+        b"    dropout: float = 0.1\n"
+    )
+    path = tmp_path / "defaulted.py"
+    path.write_bytes(raw)
+    reference = ParameterModelRef(
+        path="project/parameters/defaulted.py",
+        symbol="DefaultedTrainParams",
+        sha256=hashlib.sha256(raw).hexdigest(),
+        bytes=len(raw),
+    )
+
+    with pytest.raises(ParameterModelError, match="every effective"):
+        validate_parameters(
+            path,
+            reference,
+            TrainParams.model_validate({"epochs": 2}),
+            TrainParams,
+        )
+
+
+def test_parameter_model_rejects_type_coercion(tmp_path: Path) -> None:
+    """Keep project field types identical to the frozen JSON value types."""
+    path, raw = _model_file(tmp_path)
+
+    with pytest.raises(ValidationError):
+        validate_parameters(
+            path,
+            _reference(raw),
+            TrainParams.model_validate(
+                {"epochs": "2", "learning_rate": 0.1}
+            ),
+            TrainParams,
+        )
+
+
 def test_parameter_model_requires_the_stage_specific_base(tmp_path: Path) -> None:
     """Reject a selected class that does not specialize TrainParams."""
     path = tmp_path / "wrong.py"
@@ -88,6 +129,18 @@ def test_parameter_model_requires_the_stage_specific_base(tmp_path: Path) -> Non
 
     with pytest.raises(ParameterModelError, match="subclass TrainParams"):
         load_parameter_model(path, "WrongParams", TrainParams)
+
+
+def test_parameter_model_reports_import_failure(tmp_path: Path) -> None:
+    """Report an exception raised while importing the selected project file."""
+    path = tmp_path / "broken.py"
+    path.write_text(
+        'raise RuntimeError("broken import")\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ParameterModelError, match="raised during import"):
+        load_parameter_model(path, "BrokenParams", TrainParams)
 
 
 def test_parameter_model_rejects_tampered_bytes(tmp_path: Path) -> None:
@@ -148,3 +201,14 @@ def test_stage_parameter_validation_runs_in_a_worker(tmp_path: Path) -> None:
 
     assert validated["epochs"] == 2
     assert validated["learning_rate"] == 0.1
+
+    invalid_stage = stage.model_copy(
+        update={
+            "params": TrainParams.model_validate(
+                {"epochs": 0, "learning_rate": 0.1}
+            )
+        }
+    )
+    stage_path.write_bytes(serialize_document(invalid_stage))
+    with pytest.raises(ParameterModelError, match="worker failed"):
+        validate_stage_parameters(tmp_path, stage_path, invalid_stage)
