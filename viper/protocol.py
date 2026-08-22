@@ -257,7 +257,6 @@ class ResolvedRunRef(ResolvedFileRef):
     """Identifies one terminal ResolvedRun file."""
 
     kind: Literal["resolved_run"] = "resolved_run"
-    stored_at: HuggingFaceFileRef  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 class ResolvedBenchmarkSpecRef(ResolvedFileRef):

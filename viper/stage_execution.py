@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -12,14 +13,17 @@ from .protocol import (
     ArtifactName,
     BaseSpec,
     BundleArtifactSpec,
+    ExecutionContext,
     ResolvedArtifact,
     ResolvedBundleArtifact,
     ResolvedBundleMember,
     ResolvedSingleFileArtifact,
+    RunSpec,
     RunStageRef,
     SingleFileArtifactSpec,
     SnapshotFileRef,
 )
+from .runtime import process_environment
 
 
 class StageExecutionError(RuntimeError):
@@ -34,6 +38,7 @@ class StageProcessResult:
     started_at: datetime
     completed_at: datetime
     artifacts: dict[ArtifactName, ResolvedArtifact]
+    execution_context: ExecutionContext
     stdout: bytes
     stderr: bytes
 
@@ -103,6 +108,7 @@ def _resolve_artifact(
 
 def execute_stage_process(
     repository_root: Path,
+    run: RunSpec,
     stage_reference: RunStageRef,
     stage_spec: BaseSpec,
     *,
@@ -121,11 +127,36 @@ def execute_stage_process(
     if not script_path.is_file():
         raise StageExecutionError(f"stage entrypoint is missing: {stage_spec.script}")
 
-    command = ("python", str(stage_spec.script), str(stage_reference.spec))
+    run_spec_path = (
+        f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}/spec.yaml"
+    )
+    command = (
+        "python",
+        "-m",
+        "viper.stage_worker",
+        str(stage_reference.spec),
+        run_spec_path,
+    )
+    environment = os.environ.copy()
+    environment.update(process_environment(run.seed, run.reproducibility))
+    package_root = str(Path(__file__).resolve().parents[1])
+    existing_python_path = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = (
+        package_root
+        if existing_python_path is None
+        else f"{package_root}{os.pathsep}{existing_python_path}"
+    )
+    runtime_context_path = (
+        root / ".viper" / "runtime" / (f"{run.run_id}.{stage_reference.stage_id}.json")
+    )
+    runtime_context_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_context_path.unlink(missing_ok=True)
+    environment["VIPER_RUNTIME_CONTEXT_PATH"] = str(runtime_context_path)
     started_at = datetime.now(UTC)
     completed = subprocess.run(
         command,
         cwd=root,
+        env=environment,
         capture_output=True,
         check=False,
         timeout=timeout_seconds,
@@ -136,6 +167,11 @@ def execute_stage_process(
             f"stage command exited with status {completed.returncode}: "
             f"{completed.stderr.decode(errors='replace').strip()}"
         )
+    if not runtime_context_path.is_file():
+        raise StageExecutionError("stage worker did not record its runtime context")
+    execution_context = ExecutionContext.model_validate_json(
+        runtime_context_path.read_text(encoding="utf-8")
+    )
 
     artifacts = {
         name: _resolve_artifact(root, declaration)
@@ -146,6 +182,7 @@ def execute_stage_process(
         started_at=started_at,
         completed_at=completed_at,
         artifacts=artifacts,
+        execution_context=execution_context,
         stdout=completed.stdout,
         stderr=completed.stderr,
     )

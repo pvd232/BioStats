@@ -64,6 +64,14 @@ def build_parser() -> argparse.ArgumentParser:
     execute.add_argument("--repository-root", type=Path, default=Path.cwd())
     execute.add_argument("--timeout-seconds", type=float)
 
+    run_local = commands.add_parser(
+        "run-local",
+        help="execute and verify one complete run on this host",
+    )
+    run_local.add_argument("run_spec", type=Path)
+    run_local.add_argument("--repository-root", type=Path, default=Path.cwd())
+    run_local.add_argument("--timeout-seconds", type=float)
+
     for name, help_text in (
         ("verify-run", "verify one terminal resolved run"),
         ("verify-benchmark", "verify one benchmark result"),
@@ -97,6 +105,7 @@ def _operation_and_payload(
         "validate-run": "validate_run_spec",
         "freeze-run": "freeze_run",
         "execute-stage": "execute_stage",
+        "run-local": "run_local",
         "verify-run": "verify_run",
         "verify-benchmark": "verify_benchmark",
         "verify-pointer": "verify_pointer",
@@ -130,6 +139,8 @@ def _human_success(result: SuccessModel) -> str:
         return (
             f"executed stage {getattr(result, 'stage_id')} and identified {count} files"
         )
+    if result.operation == "run_local":
+        return f"completed and verified run {getattr(result, 'run_id')}"
     if result.operation == "verify_run":
         return f"verified run {getattr(result, 'run_id')}"
     if result.operation == "verify_benchmark":

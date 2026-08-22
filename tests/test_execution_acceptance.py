@@ -8,9 +8,10 @@ from tempfile import TemporaryDirectory
 from viper.protocol import (
     DownloadSpec,
     ResolvedSingleFileArtifact,
+    RunSpec,
     RunStageRef,
 )
-from viper.serialization import serialize_record
+from viper.serialization import serialize_document
 from viper.stage_execution import execute_stage_process
 
 RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
@@ -57,7 +58,7 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
             )
             stage_path = root / f"{RUN_ROOT}/stages/download/spec.yaml"
             stage_path.parent.mkdir(parents=True)
-            stage_raw = serialize_record(spec)
+            stage_raw = serialize_document(spec)
             stage_path.write_bytes(stage_raw)
             reference = RunStageRef(
                 stage_id="download",
@@ -66,14 +67,88 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
                 bytes=len(stage_raw),
             )
 
-            result = execute_stage_process(root, reference, spec)
+            run = RunSpec.model_validate(
+                {
+                    "run_id": RUN_ID,
+                    "experiment_id": "e001_download",
+                    "variant_id": "baseline",
+                    "replicate_id": "r1",
+                    "seed": 7,
+                    "source": {
+                        "kind": "git",
+                        "repository": "https://github.com/example/project",
+                        "commit": "a" * 40,
+                    },
+                    "environment": {
+                        "kind": "local",
+                        "lockfile": {
+                            "kind": "git",
+                            "repository": "https://github.com/example/project",
+                            "commit": "a" * 40,
+                            "path": "environment.yml",
+                        },
+                    },
+                    "reproducibility": {
+                        "determinism": {
+                            "deterministic_algorithms": True,
+                            "deterministic_warn_only": False,
+                            "cudnn_deterministic": True,
+                            "cudnn_benchmark": False,
+                            "cublas_workspace_config": ":4096:8",
+                        },
+                        "precision": {
+                            "float32_matmul_precision": "highest",
+                            "cudnn_allow_tf32": False,
+                            "autocast_enabled": False,
+                            "autocast_dtype": None,
+                        },
+                        "parallelism": {
+                            "process_count": 1,
+                            "torch_intraop_threads": 1,
+                            "torch_interop_threads": 1,
+                            "dataloader": {
+                                "workers": 0,
+                                "prefetch_factor": None,
+                                "persistent_workers": False,
+                                "in_order": True,
+                            },
+                        },
+                        "numpy_randomness": {
+                            "generators": {},
+                            "capture_legacy_global": False,
+                        },
+                    },
+                    "stages": [
+                        reference.model_dump(mode="json"),
+                        {
+                            "stage_id": "train",
+                            "spec": f"{RUN_ROOT}/stages/train/spec.yaml",
+                            "sha256": "b" * 64,
+                            "bytes": 1,
+                        },
+                    ],
+                    "estimator": {
+                        "stage_id": "train",
+                        "artifact_name": "parameters",
+                    },
+                }
+            )
+            run_path = root / f"{RUN_ROOT}/spec.yaml"
+            run_path.write_bytes(serialize_document(run))
+            result = execute_stage_process(root, run, reference, spec)
             produced = result.artifacts["dataset"]
             assert isinstance(produced, ResolvedSingleFileArtifact)
             raw = (root / produced.file.path).read_bytes()
 
         self.assertEqual(
             result.command,
-            ("python", str(spec.script), str(reference.spec)),
+            (
+                "python",
+                "-m",
+                "viper.stage_worker",
+                str(reference.spec),
+                f"{RUN_ROOT}/spec.yaml",
+            ),
         )
         self.assertEqual(raw, b"tiny dataset")
         self.assertEqual(produced.file.sha256, hashlib.sha256(raw).hexdigest())

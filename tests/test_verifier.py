@@ -815,7 +815,13 @@ class RunAndStageVerificationTests(unittest.TestCase):
             source=resolved_git(source_raw, str(spec.script)),
             environment=resolved_environment(lock_raw),
             execution_context=execution_context(),
-            command=("python", str(spec.script), str(run.stages[0].spec)),
+            command=(
+                "python",
+                "-m",
+                "viper.stage_worker",
+                str(run.stages[0].spec),
+                f"{RUN_ROOT}/spec.yaml",
+            ),
             inputs={
                 "training_dataset": ResolvedStoredInputRef(
                     kind="stored",
@@ -1057,11 +1063,9 @@ class RunPlanRelationshipTests(unittest.TestCase):
                         pointer=artifact_pointer(
                             "inputs/datasets/replogle_validation/current.pointer.yaml"
                         ),
-                        path=(
-                            "inputs/datasets/replogle_validation/dataset.h5ad"
-                        ),
+                        path=("inputs/datasets/replogle_validation/dataset.h5ad"),
                         data_role="validation",
-                    )
+                    ),
                 },
                 "artifacts": {
                     name: artifact.model_copy(update={"data_role": "validation"})
@@ -1437,12 +1441,8 @@ class RunPlanRelationshipTests(unittest.TestCase):
         )
 
         ordinary_payload = evaluation.model_dump(mode="python")
-        ordinary_payload["inputs"]["evaluation_dataset"]["data_role"] = (
-            "evaluation"
-        )
-        ordinary_payload["inputs"]["perturbation_split"]["data_role"] = (
-            "evaluation"
-        )
+        ordinary_payload["inputs"]["evaluation_dataset"]["data_role"] = "evaluation"
+        ordinary_payload["inputs"]["perturbation_split"]["data_role"] = "evaluation"
         ordinary_payload["artifacts"]["predictions"]["data_role"] = "evaluation"
         ordinary_evaluation = EvaluateSpec.model_validate(ordinary_payload)
         with self.assertRaisesRegex(VerificationError, "must use 'benchmark'"):
@@ -1614,7 +1614,13 @@ class FutureInputVerificationTests(unittest.TestCase):
             source=resolved_git(source_raw, str(build.script)),
             environment=resolved_environment(lock_raw),
             execution_context=execution_context(),
-            command=("python", str(build.script), str(run.stages[0].spec)),
+            command=(
+                "python",
+                "-m",
+                "viper.stage_worker",
+                str(run.stages[0].spec),
+                f"{RUN_ROOT}/spec.yaml",
+            ),
             inputs={
                 "depmap": ResolvedStoredInputRef(
                     kind="stored",
@@ -1640,7 +1646,13 @@ class FutureInputVerificationTests(unittest.TestCase):
             source=resolved_git(source_raw, str(train.script)),
             environment=resolved_environment(lock_raw),
             execution_context=execution_context(),
-            command=("python", str(train.script), str(run.stages[1].spec)),
+            command=(
+                "python",
+                "-m",
+                "viper.stage_worker",
+                str(run.stages[1].spec),
+                f"{RUN_ROOT}/spec.yaml",
+            ),
             inputs={
                 "prior": ResolvedFutureInputRef(producer=producer_stage),
             },

@@ -20,6 +20,8 @@ from .protocol import (
     RunSpec,
     Spec,
 )
+from .runner import LocalRunError
+from .runner import run_local as execute_local_run
 from .serialization import load_resolved_stage, load_stage_spec, parse_yaml_bytes
 from .stage_execution import StageExecutionError, execute_stage_process
 from .verifier import (
@@ -37,6 +39,7 @@ OperationName = Literal[
     "validate_run_spec",
     "freeze_run",
     "execute_stage",
+    "run_local",
     "verify_run",
     "verify_benchmark",
     "verify_pointer",
@@ -171,6 +174,23 @@ class ExecuteStageSuccess(SuccessModel):
     stderr: bytes
 
 
+class RunLocalRequest(ApplicationModel):
+    """Select one frozen plan for complete trusted-local execution."""
+
+    run_spec: Path
+    repository_root: Path
+    timeout_seconds: float | None = Field(default=None, gt=0)
+
+
+class RunLocalSuccess(SuccessModel):
+    """Report the terminal document written by one verified local run."""
+
+    operation: Literal["run_local"] = "run_local"  # pyright: ignore[reportIncompatibleVariableOverride]
+    run_id: RunId
+    resolved_run: Path
+    journal: Path
+
+
 class VerificationRequest(PathRequest):
     """Select a document and source repositories trusted to supply code."""
 
@@ -258,6 +278,7 @@ OPERATIONS: tuple[OperationName, ...] = (
     "validate_run_spec",
     "freeze_run",
     "execute_stage",
+    "run_local",
     "verify_run",
     "verify_benchmark",
     "verify_pointer",
@@ -355,6 +376,7 @@ def execute_stage(request: ExecuteStageRequest) -> ExecuteStageSuccess:
         stage = load_stage_spec(request.repository_root / reference.spec)
         result = execute_stage_process(
             request.repository_root,
+            run,
             reference,
             stage,
             timeout_seconds=request.timeout_seconds,
@@ -377,6 +399,33 @@ def execute_stage(request: ExecuteStageRequest) -> ExecuteStageSuccess:
         artifacts=result.artifacts,
         stdout=result.stdout,
         stderr=result.stderr,
+    )
+
+
+def run_local(request: RunLocalRequest) -> RunLocalSuccess:
+    """Execute, publish, and verify one complete run on the local host."""
+    try:
+        result = execute_local_run(
+            request.repository_root,
+            request.run_spec,
+            timeout_seconds=request.timeout_seconds,
+        )
+    except LocalRunError as exc:
+        raise ViperError(
+            ViperFailure(
+                operation="run_local",
+                origin="application",
+                code="execution_failed",
+                message="local run failed",
+            )
+        ) from exc
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        raise _document_error("run_local", request.run_spec, exc) from exc
+    run = RunSpec.model_validate(parse_yaml_bytes(request.run_spec.read_bytes()))
+    return RunLocalSuccess(
+        run_id=run.run_id,
+        resolved_run=result.resolved_run_path,
+        journal=result.journal_path,
     )
 
 
@@ -520,6 +569,7 @@ REQUEST_REGISTRY: dict[OperationName, RequestType] = {
     "validate_run_spec": ValidateRunSpecRequest,
     "freeze_run": FreezeRunRequest,
     "execute_stage": ExecuteStageRequest,
+    "run_local": RunLocalRequest,
     "verify_run": VerifyRunRequest,
     "verify_benchmark": VerifyBenchmarkRequest,
     "verify_pointer": VerifyPointerRequest,
@@ -533,6 +583,7 @@ HANDLER_REGISTRY: dict[OperationName, Handler] = {
     "validate_run_spec": validate_run_spec,
     "freeze_run": freeze_run,
     "execute_stage": execute_stage,
+    "run_local": run_local,
     "verify_run": verify_run,
     "verify_benchmark": verify_benchmark,
     "verify_pointer": verify_pointer,

@@ -654,7 +654,13 @@ def publish_producer_run(
         source=download_source,
         environment=resolved_env,
         execution_context=execution_context(),
-        command=("python", str(download.script), str(run.stages[0].spec)),
+        command=(
+            "python",
+            "-m",
+            "viper.stage_worker",
+            str(run.stages[0].spec),
+            f"{run_root}/spec.yaml",
+        ),
         inputs=download.inputs,
         artifacts={
             "dataset": add_single_artifact(
@@ -693,7 +699,13 @@ def publish_producer_run(
         source=train_source,
         environment=resolved_env,
         execution_context=execution_context(),
-        command=("python", str(train.script), str(run.stages[1].spec)),
+        command=(
+            "python",
+            "-m",
+            "viper.stage_worker",
+            str(run.stages[1].spec),
+            f"{run_root}/spec.yaml",
+        ),
         inputs={
             "training_dataset": ResolvedFutureInputRef(producer=download_stage),
         },
@@ -989,7 +1001,13 @@ def build_complete_fixture(
         source=build_source,
         environment=resolved_env,
         execution_context=execution_context(),
-        command=("python", str(build.script), str(run.stages[0].spec)),
+        command=(
+            "python",
+            "-m",
+            "viper.stage_worker",
+            str(run.stages[0].spec),
+            f"{run_root}/spec.yaml",
+        ),
         inputs={
             "dataset": ResolvedStoredInputRef(
                 kind="stored", pointer=resolved_training_dataset_pointer
@@ -1012,7 +1030,13 @@ def build_complete_fixture(
         source=train_source,
         environment=resolved_env,
         execution_context=execution_context(),
-        command=("python", str(train.script), str(run.stages[1].spec)),
+        command=(
+            "python",
+            "-m",
+            "viper.stage_worker",
+            str(run.stages[1].spec),
+            f"{run_root}/spec.yaml",
+        ),
         inputs={"prior": ResolvedFutureInputRef(producer=build_stage)},
         artifacts={
             PARAMETERS: add_single_artifact(
@@ -1044,7 +1068,13 @@ def build_complete_fixture(
         source=evaluate_source,
         environment=resolved_env,
         execution_context=execution_context(),
-        command=("python", str(evaluate.script), str(run.stages[2].spec)),
+        command=(
+            "python",
+            "-m",
+            "viper.stage_worker",
+            str(run.stages[2].spec),
+            f"{run_root}/spec.yaml",
+        ),
         inputs={
             "parameters": ResolvedFutureInputRef(producer=train_stage),
             "evaluation_dataset": ResolvedStoredInputRef(

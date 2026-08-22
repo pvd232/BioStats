@@ -1210,8 +1210,10 @@ def verify_attempt_stages(
         run_stage_ref = run_stage_refs[stage_reference.stage_id]
         expected_command = (
             "python",
-            str(stage_spec.script),
+            "-m",
+            "viper.stage_worker",
             str(run_stage_ref.spec),
+            f"{run_root(run)}/spec.yaml",
         )
         if resolved_spec.command != expected_command:
             raise VerificationError(
