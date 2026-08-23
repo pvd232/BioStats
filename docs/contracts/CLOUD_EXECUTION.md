@@ -25,9 +25,10 @@ The current runner therefore rejects a valid GCE plan before stage execution.
 The runtime observer also lacks the GCE and CUDA evidence required to construct
 the corresponding resolved records.
 
-`LocalEnvironmentSpec.compute` currently accepts only `CPUComputeSpec`. A
-host-neutral coordinator should permit the existing `ComputeSpec` union for
-local and GCE environments so a local CUDA host follows the same runtime path.
+`LocalEnvironmentSpec.compute` currently accepts only `CPUComputeSpec`. The
+[process-startup contract](PROCESS_STARTUP.md) now owns the migration to the
+existing `ComputeSpec` union and the local CUDA observer. Cloud execution reuses
+that compute path after adding GCE host observation.
 
 The environment model currently selects `GCEMachineImageRef`. Google defines a
 machine image as an instance-cloning and multi-disk-backup resource. The VM
@@ -141,10 +142,10 @@ to durable object storage while preserving the execution contract.
 
 | Surface | Required change |
 |---|---|
-| Protocol | Replace `GCEMachineImageRef` with immutable `GCEBootImageRef`; allow `ComputeSpec` on local and GCE environments. |
+| Protocol | Replace `GCEMachineImageRef` with immutable `GCEBootImageRef`; consume the `ComputeSpec` startup contract for GCE stages. |
 | Coordinator | Replace the local-environment gate with selection of the effective environment for each stage. |
 | Preflight | Accept `LocalEnvironmentSpec` and `GCEEnvironmentSpec`; check the active host against the selected kind. |
-| Runtime | Add local CUDA and GCE host observers that construct the existing protocol models. |
+| Runtime | Reuse the process-startup compute observer and add the GCE host observer. |
 | Application | Expose one `run` operation for execution on the active host. |
 | Python interface | Route `viper.run(stage_callable)` through the same coordinator and process-startup contract. |
 | CLI | Route `viper run` through the application `run` operation. |
@@ -166,7 +167,7 @@ A second case executes the same plan on a VM with another machine type. The
 
 VIPER 0.1 supports a trusted, pre-provisioned single host containing the frozen
 source, credentials, dependency environment, accelerator software, workspace,
-and artifact store.
+and artifact store. Each stage uses one CPU backend or one selected CUDA device.
 
 The user's infrastructure tooling owns host provisioning and terminal access.
 OCI confinement supplies filesystem and network enforcement in the stable
@@ -175,11 +176,11 @@ separate contracts when their first implementations enter scope.
 
 ## Implementation order
 
-1. Replace the GCE machine-image fields with immutable boot-image identity and
-   permit `ComputeSpec` on local environments.
+1. Replace the GCE machine-image fields with immutable boot-image identity.
 2. Rename the complete-run operation from `run_local` to `run`.
 3. Generalize preflight and the coordinator across local and GCE environments.
-4. Implement GCE host, boot-image, and CUDA runtime observation.
+4. Reuse the process-startup compute observer and implement GCE host and
+   boot-image observation.
 5. Apply the environment verification rules to every completed stage.
 6. Add deterministic local and GCE coverage.
 7. Run the installed-wheel acceptance project on the advertised GCE profile.

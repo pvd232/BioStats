@@ -9,7 +9,8 @@ interfaces is approved for VIPER 0.1.
 ## Required claim
 
 Every VIPER-governed stage callable executes in a child process whose start-time
-environment and runtime controls derive from the frozen `RunSpec`.
+environment and runtime controls derive from the frozen `RunSpec` and the
+stage's effective environment.
 
 ## Current gap
 
@@ -20,7 +21,9 @@ applies library controls before executing the project script.
 
 This path supports runner-launched scripts. The public package lacks the
 decorated callable and `viper.run(stage_callable)` interfaces. The worker also
-records only the local CPU runtime.
+sets `ExecutionContext.backend` to `CPUBackendContext` for every stage. A CUDA
+stage therefore lacks the realized backend evidence required by its frozen
+compute request.
 
 ## Project interface
 
@@ -71,9 +74,10 @@ The coordinator performs this sequence for each stage:
 load and verify RunSpec and selected stage spec
 -> validate the decorated callable and parameter model
 -> derive the start-time environment from RunSpec.reproducibility
+   and the stage's effective environment
 -> launch one child process with that environment
 -> apply library-level controls inside the child
--> observe the active host and numerical runtime
+-> observe the host CPU and selected compute backend
 -> construct the typed StageContext
 -> invoke the decorated callable
 -> write the invocation and runtime evidence
@@ -91,6 +95,76 @@ process: [Python command-line and environment documentation](https://docs.python
 The child then applies the supported Python, NumPy, PyTorch, CUDA,
 determinism, precision, and thread controls through
 [`apply_reproducibility()`](../../viper/runtime.py).
+
+## CPU and CUDA observation
+
+The child process always records `CPUContext` because the CPU executes the
+Python interpreter and submits accelerator work. `ExecutionContext.backend`
+records the compute backend selected by the stage's effective environment.
+
+```text
+controlled child process
+├── CPUContext
+│   └── host CPU executing Python and PyTorch
+└── ComputeBackendContext
+    ├── CPUBackendContext for a CPU stage
+    └── CUDABackendContext for a CUDA stage
+```
+
+The effective compute request selects the branch. CUDA availability confirms
+that the selected branch can execute. This distinction lets a CPU stage remain
+a CPU stage on a host that also contains a GPU.
+
+The coordinator selects the device before launching the child:
+
+```python
+compute = effective_environment.compute
+child_environment = process_environment(run.seed, run.reproducibility)
+
+if compute.kind == "cuda":
+    selected_device = select_cuda_device(model=compute.model)
+    child_environment["CUDA_VISIBLE_DEVICES"] = str(selected_device.host_ordinal)
+
+launch_child(environment=child_environment)
+```
+
+The child observes the resulting runtime:
+
+```python
+if compute.kind == "cuda":
+    require_cuda_available()
+    backend = observe_cuda_backend()
+else:
+    backend = CPUBackendContext()
+
+execution_context = ExecutionContext(
+    host=observe_host(),
+    cpu=observe_cpu(),
+    backend=backend,
+    numerical_runtime=observe_numerical_runtime(),
+    randomness=observe_randomness(),
+    determinism=run.reproducibility.determinism,
+    precision=run.reproducibility.precision,
+    parallelism=run.reproducibility.parallelism,
+)
+```
+
+For a CUDA stage, the coordinator selects one device whose model satisfies the
+frozen `CUDAComputeSpec`. `CUDA_VISIBLE_DEVICES` exposes that device to the
+child before process startup. The child constructs `CUDABackendContext` from
+the exposed device, the NVIDIA driver, the PyTorch CUDA build, and cuDNN. The
+existing resolved-stage validator compares the observed backend kind, device
+count, and device model with the effective compute request.
+
+NVIDIA defines `CUDA_VISIBLE_DEVICES` as the pre-start control for which devices
+a CUDA application can see and how CUDA enumerates them:
+[CUDA environment variables](https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/environment-variables.html#cuda-visible-devices).
+
+VIPER 0.1 governs one host process and one selected CUDA device per stage.
+Preflight rejects a CUDA request whose `count` exceeds `1` with
+`startup.distributed_required`. NVIDIA defines a CUDA context as the device
+execution state made current to a host thread; the host process submits kernels
+through that context: [CUDA Driver API](https://docs.nvidia.com/cuda/cuda-programming-guide/03-advanced/driver-api.html#context).
 
 ## Direct-script boundary
 
@@ -118,17 +192,22 @@ project stage module.
 `ExecutionContext` observed inside the child process.
 
 The receipt binds the callable identity and typed context to one process
-outcome. `ExecutionContext` records the applied controls and realized runtime.
+outcome. `ExecutionContext.cpu` records the host CPU.
+`ExecutionContext.backend` records the selected CPU or CUDA backend.
+`ExecutionContext.numerical_runtime` records the language and numerical-library
+versions active in the child.
 
 ## Verification
 
 | Check | Rule |
 |---|---|
 | `startup.plan` | The child context identifies the frozen run and selected stage. |
-| `startup.environment` | The child receives the canonical start-time environment derived from the run controls. |
+| `startup.environment` | The child receives the canonical start-time environment derived from the run controls and effective stage environment. |
 | `startup.callable` | The child invokes the exact decorated callable frozen by the stage spec. |
 | `startup.context` | The callable receives the typed context bound to the selected stage. |
-| `startup.runtime` | The resolved stage contains the runtime context observed inside the child. |
+| `startup.runtime` | The resolved stage contains the host CPU and numerical runtime observed inside the child. |
+| `startup.backend` | The observed backend kind equals the effective compute kind. A CUDA backend contains one device whose model equals the frozen request, plus the observed driver, PyTorch CUDA, and cuDNN versions. |
+| `startup.distributed_required` | A CUDA request with `count` greater than `1` fails preflight and directs the run to the future distributed-execution contract. |
 | `startup.outcome` | One successful resolved stage contains one successful child-process receipt. |
 
 ## Propagation
@@ -139,9 +218,10 @@ outcome. `ExecutionContext` records the applied controls and realized runtime.
 | Application | Expose one host-neutral complete-run coordinator. |
 | Worker | Load the frozen callable and invoke it with the typed context. |
 | Stage execution | Use the same child-process startup path for Python and CLI callers. |
-| Persistence | Store the startup, invocation, and runtime evidence on the resolved stage. |
-| Verification | Apply the six startup checks above. |
-| Tests | Exercise direct Python execution, CLI execution, start-time controls, one invocation, and import-phase violations represented by fixture modules. |
+| Runtime | Select the compute backend from the effective environment and observe the host CPU plus the selected CPU or CUDA backend. |
+| Persistence | Store the startup, invocation, CPU, compute-backend, and numerical-runtime evidence on the resolved stage. |
+| Verification | Apply the eight startup checks above. |
+| Tests | Exercise direct Python execution, CLI execution, start-time controls, one invocation, CPU execution on a GPU-capable host, one CUDA device, and a multi-device rejection. |
 
 ## Acceptance case
 
@@ -154,11 +234,30 @@ outcome.
 The rejection case changes the child context to another stage ID. The
 `startup.plan` check rejects the invocation before the project callable runs.
 
+A CUDA case selects `CUDAComputeSpec(model="NVIDIA L4", count=1)`. The
+coordinator exposes one matching L4 to the child. The resolved stage contains
+the host `CPUContext` and a `CUDABackendContext` for that L4. The
+`startup.backend` check accepts the backend. A request with `count=2` fails
+`startup.distributed_required` during preflight.
+
+## Deferred contract: multi-GPU distributed execution
+
+Multi-GPU distributed training introduces several coordinated child processes.
+The future contract will bind each rank to one device, initialize one process
+group, persist rank-local runtime and replay state, and verify collective
+membership before accepting the distributed stage result. PyTorch's
+`DistributedDataParallel` documentation recommends one process per GPU and
+requires each process to operate on its assigned device:
+[DistributedDataParallel](https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html).
+
 ## Implementation order
 
 1. Add the stage decorators and callable metadata.
 2. Add the direct `viper.run(stage_callable)` adapter.
 3. Generalize the application coordinator and CLI command to `run`.
 4. Invoke every callable through the controlled child-process path.
-5. Persist and verify the startup evidence.
-6. Add direct-Python and CLI acceptance tests for the same frozen run.
+5. Select the effective compute backend and observe the host CPU plus the CPU or
+   CUDA backend inside the child.
+6. Persist and verify the startup evidence.
+7. Add direct-Python, CLI, CPU, and single-GPU acceptance tests for the same
+   frozen run.

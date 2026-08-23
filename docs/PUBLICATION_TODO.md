@@ -156,10 +156,17 @@ The current repository supplies the foundation consumed by Phase 1:
   `run()` operation.
 - [ ] Rename `viper run-local` to `viper run`.
 - [ ] Derive the canonical child-process environment from
-  `RunSpec.reproducibility`.
+  `RunSpec.reproducibility` and the stage's effective environment.
+- [ ] Permit `CPUComputeSpec` and single-device `CUDAComputeSpec` on local
+  environments; reject `CUDAComputeSpec.count > 1` with
+  `startup.distributed_required`.
 - [ ] Launch each stage in one controlled child carrying
   `VIPER_CONTEXT_PATH`.
 - [ ] Apply library controls before importing the frozen callable.
+- [ ] Select the CPU or CUDA backend from the effective compute request and
+  expose one matching CUDA device to a CUDA child process.
+- [ ] Observe the host `CPUContext` and the selected
+  `ComputeBackendContext` inside the child process.
 - [ ] Validate parameters into the exact project class and place that object in
   `StageContext.params`.
 - [ ] Construct `StageContext.inputs` from the stage's declared,
@@ -174,8 +181,13 @@ The current repository supplies the foundation consumed by Phase 1:
   their typed parameters and declared paths.
 - [ ] Prove that `python train.py --run RUN --stage train` and `viper run RUN`
   produce terminal results accepted by the same verifier.
+- [ ] Prove that a CPU stage on a GPU-capable host records
+  `CPUBackendContext`, while a one-L4 CUDA stage records the matching
+  `CUDABackendContext`.
 - [ ] Reject a changed callable, parameter mapping, context binding, and second
   invocation.
+- [ ] Reject unavailable CUDA, a changed device model, and a CUDA device count
+  greater than `1` through their named startup checks.
 
 **Focused gate**
 
@@ -393,11 +405,9 @@ python -m pytest tests/test_benchmark_execution.py \
   project, image name, and server-defined image ID.
 - [ ] Replace `machine_image` fields with `boot_image` on requested and resolved
   GCE environments.
-- [ ] Permit the existing `ComputeSpec` CPU/CUDA union on local environments.
 - [ ] Resolve the boot-image ID during plan freezing.
 - [ ] Generalize preflight from the local-only check to the effective
   environment selected for each stage.
-- [ ] Add local CUDA observation.
 - [ ] Add GCE project, boot-image, machine-type, zone, guest OS, kernel, CPU,
   CUDA, driver, and numerical-runtime observation.
 - [ ] Compare the realized environment with the stage environment override or
@@ -426,7 +436,7 @@ python -m pytest tests/test_runtime.py tests/test_cloud_execution.py \
 **Commit boundaries**
 
 1. `Model immutable GCE boot environments`
-2. `Observe local CUDA and GCE runtimes`
+2. `Observe and verify GCE runtimes`
 3. `Verify in-place GCE execution`
 
 ## Phase 8. Freeze the public interface and project scaffold
@@ -547,7 +557,9 @@ The following workstreams begin after `0.1.0a1`:
   adversarial execution tests.
 - Crash adoption across hosts, partial-publication recovery, and durable remote
   object-store publication.
-- Distributed and multi-rank execution.
+- Multi-GPU distributed execution: assign one child process and CUDA device to
+  each rank, initialize the process group, persist rank-local runtime and replay
+  state, and verify collective membership.
 - Epoch-completion receipts and `OversightPolicy` capability requirements.
 - Agent mutation dry-runs and downstream-lineage indexing.
 - Internal splits of `protocol.py` and `verifier.py` after their public
