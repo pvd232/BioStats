@@ -2,11 +2,12 @@
 
 ## Status
 
-Successful and failed local attempts are published with immutable journals,
-stage invocations, logs, measurements, and completed stage snapshots. Explicit
-retry allocates the next attempt ID and preserves the earlier attempt history.
-The runner maps `SIGINT` to cancellation, maps `SIGTERM` to preemption, and
-reconciles an abandoned journal as `coordinator_lost`.
+Each local attempt is published as one canonical attempt document with
+immutable references to its journal, stage invocations, logs, measurements,
+and completed stage snapshots. Explicit retry allocates the next attempt ID
+and preserves the earlier attempt history. The runner maps `SIGINT` to
+cancellation, maps `SIGTERM` to preemption, and reconciles an abandoned journal
+as `coordinator_lost`.
 
 ## Required claim
 
@@ -14,7 +15,7 @@ Every invocation of a frozen run plan produces one durable terminal attempt.
 Retry creates a new attempt and preserves the evidence from every earlier
 attempt.
 
-## Current gap
+## Implementation
 
 [`run()`](../../viper/runner.py) acquires a run-scoped advisory lock, allocates
 the next durable attempt ID, and writes the allocation event before preflight.
@@ -28,10 +29,10 @@ same frozen plan after a failed run and appends the next attempt.
 run lock, the next coordinator closes an abandoned journal with
 `coordinator_lost` and allocates a greater attempt ID.
 
-Two tasks remain. `ResolvedRun.attempts` currently embeds each `RunAttempt`; it
-must store one immutable `ResolvedAttemptRef` for each canonical attempt
-document. Real coordinator-process tests must deliver `SIGINT` and `SIGTERM`,
-then verify the resulting attempt status, typed failure, journal, logs, and
+`ResolvedRun.attempts` stores one immutable `ResolvedAttemptRef` for each
+canonical attempt document. Real coordinator-process tests deliver `SIGINT`
+and `SIGTERM`, then verify the resulting attempt status, typed failure,
+journal, logs, active-stage invocation receipt, terminated process group, and
 completed-stage prefix.
 
 ## Contract models

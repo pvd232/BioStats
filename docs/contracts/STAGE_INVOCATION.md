@@ -2,25 +2,22 @@
 
 ## Status
 
-Project parameter identity and validation are implemented. Decorated callable
-identity and typed delivery are approved for VIPER 0.1.
+Project parameter identity, decorated callable identity, typed delivery, and
+invocation verification are implemented.
 
 ## Required claim
 
 VIPER verifies that the exact stage callable frozen by the plan received the
 parameter value, input paths, and artifact paths accepted for that stage.
 
-## Current gap
+## Implementation
 
-The parameter worker validates `ParameterizedSpec.params` and writes the
-effective mapping. The stage process repeats that validation before launch.
-[`stage_worker.py`](../../viper/stage_worker.py) then supplies the stage-spec
-path through `sys.argv` and executes `BaseSpec.script` with `runpy.run_path()`.
-
-The project script reloads and interprets the stage document. The completed
-stage therefore establishes parameter validity and script execution as separate
-facts. The current resolved stage lacks evidence that one identified callable
-received the validated value.
+[`stage_execution.py`](../../viper/stage_execution.py) validates the exact
+parameter class before launch and constructs a stable `StageContextBinding`.
+[`stage_worker.py`](../../viper/stage_worker.py) validates the binding, creates
+the live `StageContext`, and calls the exact decorated function once. The
+attempt stores the resulting `StageInvocationReceipt`; completed stages
+reference that same receipt.
 
 ## Contract models
 

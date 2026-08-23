@@ -3,9 +3,9 @@
 ## Status
 
 The frozen request, selectable transport, retrieval receipt, stage delivery,
-and verification path are implemented. The reusable transport conformance
-matrix remains tracked in the master publication
-checklist.
+and verification path are implemented. The built-in HTTPX transport and
+project-decorated transports run through one response-contract conformance
+suite.
 
 ## Required claim
 

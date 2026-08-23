@@ -2,10 +2,10 @@
 
 ## Status
 
-Runner-launched stages already receive process-start environment variables and
-run-wide library controls. The shared Python and CLI startup design is approved
-for VIPER 0.1. Named NumPy generator initialization, delivery, and persisted
-identity form one connected contract.
+Runner-launched stages receive process-start environment variables and
+run-wide library controls. Python and CLI execution use the same coordinator
+and child-process path. Named NumPy generator initialization, delivery, and
+persisted identity form one connected contract.
 
 ## Required claim
 
@@ -13,18 +13,22 @@ Every VIPER-governed stage callable executes in a child process whose start-time
 environment and runtime controls derive from the frozen `RunSpec` and the
 stage's effective environment.
 
-## Current gap
+## Implementation status
 
 [`execute_stage_process()`](../../viper/stage_execution.py) derives environment
 variables through `process_environment()` and supplies them when launching
 `viper.stage_worker`. [`stage_worker.main()`](../../viper/stage_worker.py) then
 applies library controls before executing the project script.
 
-This path supports runner-launched scripts. The public package lacks the
-decorated callable and `viper.run(stage_callable)` interfaces. The worker also
-sets `ExecutionContext.backend` to `CPUBackendContext` for every stage. A CUDA
-stage therefore lacks the realized backend evidence required by its frozen
-compute request.
+The public package supplies the decorated callable and
+`viper.run(stage_callable)` interfaces. The worker records
+`CPUBackendContext` for CPU stages and `CUDABackendContext` for CUDA stages.
+The verifier applies `startup.backend` to backend kind, CUDA device count, and
+CUDA model.
+
+The remaining acceptance gate runs one CPU stage and one single-device CUDA
+stage on the L4 host. That test confirms the observed backend against real GPU
+hardware.
 
 ## Project interface
 
