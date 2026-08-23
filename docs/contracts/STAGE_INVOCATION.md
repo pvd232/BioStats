@@ -52,6 +52,57 @@ class StageContext(ProtocolModel, Generic[ParamsT]):
     artifacts: dict[ArtifactName, Path]
 ```
 
+`StageImplementationRef` identifies the callable invoked for the stage. At
+execution time, VIPER constructs one `StageContext` from the frozen stage
+specification and the active run attempt, then passes that context as the
+callable's sole argument.
+
+The stage specification and active attempt join the two models:
+
+```text
+StageImplementationRef
+├── path: project/stages/train.py
+└── symbol: train
+          │
+          ▼
+load the function train
+          │
+          │ receives
+          ▼
+StageContext[TrainParameters]
+├── params: TrainParameters(epochs=3)
+├── inputs: materialized input paths
+├── artifacts: writable output paths
+├── run_id
+├── attempt_id
+└── stage_id
+```
+
+Conceptually, the runner performs this invocation:
+
+```python
+train = load_callable(stage.implementation)
+
+params = TrainParameters.model_validate(stage.params)
+
+context = StageContext[TrainParameters](
+    run_id=run.run_id,
+    attempt_id=attempt.attempt_id,
+    stage_id=stage.stage_id,
+    parameter_model=stage.parameter_model,
+    params=params,
+    inputs=materialized_inputs,
+    artifacts=writable_artifact_paths,
+)
+
+train(context)
+```
+
+`StageImplementationRef` remains stable across invocations because it
+identifies source code. VIPER creates a new `StageContext` for each run attempt
+because the invocation identity, validated values, and workspace paths belong
+to that attempt.
+
 Each parameterized stage replaces `BaseSpec.script` with:
 
 ```python
