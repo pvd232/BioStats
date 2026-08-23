@@ -162,7 +162,7 @@ a CUDA application can see and how CUDA enumerates them:
 
 VIPER 0.1 governs one host process and one selected CUDA device per stage.
 Preflight rejects a CUDA request whose `count` exceeds `1` with
-`startup.distributed_required`. NVIDIA defines a CUDA context as the device
+`startup.distributed`. NVIDIA defines a CUDA context as the device
 execution state made current to a host thread; the host process submits kernels
 through that context: [CUDA Driver API](https://docs.nvidia.com/cuda/cuda-programming-guide/03-advanced/driver-api.html#context).
 
@@ -207,7 +207,7 @@ versions active in the child.
 | `startup.context` | The callable receives the typed context bound to the selected stage. |
 | `startup.runtime` | The resolved stage contains the host CPU and numerical runtime observed inside the child. |
 | `startup.backend` | The observed backend kind equals the effective compute kind. A CUDA backend contains one device whose model equals the frozen request, plus the observed driver, PyTorch CUDA, and cuDNN versions. |
-| `startup.distributed_required` | A CUDA request with `count` greater than `1` fails preflight and directs the run to the future distributed-execution contract. |
+| `startup.distributed` | A CUDA request with `count` greater than `1` fails preflight and directs the run to the future distributed-execution contract. |
 | `startup.outcome` | One successful resolved stage contains one successful child-process receipt. |
 
 ## Propagation
@@ -238,7 +238,7 @@ A CUDA case selects `CUDAComputeSpec(model="NVIDIA L4", count=1)`. The
 coordinator exposes one matching L4 to the child. The resolved stage contains
 the host `CPUContext` and a `CUDABackendContext` for that L4. The
 `startup.backend` check accepts the backend. A request with `count=2` fails
-`startup.distributed_required` during preflight.
+`startup.distributed` during preflight.
 
 ## Deferred contract: multi-GPU distributed execution
 

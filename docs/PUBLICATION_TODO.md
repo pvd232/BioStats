@@ -159,7 +159,7 @@ The current repository supplies the foundation consumed by Phase 1:
   `RunSpec.reproducibility` and the stage's effective environment.
 - [ ] Permit `CPUComputeSpec` and single-device `CUDAComputeSpec` on local
   environments; reject `CUDAComputeSpec.count > 1` with
-  `startup.distributed_required`.
+  `startup.distributed`.
 - [ ] Launch each stage in one controlled child carrying
   `VIPER_CONTEXT_PATH`.
 - [ ] Apply library controls before importing the frozen callable.
