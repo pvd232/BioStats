@@ -21,6 +21,7 @@ from tests.fixtures import (
     builtin_http_transport,
     http_policy,
     http_request,
+    metric_source,
     metric_spec,
     parameter_model_ref,
     parameter_model_source,
@@ -548,8 +549,8 @@ def add_plan_records(
 
     for metric in experiment.metrics:
         store.put(
-            git_file(source_commit, metric.implementation),
-            b"def compute(context):\n    return 0.91\n",
+            git_file(source_commit, metric.implementation.path),
+            metric_source(metric.metric_id, metric.kind),
         )
 
     for run_stage, (_, spec) in zip(run.stages, stage_specs, strict=True):
@@ -1179,7 +1180,13 @@ def build_complete_fixture(
         factors=(),
         variant_ids=("baseline",),
         replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
-        metrics=(metric_spec("pearson_correlation", "evaluation"),),
+        metrics=(
+            metric_spec(
+                "pearson_correlation",
+                "evaluation",
+                required_data_role=evaluation_role,
+            ),
+        ),
     )
     variant = VariantSpec(
         experiment_id="model_eval",

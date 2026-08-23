@@ -1,26 +1,37 @@
 """Tests for project metric authoring, execution, and measurement output."""
 
+import hashlib
 import json
 from pathlib import Path
+
+import pytest
 
 from viper.metrics import (
     MeasurementSink,
     MetricContext,
+    MetricError,
     StatefulMetric,
     compare_metric_values,
     load_metric,
     metric,
+    validate_metric_definition,
 )
-from viper.protocol import FloatComparator, MetricParams
+from viper.protocol import (
+    FloatComparator,
+    MetricDependency,
+    MetricImplementationRef,
+    MetricParams,
+    MetricSpec,
+)
 
 
-@metric(metric_id="mean_value", kind="evaluation")
+@metric(metric_id="mean_value", kind="evaluation", mode="recompute")
 def mean_value(context: MetricContext) -> float:
     """Return the frozen scalar supplied through metric parameters."""
     return float(context.params.model_dump()["value"])
 
 
-@metric(metric_id="running_mean", kind="training")
+@metric(metric_id="running_mean", kind="training", mode="live")
 class RunningMean(StatefulMetric):
     """Accumulate a scalar mean across training updates."""
 
@@ -41,9 +52,8 @@ class RunningMean(StatefulMetric):
 
 def test_decorators_define_stateless_and_stateful_metrics() -> None:
     """Attach the correct role and invocation timing to both authoring forms."""
-    assert mean_value.__viper_metric__.production == "after_stage"  # type: ignore[attr-defined]
-    assert mean_value.__viper_metric__.verification == "recompute"  # type: ignore[attr-defined]
-    assert RunningMean.__viper_metric__.production == "during_stage"  # type: ignore[attr-defined]
+    assert mean_value.__viper_metric__.mode == "recompute"  # type: ignore[attr-defined]
+    assert RunningMean.__viper_metric__.mode == "live"  # type: ignore[attr-defined]
     metric_value = RunningMean()
     metric_value.update(1.0)
     metric_value.update(3.0)
@@ -63,6 +73,45 @@ def test_metric_loader_invokes_top_level_symbol(tmp_path: Path) -> None:
     )
 
     assert loaded(context) == 4.5
+
+
+def test_frozen_metric_matches_decorator_metadata(tmp_path: Path) -> None:
+    """Match the metric ID, kind, and mode declared in source and MetricSpec."""
+    source = (
+        b"from viper.metrics import metric\n\n"
+        b'@metric(metric_id="accuracy", kind="evaluation", mode="recompute")\n'
+        b"def compute(context):\n"
+        b"    return 1.0\n"
+    )
+    path = tmp_path / "accuracy.py"
+    path.write_bytes(source)
+    spec = MetricSpec(
+        metric_id="accuracy",
+        kind="evaluation",
+        implementation=MetricImplementationRef(
+            path="accuracy.py",
+            symbol="compute",
+            sha256=hashlib.sha256(source).hexdigest(),
+            bytes=len(source),
+        ),
+        params=MetricParams(),
+        mode="recompute",
+        dependencies=(
+            MetricDependency(
+                source="artifact",
+                name="predictions",
+                required_data_role="evaluation",
+            ),
+        ),
+        comparator=FloatComparator(),
+    )
+
+    validate_metric_definition(tmp_path, spec)
+    with pytest.raises(MetricError, match="decorator ID differs"):
+        validate_metric_definition(
+            tmp_path,
+            spec.model_copy(update={"metric_id": "other_metric"}),
+        )
 
 
 def test_measurement_sink_writes_verifier_compatible_jsonl(tmp_path: Path) -> None:

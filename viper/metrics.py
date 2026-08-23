@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import math
 import os
@@ -19,9 +20,9 @@ from .protocol import (
     FloatComparator,
     Measurement,
     MetricKind,
+    MetricMode,
     MetricParams,
-    MetricProduction,
-    MetricVerification,
+    MetricSpec,
 )
 
 
@@ -45,8 +46,7 @@ class MetricDefinition:
 
     metric_id: MetricId
     kind: MetricKind
-    production: MetricProduction
-    verification: MetricVerification
+    mode: MetricMode
 
 
 MetricCallable = Callable[[MetricContext], float]
@@ -57,25 +57,13 @@ def metric(
     *,
     metric_id: MetricId,
     kind: MetricKind,
-    production: MetricProduction | None = None,
-    verification: MetricVerification | None = None,
+    mode: MetricMode,
 ) -> Callable[[Decorated], Decorated]:
     """Attach VIPER metric metadata to one function or stateful class."""
-    selected_production: MetricProduction = (
-        ("during_stage" if kind == "training" else "after_stage")
-        if production is None
-        else production
-    )
-    selected_verification: MetricVerification = (
-        ("execution" if selected_production == "during_stage" else "recompute")
-        if verification is None
-        else verification
-    )
     definition = MetricDefinition(
         metric_id=metric_id,
         kind=kind,
-        production=selected_production,
-        verification=selected_verification,
+        mode=mode,
     )
 
     def decorate(value: Decorated) -> Decorated:
@@ -110,6 +98,31 @@ def load_metric(path: Path, symbol: str) -> MetricCallable:
     if value is None or not callable(value):
         raise MetricError("metric symbol is absent or is not callable")
     return cast(MetricCallable, value)
+
+
+def metric_definition(function: Callable[..., Any]) -> MetricDefinition:
+    """Return the immutable decorator metadata attached to one metric callable."""
+    definition = getattr(function, "__viper_metric__", None)
+    if not isinstance(definition, MetricDefinition):
+        raise MetricError("metric callable lacks a VIPER metric decorator")
+    return definition
+
+
+def validate_metric_definition(repository_root: Path, spec: MetricSpec) -> None:
+    """Match one decorated metric callable with its frozen metric specification."""
+    path = repository_root.resolve() / spec.implementation.path
+    raw = path.read_bytes()
+    if len(raw) != spec.implementation.bytes:
+        raise MetricError("metric implementation byte count differs")
+    if hashlib.sha256(raw).hexdigest() != spec.implementation.sha256:
+        raise MetricError("metric implementation SHA-256 differs")
+    definition = metric_definition(load_metric(path, spec.implementation.symbol))
+    if definition.metric_id != spec.metric_id:
+        raise MetricError("metric decorator ID differs from MetricSpec")
+    if definition.kind != spec.kind:
+        raise MetricError("metric decorator kind differs from MetricSpec")
+    if definition.mode != spec.mode:
+        raise MetricError("metric decorator mode differs from MetricSpec")
 
 
 def compare_metric_values(

@@ -693,8 +693,7 @@ class ResumeState(ProtocolModel):
 
 
 MetricKind = Literal["training", "evaluation", "diagnostic"]
-MetricProduction = Literal["during_stage", "after_stage"]
-MetricVerification = Literal["execution", "recompute"]
+MetricMode = Literal["recompute", "live"]
 
 
 class FloatComparator(ProtocolModel):
@@ -934,33 +933,94 @@ class MetricParams(ParameterSet):
     """Metric-specific parameters preserved by the core protocol."""
 
 
+class MetricImplementationRef(ProtocolModel):
+    """Identify one project-owned metric callable by exact file bytes."""
+
+    path: PythonRepoRelPath
+    symbol: PythonSymbol
+    sha256: SHA256
+    bytes: int = Field(gt=0)
+
+
+class MetricDependency(ProtocolModel):
+    """Select one stage value and the data role accepted by a metric."""
+
+    source: Literal["input", "artifact"]
+    name: HumanId
+    required_data_role: DataRole
+
+
 class MetricSpec(ProtocolModel):
     """Bind one metric identity to its role, parameters, and implementation."""
 
     schema_version: Literal[1] = 1
     metric_id: MetricId
     kind: MetricKind
-    implementation: PythonRepoRelPath
-    symbol: PythonSymbol = "compute"
+    implementation: MetricImplementationRef
     params: MetricParams
-    production: MetricProduction
-    verification: MetricVerification
-    comparator: FloatComparator = Field(default_factory=FloatComparator)
+    mode: MetricMode
+    dependencies: tuple[MetricDependency, ...] = ()
+    comparator: FloatComparator | None = None
 
     @model_validator(mode="after")
     def validate_lifecycle(self) -> MetricSpec:
-        """Align production and verification with the metric's scientific role."""
-        if self.kind == "evaluation" and (
-            self.production != "after_stage" or self.verification != "recompute"
-        ):
-            raise ValueError(
-                "evaluation metrics require after_stage production and recomputation"
-            )
-        if self.production == "during_stage" and self.verification != "execution":
-            raise ValueError(
-                "during-stage metrics require execution provenance verification"
-            )
+        """Require one complete live or recomputed metric configuration."""
+        identities = tuple(
+            (dependency.source, dependency.name) for dependency in self.dependencies
+        )
+        if len(set(identities)) != len(identities):
+            raise ValueError("metric dependencies must be unique")
+        if self.mode == "recompute":
+            if not self.dependencies:
+                raise ValueError("recomputed metrics require dependencies")
+            if self.comparator is None:
+                raise ValueError("recomputed metrics require a comparator")
+        elif self.dependencies or self.comparator is not None:
+            raise ValueError("live metrics do not declare dependencies or a comparator")
+        if self.kind == "evaluation" and self.mode != "recompute":
+            raise ValueError("evaluation metrics require recomputation")
         return self
+
+
+class ResolvedMetricDependency(ProtocolModel):
+    """Bind one metric dependency to its exact persisted files."""
+
+    dependency: MetricDependency
+    files: tuple[ResolvedFileRef, ...] = Field(min_length=1)
+
+
+class MetricExecutionReceipt(ProtocolModel):
+    """Record one controlled metric worker execution and its scalar result."""
+
+    schema_version: Literal[1] = 1
+    run_id: RunId
+    attempt_id: int = Field(ge=1)
+    metric_id: MetricId
+    stage_id: StageId
+    purpose: Literal["measurement", "verification"]
+    implementation: MetricImplementationRef
+    params: MetricParams
+    dependencies: tuple[ResolvedMetricDependency, ...] = Field(min_length=1)
+    startup: ProcessStartupReceipt
+    execution_context: ExecutionContext
+    value: float = Field(allow_inf_nan=False)
+    started_at: AwareDatetime
+    completed_at: AwareDatetime
+    outcome: Literal["succeeded"] = "succeeded"
+
+
+class MetricVerificationReceipt(ProtocolModel):
+    """Bind one measurement to independent recomputation evidence."""
+
+    schema_version: Literal[1] = 1
+    metric_id: MetricId
+    stage_id: StageId
+    measurement: Measurement
+    production: MetricExecutionReceipt
+    recomputation: MetricExecutionReceipt
+    comparator: FloatComparator
+    passed: bool
+    completed_at: AwareDatetime
 
 
 class Measurement(ProtocolModel):

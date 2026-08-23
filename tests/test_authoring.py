@@ -21,6 +21,7 @@ from viper.protocol import (
     ArtifactLoaderRef,
     ExperimentSpec,
     FactorSpec,
+    MetricImplementationRef,
     MetricParams,
     MetricSpec,
     ParameterModelRef,
@@ -279,10 +280,14 @@ class RunPlanAuthoringTests(unittest.TestCase):
         metric = MetricSpec(
             metric_id="training_loss",
             kind="training",
-            implementation="project_code/metrics/training_loss.py",
+            implementation=MetricImplementationRef(
+                path="project_code/metrics/training_loss.py",
+                symbol="compute",
+                sha256="a" * 64,
+                bytes=1,
+            ),
             params=MetricParams(),
-            production="during_stage",
-            verification="execution",
+            mode="live",
         )
         experiment = ExperimentSpec(
             experiment_id="e001_strand",

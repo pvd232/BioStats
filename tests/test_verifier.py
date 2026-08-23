@@ -1494,7 +1494,9 @@ class RunPlanRelationshipTests(unittest.TestCase):
             factors=(),
             variant_ids=("baseline",),
             replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
-            metrics=(metric_spec("pearson_correlation", "evaluation"),),
+            metrics=(
+                metric_spec("pearson_correlation", "evaluation"),
+            ),
         )
         variant = VariantSpec(
             experiment_id="e001_strand",
@@ -1546,7 +1548,9 @@ class RunPlanRelationshipTests(unittest.TestCase):
             factors=(),
             variant_ids=("baseline",),
             replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
-            metrics=(metric_spec("pearson_correlation", "evaluation"),),
+            metrics=(
+                metric_spec("pearson_correlation", "evaluation"),
+            ),
         )
         variant = VariantSpec(
             experiment_id="e001_strand",
@@ -1656,7 +1660,13 @@ class RunPlanRelationshipTests(unittest.TestCase):
             factors=(),
             variant_ids=("baseline",),
             replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
-            metrics=(metric_spec("pearson_correlation", "evaluation"),),
+            metrics=(
+                metric_spec(
+                    "pearson_correlation",
+                    "evaluation",
+                    required_data_role="benchmark",
+                ),
+            ),
         )
         variant = VariantSpec(
             experiment_id="e001_strand",
@@ -1698,6 +1708,28 @@ class RunPlanRelationshipTests(unittest.TestCase):
             benchmark,
             {"train": train, "evaluate": evaluation},
         )
+
+        selected_metric = experiment.metrics[0]
+        missing_dependency = selected_metric.dependencies[0].model_copy(
+            update={"name": "missing_predictions"}
+        )
+        invalid_experiment = experiment.model_copy(
+            update={
+                "metrics": (
+                    selected_metric.model_copy(
+                        update={"dependencies": (missing_dependency,)}
+                    ),
+                )
+            }
+        )
+        with self.assertRaisesRegex(VerificationError, "selects absent artifact"):
+            verify_run_plan_relationships(
+                run,
+                invalid_experiment,
+                variant,
+                benchmark,
+                {"train": train, "evaluate": evaluation},
+            )
 
         ordinary_payload = evaluation.model_dump(mode="python")
         ordinary_payload["inputs"]["evaluation_dataset"]["data_role"] = "evaluation"

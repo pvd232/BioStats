@@ -7,10 +7,14 @@ from viper.protocol import (
     BuiltinHttpTransportSpec,
     DataLoaderConfiguration,
     DataLoaderResumeState,
+    DataRole,
+    FloatComparator,
     HttpRequestSpec,
     HttpRetrievalPolicy,
     LegacyNumPyRNGState,
     MainProcessRNGState,
+    MetricDependency,
+    MetricImplementationRef,
     MetricKind,
     MetricParams,
     MetricSpec,
@@ -25,6 +29,17 @@ from viper.protocol import (
 from viper.verifier import VerificationPolicy
 
 DEFAULT_ARTIFACT_LOADER_SOURCE = b"def load(path):\n    return path.read_bytes()\n"
+
+
+def metric_source(metric_id: str, kind: MetricKind) -> bytes:
+    """Build one decorated metric implementation matched by ``metric_spec``."""
+    mode = "recompute" if kind == "evaluation" else "live"
+    return (
+        "from viper.metrics import metric\n\n"
+        f'@metric(metric_id="{metric_id}", kind="{kind}", mode="{mode}")\n'
+        "def compute(context):\n"
+        "    return 0.91\n"
+    ).encode()
 
 
 def parameter_model_ref(kind: str) -> ParameterModelRef:
@@ -125,15 +140,41 @@ def verification_policy(*repositories: object) -> VerificationPolicy:
     )
 
 
-def metric_spec(metric_id: str, kind: MetricKind) -> MetricSpec:
+def metric_spec(
+    metric_id: str,
+    kind: MetricKind,
+    required_data_role: DataRole = "evaluation",
+) -> MetricSpec:
     """Build one metric bound to an exact user-repository implementation path."""
+    source = metric_source(metric_id, kind)
+    implementation = MetricImplementationRef(
+        path=f"project/metrics/{kind}/{metric_id}.py",
+        symbol="compute",
+        sha256=hashlib.sha256(source).hexdigest(),
+        bytes=len(source),
+    )
+    if kind == "evaluation":
+        return MetricSpec(
+            metric_id=metric_id,
+            kind=kind,
+            implementation=implementation,
+            params=MetricParams(),
+            mode="recompute",
+            dependencies=(
+                MetricDependency(
+                    source="artifact",
+                    name="predictions",
+                    required_data_role=required_data_role,
+                ),
+            ),
+            comparator=FloatComparator(),
+        )
     return MetricSpec(
         metric_id=metric_id,
         kind=kind,
-        implementation=f"project/metrics/{kind}/{metric_id}.py",
+        implementation=implementation,
         params=MetricParams(),
-        production="during_stage" if kind == "training" else "after_stage",
-        verification="execution" if kind == "training" else "recompute",
+        mode="live",
     )
 
 

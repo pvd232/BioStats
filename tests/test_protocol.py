@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -22,8 +23,11 @@ from viper.protocol import (
     DataRole,
     EvaluateParams,
     EvaluateSpec,
+    FloatComparator,
     FutureInputRef,
     GCEEnvironmentSpec,
+    MetricDependency,
+    MetricImplementationRef,
     MetricParams,
     MetricSpec,
     ResolvedBundleArtifact,
@@ -309,13 +313,26 @@ class ParameterContractTests(unittest.TestCase):
 
     def test_metric_implementation_accepts_user_repository_path(self) -> None:
         """Bind a metric to any exact Python file in the user repository."""
+        source = b"def compute(context):\n    return 0.0\n"
         metric = MetricSpec(
             metric_id="pearson_correlation",
             kind="evaluation",
-            implementation="analysis/quality/correlation.py",
+            implementation=MetricImplementationRef(
+                path="analysis/quality/correlation.py",
+                symbol="compute",
+                sha256=hashlib.sha256(source).hexdigest(),
+                bytes=len(source),
+            ),
             params=MetricParams.model_validate({"dim": 1}),
-            production="after_stage",
-            verification="recompute",
+            mode="recompute",
+            dependencies=(
+                MetricDependency(
+                    source="artifact",
+                    name="predictions",
+                    required_data_role="evaluation",
+                ),
+            ),
+            comparator=FloatComparator(mode="exact", tolerance=0),
         )
 
         self.assertEqual(metric.params.model_dump()["dim"], 1)
@@ -326,10 +343,22 @@ class ParameterContractTests(unittest.TestCase):
             MetricSpec(
                 metric_id="pearson_correlation",
                 kind="evaluation",
-                implementation="analysis/quality/correlation.yaml",
+                implementation=MetricImplementationRef(
+                    path="analysis/quality/correlation.yaml",
+                    symbol="compute",
+                    sha256="a" * 64,
+                    bytes=1,
+                ),
                 params=MetricParams(),
-                production="after_stage",
-                verification="recompute",
+                mode="recompute",
+                dependencies=(
+                    MetricDependency(
+                        source="artifact",
+                        name="predictions",
+                        required_data_role="evaluation",
+                    ),
+                ),
+                comparator=FloatComparator(mode="exact", tolerance=0),
             )
 
 

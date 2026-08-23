@@ -31,11 +31,14 @@ from viper.protocol import (
     DownloadSpec,
     DownloadVariantStageParams,
     ExperimentSpec,
+    FloatComparator,
     FutureInputRef,
     GitFileRef,
     GitSource,
     HuggingFaceFileRef,
     LocalEnvironmentSpec,
+    MetricDependency,
+    MetricImplementationRef,
     MetricParams,
     MetricSpec,
     ParameterModelRef,
@@ -184,13 +187,32 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     train_params = TrainParams.model_validate(
         {"epochs": 1, "batch_size": 1, "learning_rate": 0.1}
     )
+    metric_source = (
+        b"from viper.metrics import metric\n\n"
+        b'@metric(metric_id="parameter_bytes", kind="diagnostic", '
+        b'mode="recompute")\n'
+        b"def compute(context):\n"
+        b"    return float(len(context.artifacts['parameters'].read_bytes()))\n"
+    )
     parameter_bytes = MetricSpec(
         metric_id="parameter_bytes",
         kind="diagnostic",
-        implementation="project/metrics/parameter_bytes.py",
+        implementation=MetricImplementationRef(
+            path="project/metrics/parameter_bytes.py",
+            symbol="compute",
+            sha256=hashlib.sha256(metric_source).hexdigest(),
+            bytes=len(metric_source),
+        ),
         params=MetricParams(),
-        production="after_stage",
-        verification="recompute",
+        mode="recompute",
+        dependencies=(
+            MetricDependency(
+                source="artifact",
+                name=PARAMETERS,
+                required_data_role="training",
+            ),
+        ),
+        comparator=FloatComparator(),
     )
     experiment = ExperimentSpec(
         experiment_id="example",
@@ -220,10 +242,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             "def load(path):\n"
             f"    return {resume_state().model_dump(mode='python')!r}\n"
         ).encode(),
-        "project/metrics/parameter_bytes.py": (
-            b"def compute(context):\n"
-            b"    return float(len(context.artifacts['parameters'].read_bytes()))\n"
-        ),
+        "project/metrics/parameter_bytes.py": metric_source,
         "project/parameters/train.py": (
             b"from pydantic import Field\n"
             b"from viper.protocol import TrainParams\n\n"

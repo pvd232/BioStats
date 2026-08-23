@@ -2,11 +2,11 @@
 
 ## Status
 
-Metric decorators, measurement writing, floating-point comparators, and
-in-process recomputation are implemented. Exact dependency binding, live metric
-handles, dedicated metric workers, and complete execution receipts are drafted
-and approved for VIPER 0.1. Each worker receipt selects the run and attempt that
-own its metric execution.
+Metric decorators, exact implementation references, dependency binding,
+restricted metric contexts, measurement writing, floating-point comparators,
+and in-process recomputation are implemented. Live metric handles, dedicated
+metric workers, and complete execution receipts are approved for VIPER 0.1.
+Each worker receipt selects the run and attempt that own its metric execution.
 
 ## Required claim
 
@@ -16,16 +16,15 @@ effective execution environment.
 
 ## Current gap
 
-`MetricSpec` stores an implementation path and symbol. `RunSpec.source`
-supplies the repository and commit. During execution and recomputation,
-[`MetricContext`](../../viper/metrics.py) receives every input and artifact of
-the stage that selected the metric.
+`MetricSpec` identifies exact implementation bytes and declares each permitted
+dependency. The runner and verifier construct
+[`MetricContext`](../../viper/metrics.py) from that dependency set and reject a
+data-role mismatch before invocation.
 
-The runner and verifier currently execute post-stage metric code inside their
-own processes. The implementation identity is checked, while the authorized
-dependency set and the metric process's startup evidence remain implicit.
-Live training metrics have decorators and a stateful base class. The stage
-runtime still omits the controlled metric handle.
+The runner and verifier still execute recomputed metric code inside their own
+processes. The metric process's startup evidence remains absent. Live training
+metrics have decorators and a stateful base class. The stage runtime still
+omits the controlled metric handle.
 
 The approved worker receipt adds the run ID and attempt ID that own the
 measurement. The production and verification workers must select those same

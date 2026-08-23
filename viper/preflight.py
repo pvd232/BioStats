@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict
 
 from .http import HttpRetrievalError, resolve_transport, validate_request_policy
 from .ids import StageId
+from .metrics import MetricError, validate_metric_definition
 from .parameter_models import (
     ParameterModelError,
     validate_stage_parameters,
@@ -473,15 +474,21 @@ def preflight_local_plan(repository_root: Path, run_spec_path: Path) -> Prefligh
             if metric is None:
                 implementations_valid = False
                 continue
-            implementation_path = root / metric.implementation
+            implementation = metric.implementation
+            implementation_path = root / implementation.path
             try:
+                raw = implementation_path.read_bytes()
                 if (
                     not implementation_path.is_file()
-                    or implementation_path.read_bytes()
-                    != _git_bytes(root, run.source.commit, metric.implementation)
+                    or len(raw) != implementation.bytes
+                    or hashlib.sha256(raw).hexdigest() != implementation.sha256
+                    or raw
+                    != _git_bytes(root, run.source.commit, implementation.path)
                 ):
                     implementations_valid = False
-            except (OSError, subprocess.CalledProcessError):
+                    continue
+                validate_metric_definition(root, metric)
+            except (OSError, subprocess.CalledProcessError, MetricError):
                 implementations_valid = False
     checks.append(
         _check(

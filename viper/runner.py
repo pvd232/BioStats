@@ -314,26 +314,42 @@ def _run_after_stage_metrics(
     metrics = {metric.metric_id: metric for metric in experiment.metrics}
     for metric_id in stage.metric_ids:
         metric = metrics[metric_id]
-        if metric.production != "after_stage":
+        if metric.mode != "recompute":
             continue
-        implementation = root / metric.implementation
+        implementation = root / metric.implementation.path
         frozen_implementation = fetcher(
             GitFileRef(
                 repository=run.source.repository,
                 commit=run.source.commit,
-                path=metric.implementation,
+                path=metric.implementation.path,
             )
         )
-        if implementation.read_bytes() != frozen_implementation:
+        if (
+            implementation.read_bytes() != frozen_implementation
+            or len(frozen_implementation) != metric.implementation.bytes
+            or hashlib.sha256(frozen_implementation).hexdigest()
+            != metric.implementation.sha256
+        ):
             raise RunError(
                 f"metric {metric_id!r} implementation differs from frozen source"
             )
         try:
-            callable_metric = load_metric(implementation, metric.symbol)
+            callable_metric = load_metric(implementation, metric.implementation.symbol)
+            available_artifacts = _artifact_paths(root, stage)
+            metric_inputs = {
+                dependency.name: input_paths[dependency.name]
+                for dependency in metric.dependencies
+                if dependency.source == "input"
+            }
+            metric_artifacts = {
+                dependency.name: available_artifacts[dependency.name]
+                for dependency in metric.dependencies
+                if dependency.source == "artifact"
+            }
             value = callable_metric(
                 MetricContext(
-                    inputs=input_paths,
-                    artifacts=_artifact_paths(root, stage),
+                    inputs=metric_inputs,
+                    artifacts=metric_artifacts,
                     params=metric.params,
                 )
             )

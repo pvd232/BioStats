@@ -49,6 +49,7 @@ from .protocol import (
     EmbedSpec,
     EvaluateSpec,
     ExperimentSpec,
+    FloatComparator,
     FutureInputRef,
     GCEEnvironmentSpec,
     GitFileRef,
@@ -138,25 +139,7 @@ def _verify_stage_data_roles(
     if not isinstance(stage, InternalSpec):
         return
 
-    input_roles: dict[InputName, DataRole] = {}
-    for input_name, input_ref in stage.inputs.items():
-        if isinstance(input_ref, StoredInputRef):
-            input_roles[input_name] = input_ref.data_role
-            continue
-
-        producer = prior_stages.get(input_ref.producer_stage_id)
-        if producer is None:
-            raise VerificationError(
-                f"future input {input_name!r} of stage {stage_id!r} must select "
-                "an earlier stage"
-            )
-        declaration = producer.artifacts.get(input_ref.producer_artifact)
-        if declaration is None:
-            raise VerificationError(
-                f"future input {input_name!r} of stage {stage_id!r} selects an "
-                "undeclared producer artifact"
-            )
-        input_roles[input_name] = declaration.data_role
+    input_roles = _stage_input_roles(stage_id, stage, prior_stages)
 
     if isinstance(stage, TrainSpec):
         restricted = {
@@ -206,6 +189,34 @@ def _verify_stage_data_roles(
             f"stage {stage_id!r} artifacts cannot have a less restricted "
             f"data_role than their inputs: {names}"
         )
+
+
+def _stage_input_roles(
+    stage_id: StageId,
+    stage: InternalSpec,
+    prior_stages: Mapping[StageId, BaseSpec],
+) -> dict[InputName, DataRole]:
+    """Resolve each internal stage input to its declared data role."""
+    input_roles: dict[InputName, DataRole] = {}
+    for input_name, input_ref in stage.inputs.items():
+        if isinstance(input_ref, StoredInputRef):
+            input_roles[input_name] = input_ref.data_role
+            continue
+
+        producer = prior_stages.get(input_ref.producer_stage_id)
+        if producer is None:
+            raise VerificationError(
+                f"future input {input_name!r} of stage {stage_id!r} must select "
+                "an earlier stage"
+            )
+        declaration = producer.artifacts.get(input_ref.producer_artifact)
+        if declaration is None:
+            raise VerificationError(
+                f"future input {input_name!r} of stage {stage_id!r} selects an "
+                "undeclared producer artifact"
+            )
+        input_roles[input_name] = declaration.data_role
+    return input_roles
 
 
 def resolved_stage_spec_path(run: RunSpec, stage_id: StageId) -> RepoRelPath:
@@ -768,26 +779,31 @@ def verify_experiment_and_variant(
         ) from exc
 
     for metric in experiment.metrics:
+        implementation = metric.implementation
         metric_location = GitFileRef(
             repository=run.source.repository,
             commit=run.source.commit,
-            path=metric.implementation,
+            path=implementation.path,
         )
         metric_raw = retrieve(metric_location)
+        if len(metric_raw) != implementation.bytes:
+            raise VerificationError("metric implementation byte count differs")
+        if hashlib.sha256(metric_raw).hexdigest() != implementation.sha256:
+            raise VerificationError("metric implementation SHA-256 differs")
         try:
-            metric_tree = ast.parse(metric_raw, filename=metric.implementation)
+            metric_tree = ast.parse(metric_raw, filename=implementation.path)
         except SyntaxError as exc:
             raise VerificationError(
                 f"metric {metric.metric_id!r} implementation is not valid Python"
             ) from exc
         if not any(
             isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == metric.symbol
+            and node.name == implementation.symbol
             for node in metric_tree.body
         ):
             raise VerificationError(
                 f"metric {metric.metric_id!r} implementation must define "
-                f"{metric.symbol}"
+                f"{implementation.symbol}"
             )
 
     if experiment.experiment_id != run.experiment_id:
@@ -886,8 +902,10 @@ def verify_run_plan_relationships(
                     )
 
     prior_stages: dict[StageId, BaseSpec] = {}
+    prior_stages_by_id: dict[StageId, dict[StageId, BaseSpec]] = {}
     for stage_reference in run.stages:
         stage = stages[stage_reference.stage_id]
+        prior_stages_by_id[stage_reference.stage_id] = dict(prior_stages)
         _verify_stage_data_roles(stage_reference.stage_id, stage, prior_stages)
         prior_stages[stage_reference.stage_id] = stage
 
@@ -940,6 +958,7 @@ def verify_run_plan_relationships(
             raise VerificationError(
                 f"stage {stage_id!r} must select diagnostic metrics"
             )
+
     evaluation_stages = [
         stage for stage in stages.values() if isinstance(stage, EvaluateSpec)
     ]
@@ -954,6 +973,31 @@ def verify_run_plan_relationships(
                 f"evaluation {evaluation.evaluation_id!r} must use "
                 f"{expected_evaluation_role!r} data_role"
             )
+
+    for stage_id, stage in stages.items():
+        input_roles = (
+            _stage_input_roles(stage_id, stage, prior_stages_by_id[stage_id])
+            if isinstance(stage, InternalSpec)
+            else {}
+        )
+        for metric_id in stage.metric_ids:
+            metric = experiment_metrics[metric_id]
+            for dependency in metric.dependencies:
+                if dependency.source == "input":
+                    role = input_roles.get(dependency.name)
+                else:
+                    artifact = stage.artifacts.get(dependency.name)
+                    role = None if artifact is None else artifact.data_role
+                if role is None:
+                    raise VerificationError(
+                        f"metric {metric_id!r} selects absent {dependency.source} "
+                        f"dependency {dependency.name!r}"
+                    )
+                if role != dependency.required_data_role:
+                    raise VerificationError(
+                        f"metric {metric_id!r} dependency {dependency.name!r} "
+                        "data role differs from its stage declaration"
+                    )
 
     if benchmark is None:
         return
@@ -1006,6 +1050,13 @@ def verify_run_plan_relationships(
         raise VerificationError(
             "evaluation metrics do not match the benchmark specification"
         )
+    for criterion in benchmark.metrics:
+        metric = experiment_metrics[criterion.metric_id]
+        if metric.kind != "evaluation" or metric.mode != "recompute":
+            raise VerificationError(
+                f"benchmark criterion {criterion.metric_id!r} must select a "
+                "recomputed evaluation metric"
+            )
 
 
 def verify_parameter_model_references(
@@ -1928,7 +1979,7 @@ def verify_recomputed_metrics(
     for stage_id, stage in plan.stages.items():
         for metric_id in stage.metric_ids:
             metric = metric_specs[metric_id]
-            if metric.verification != "recompute":
+            if metric.mode != "recompute":
                 continue
             recorded = tuple(
                 measurement
@@ -1956,38 +2007,66 @@ def verify_recomputed_metrics(
                 **stored_inputs.get(stage_id, {}),
                 **future_inputs.get(stage_id, {}),
             }
+            metric_inputs: dict[str, VerifiedInput] = {}
+            metric_artifacts: dict[str, VerifiedArtifact] = {}
+            for dependency in metric.dependencies:
+                if dependency.source == "input":
+                    selected_input = inputs.get(dependency.name)
+                    if selected_input is None:
+                        raise VerificationError(
+                            f"metric dependency {dependency.name!r} is absent"
+                        )
+                    if selected_input.data_role != dependency.required_data_role:
+                        raise VerificationError(
+                            f"metric dependency {dependency.name!r} data role differs"
+                        )
+                    metric_inputs[dependency.name] = selected_input
+                else:
+                    selected_artifact = verified_artifacts.get(dependency.name)
+                    if selected_artifact is None:
+                        raise VerificationError(
+                            f"metric dependency {dependency.name!r} is absent"
+                        )
+                    if selected_artifact.data_role != dependency.required_data_role:
+                        raise VerificationError(
+                            f"metric dependency {dependency.name!r} data role differs"
+                        )
+                    metric_artifacts[dependency.name] = selected_artifact
             implementation_location = GitFileRef(
                 repository=plan.run.source.repository,
                 commit=plan.run.source.commit,
-                path=metric.implementation,
+                path=metric.implementation.path,
             )
             with tempfile.TemporaryDirectory(prefix="viper-metric-") as directory:
                 root = Path(directory)
-                implementation = root / metric.implementation
+                implementation = root / metric.implementation.path
                 implementation.parent.mkdir(parents=True, exist_ok=True)
                 implementation.write_bytes(retrieve(implementation_location))
-                for name, verified_input in inputs.items():
+                for name, verified_input in metric_inputs.items():
                     _materialize_metric_value(
                         root,
                         verified_input.path,
                         verified_input,
                     )
-                for name, verified_artifact in verified_artifacts.items():
+                for name, verified_artifact in metric_artifacts.items():
                     _materialize_metric_value(
                         root,
                         stage.artifacts[name].path,
                         verified_artifact,
                     )
                 try:
-                    recomputed = load_metric(implementation, metric.symbol)(
+                    recomputed = load_metric(
+                        implementation,
+                        metric.implementation.symbol,
+                    )(
                         MetricContext(
                             inputs={
                                 name: root / value.path
-                                for name, value in inputs.items()
+                                for name, value in metric_inputs.items()
                             },
                             artifacts={
                                 name: root / stage.artifacts[name].path
-                                for name in verified_artifacts
+                                for name in metric_artifacts
                             },
                             params=metric.params,
                         )
@@ -1999,7 +2078,7 @@ def verify_recomputed_metrics(
             if not compare_metric_values(
                 recorded[0].value,
                 recomputed,
-                metric.comparator,
+                cast(FloatComparator, metric.comparator),
             ):
                 raise VerificationError(
                     f"recomputed metric {metric_id!r} does not match its measurement"
