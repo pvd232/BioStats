@@ -17,6 +17,7 @@ loaders, metric implementations, and exact training resume behavior.
 | [runner acceptance test](test_runner_acceptance.py) | A real two-stage local run freezes a project parameter model, preflights, executes, publishes, verifies, and rejects a tampered artifact. |
 | [resume tests](test_resume.py) | Python, NumPy, PyTorch, optimizer, and stateful DataLoader state round-trip so resumption selects the same next batch with zero or multiple workers. |
 | [artifact-loader tests](test_artifact_loaders.py) | A user-owned loader reconstructs its declared JSON artifact. |
+| [artifact-validation tests](test_artifact_validation.py) | Exact loader identities and typed loadability or semantic-validation outcomes are enforced. |
 | [metric tests](test_metrics.py) | Metric implementations compute their declared values and reject nonfinite inputs. |
 | [shared fixtures](fixtures.py) | Independent test modules construct the same valid metric and resume records without importing from another test module. |
 

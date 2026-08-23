@@ -28,6 +28,8 @@ from .protocol import (
     HuggingFaceFileRef,
     InternalSpec,
     LocalEnvironmentSpec,
+    LocalStageResultSnapshotRef,
+    RepoRelPath,
     ResolvedArtifactPointerRef,
     ResolvedBuildSpec,
     ResolvedDownloadSpec,
@@ -48,6 +50,7 @@ from .protocol import (
     RunAttempt,
     RunSpec,
     SnapshotFileRef,
+    StageResultSnapshotRef,
     StorageModel,
     StoredInputRef,
 )
@@ -58,6 +61,7 @@ from .verifier import (
     VerifiedArtifact,
     fetch_git_file_bytes,
     fetch_huggingface_file_bytes,
+    list_huggingface_snapshot_files,
     verify_promoted_artifact,
     verify_run_result,
 )
@@ -117,6 +121,15 @@ class RunFetcher:
         if isinstance(location, HuggingFaceFileRef):
             return fetch_huggingface_file_bytes(location)
         return self.store.fetch(location)
+
+    def list_snapshot_files(
+        self,
+        snapshot: StageResultSnapshotRef | LocalStageResultSnapshotRef,
+    ) -> tuple[RepoRelPath, ...]:
+        """List every regular file in one immutable stage snapshot."""
+        if isinstance(snapshot, StageResultSnapshotRef):
+            return list_huggingface_snapshot_files(snapshot)
+        return self.store.list_snapshot_files(snapshot)
 
 
 def _write_synchronized(path: Path, raw: bytes) -> None:

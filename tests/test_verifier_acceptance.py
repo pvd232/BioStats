@@ -65,6 +65,7 @@ from viper.protocol import (
     HttpRetrievalContextBinding,
     HuggingFaceFileRef,
     LocalFileRef,
+    LocalStageResultSnapshotRef,
     MetricCriterion,
     NativeLibraryContext,
     NativeThreadPoolContext,
@@ -232,6 +233,23 @@ class DocumentStore:
     def fetch(self, location: StorageModel) -> bytes:
         """Retrieve exact bytes from one immutable location."""
         return self.documents[self.key(location)]
+
+    def list_snapshot_files(
+        self,
+        snapshot: StageResultSnapshotRef | LocalStageResultSnapshotRef,
+    ) -> tuple[str, ...]:
+        """List every file stored in one simulated immutable snapshot."""
+        if isinstance(snapshot, LocalStageResultSnapshotRef):
+            prefix = (snapshot.kind, str(snapshot.store), snapshot.commit)
+        else:
+            prefix = (
+                snapshot.kind,
+                str(snapshot.repository),
+                snapshot.commit,
+            )
+        return tuple(
+            sorted(key[3] for key in self.documents if key[:3] == prefix)
+        )
 
 
 def git_file(commit: str, path: str) -> GitFileRef:
@@ -1626,6 +1644,37 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         self.assertEqual(set(verified.resolved_stages), {"build", "train", "evaluate"})
         self.assertEqual(len(verified.measurements), 1)
         self.assertEqual(verified.measurements[0].value, 0.91)
+
+    def test_bundle_rejects_an_unrecorded_published_member(self) -> None:
+        """Reject a snapshot file omitted from the resolved bundle member list."""
+        resolved_run, store, _ = build_complete_fixture()
+        build_stage = resolved_run.attempts[0].resolved_stages[0]
+        extra_path = (
+            "experiments/model_eval/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAB/"
+            "artifacts/priors/toy/unrecorded.bin"
+        )
+        store.put(hf_file(build_stage.snapshot.commit, extra_path), b"extra")
+
+        with self.assertRaisesRegex(VerificationError, "artifact.bundle"):
+            verify_run_result(resolved_run, policy=POLICY, fetcher=store.fetch)
+
+    def test_bundle_rejects_a_missing_recorded_member(self) -> None:
+        """Reject a resolved bundle member absent from its immutable snapshot."""
+        resolved_run, store, _ = build_complete_fixture()
+        build_stage = resolved_run.attempts[0].resolved_stages[0]
+        missing_path = (
+            "experiments/model_eval/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAB/"
+            "artifacts/priors/toy/metadata.json"
+        )
+        del store.documents[
+            DocumentStore.key(hf_file(build_stage.snapshot.commit, missing_path))
+        ]
+
+        with self.assertRaisesRegex(
+            VerificationError,
+            "artifact.bundle: published members differ",
+        ):
+            verify_run_result(resolved_run, policy=POLICY, fetcher=store.fetch)
 
     def test_stored_input_role_must_match_the_selected_artifact(self) -> None:
         """Reject a stored input whose declared role differs from its source."""

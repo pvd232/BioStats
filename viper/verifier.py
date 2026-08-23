@@ -13,13 +13,19 @@ from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType
 from typing import cast
 
 import yaml
-from huggingface_hub import hf_hub_download
+from huggingface_hub import HfApi, RepoFile, hf_hub_download
 from pydantic import TypeAdapter
 
+from .artifact_loaders import (
+    ArtifactLoaderError,
+    ArtifactValidationResult,
+    execute_artifact_loader,
+    materialized_loader_context,
+    verify_artifact_loader_bytes,
+)
 from .http import HttpRetrievalError, validate_request_policy
 from .ids import InputName, StageId
 from .metrics import MetricContext, compare_metric_values, load_metric
@@ -71,7 +77,6 @@ from .protocol import (
     ResolvedStageInvocationRef,
     ResolvedStageRef,
     ResolvedStoredInputRef,
-    ResumeState,
     RunAttempt,
     RunSpec,
     SnapshotFileRef,
@@ -90,6 +95,7 @@ from .serialization import document_digest, parse_yaml_bytes
 from .stages import StageDefinitionError, verify_stage_implementation_bytes
 
 StorageFetcher = Callable[[StorageModel], bytes]
+StageSnapshot = StageResultSnapshotRef | LocalStageResultSnapshotRef
 SPEC_ADAPTER = TypeAdapter(Spec)
 RESOLVED_SPEC_ADAPTER = TypeAdapter(ResolvedSpec)
 _DATA_ROLE_RANK: dict[DataRole, int] = {
@@ -98,6 +104,10 @@ _DATA_ROLE_RANK: dict[DataRole, int] = {
     "evaluation": 2,
     "benchmark": 3,
 }
+_ARTIFACT_VALIDATION_CACHE: dict[
+    tuple[str, str, str, tuple[tuple[str, str, int], ...]],
+    ArtifactValidationResult,
+] = {}
 
 
 def run_root(run: RunSpec) -> RepoRelPath:
@@ -391,6 +401,65 @@ def fetch_storage_bytes(location: StorageModel) -> bytes:
     raise TypeError(f"unsupported storage reference: {type(location).__name__}")
 
 
+def list_huggingface_snapshot_files(
+    snapshot: StageResultSnapshotRef,
+) -> tuple[RepoRelPath, ...]:
+    """List every regular file in one immutable Hugging Face snapshot."""
+    repo_type = None if snapshot.repo_type == "model" else snapshot.repo_type
+    try:
+        entries = HfApi().list_repo_tree(
+            repo_id=snapshot.repository,
+            recursive=True,
+            revision=snapshot.commit,
+            repo_type=repo_type,
+        )
+        return tuple(
+            sorted(entry.path for entry in entries if isinstance(entry, RepoFile))
+        )
+    except (OSError, ValueError) as exc:
+        raise VerificationError("artifact.bundle: snapshot listing failed") from exc
+
+
+def list_local_snapshot_files(
+    snapshot: LocalStageResultSnapshotRef,
+) -> tuple[RepoRelPath, ...]:
+    """List every regular file in one repository-local snapshot."""
+    revision_root = (Path.cwd() / snapshot.store / snapshot.commit).resolve()
+    if not revision_root.is_dir():
+        raise VerificationError("artifact.bundle: local snapshot is missing")
+    paths: list[RepoRelPath] = []
+    for path in sorted(revision_root.rglob("*")):
+        if path.is_symlink():
+            raise VerificationError("artifact.bundle: snapshot contains a symlink")
+        if path.is_file():
+            paths.append(path.relative_to(revision_root).as_posix())
+    return tuple(paths)
+
+
+def list_snapshot_files(
+    snapshot: StageSnapshot,
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> tuple[RepoRelPath, ...]:
+    """List one snapshot through its custom or installed storage backend."""
+    owner = None if fetcher is None else getattr(fetcher, "__self__", fetcher)
+    custom = None if owner is None else getattr(owner, "list_snapshot_files", None)
+    if callable(custom):
+        try:
+            custom_listing = cast(
+                Callable[[StageSnapshot], tuple[RepoRelPath, ...]],
+                custom,
+            )
+            return tuple(custom_listing(snapshot))
+        except Exception as exc:
+            raise VerificationError(
+                "artifact.bundle: custom snapshot listing failed"
+            ) from exc
+    if isinstance(snapshot, StageResultSnapshotRef):
+        return list_huggingface_snapshot_files(snapshot)
+    return list_local_snapshot_files(snapshot)
+
+
 def verify_resolved_file_bytes(
     reference: ResolvedFileRef,
     raw: bytes,
@@ -445,7 +514,12 @@ def read_snapshot_file(
             commit=snapshot.commit,
             path=reference.path,
         )
-    raw = retrieve(location)
+    try:
+        raw = retrieve(location)
+    except Exception as exc:
+        raise VerificationError(
+            f"artifact.representation: snapshot file is unavailable: {reference.path}"
+        ) from exc
 
     resolved_reference = ResolvedFileRef(
         sha256=reference.sha256,
@@ -494,6 +568,31 @@ def verify_snapshot_artifact(
     if isinstance(artifact, ResolvedSingleFileArtifact):
         references = (artifact.file,)
     elif isinstance(artifact, ResolvedBundleArtifact):
+        roots: set[str] = set()
+        for member in artifact.members:
+            full_path = str(member.file.path)
+            relative_path = str(member.relative_path)
+            suffix = f"/{relative_path}"
+            if not full_path.endswith(suffix):
+                raise VerificationError(
+                    "artifact.bundle: member path differs from its relative path"
+                )
+            roots.add(full_path[: -len(suffix)])
+        if len(roots) != 1:
+            raise VerificationError(
+                "artifact.bundle: members do not share one bundle root"
+            )
+        bundle_root = next(iter(roots))
+        declared_paths = tuple(member.file.path for member in artifact.members)
+        published_paths = tuple(
+            path
+            for path in list_snapshot_files(stage.snapshot, fetcher=fetcher)
+            if str(path).startswith(f"{bundle_root}/")
+        )
+        if published_paths != declared_paths:
+            raise VerificationError(
+                "artifact.bundle: published members differ from the resolved list"
+            )
         references = tuple(member.file for member in artifact.members)
     else:
         raise TypeError(f"unsupported resolved artifact: {type(artifact).__name__}")
@@ -521,8 +620,8 @@ def load_verified_artifact(
     policy: VerificationPolicy,
     materialization_path: RepoRelPath | None = None,
     fetcher: StorageFetcher | None = None,
-) -> object:
-    """Materialize verified files and reconstruct one artifact with its loader."""
+) -> ArtifactValidationResult:
+    """Materialize verified files and establish the artifact guarantee level."""
     if not policy.permits_source(run.source.repository):
         raise VerificationError(
             "artifact-loader execution requires an explicitly trusted source repository"
@@ -536,33 +635,33 @@ def load_verified_artifact(
         path=loader_reference.path,
     )
     loader_raw = retrieve(loader_location)
-    if len(loader_raw) != loader_reference.bytes:
-        raise VerificationError("artifact.loader: loader byte count differs")
-    if hashlib.sha256(loader_raw).hexdigest() != loader_reference.sha256:
-        raise VerificationError("artifact.loader: loader SHA-256 differs")
-
-    loader_digest = hashlib.sha256(loader_reference.path.encode()).hexdigest()
-    module = ModuleType(f"viper_artifact_loader_{loader_digest}")
-    module.__file__ = str(loader_location.path)
     try:
-        exec(compile(loader_raw, module.__file__, "exec"), module.__dict__)
-    except Exception as exc:
-        raise VerificationError(
-            f"artifact loader {loader_reference.path!r} could not be loaded"
-        ) from exc
+        verify_artifact_loader_bytes(loader_reference, loader_raw)
+    except ArtifactLoaderError as exc:
+        raise VerificationError(str(exc)) from exc
 
-    load = getattr(module, loader_reference.symbol, None)
-    if not callable(load):
-        raise VerificationError(
-            f"artifact loader {loader_reference.path!r} does not define "
-            f"{loader_reference.symbol}(path)"
-        )
+    target_path = (
+        declaration.path if materialization_path is None else materialization_path
+    )
+    cache_key = (
+        document_digest(run),
+        document_digest(loader_reference),
+        f"{artifact_name}:{target_path}",
+        tuple(
+            (
+                str(verified_file.reference.path),
+                verified_file.reference.sha256,
+                verified_file.reference.bytes,
+            )
+            for verified_file in artifact.files
+        ),
+    )
+    cached = _ARTIFACT_VALIDATION_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
 
     with tempfile.TemporaryDirectory(prefix="viper-artifact-") as directory:
         root = Path(directory)
-        target_path = (
-            declaration.path if materialization_path is None else materialization_path
-        )
         if isinstance(artifact.artifact, ResolvedSingleFileArtifact):
             materialized_files = ((target_path, artifact.files[0]),)
         elif isinstance(artifact.artifact, ResolvedBundleArtifact):
@@ -584,46 +683,25 @@ def load_verified_artifact(
             materialized.parent.mkdir(parents=True, exist_ok=True)
             materialized.write_bytes(verified_file.content)
 
+        materialized_loader = root / loader_reference.path
+        materialized_loader.parent.mkdir(parents=True, exist_ok=True)
+        materialized_loader.write_bytes(loader_raw)
         artifact_path = root / target_path
         try:
-            loaded = load(artifact_path)
-        except Exception as exc:
-            raise VerificationError(
-                f"artifact loader {loader_reference.path!r} could not load "
-                "the verified artifact"
-            ) from exc
-
-        if artifact_name != RESUME_STATE:
-            return loaded
-
-        try:
-            resume_state = ResumeState.model_validate(loaded)
-        except ValueError as exc:
-            raise VerificationError(
-                "resume_state loader returned an invalid ResumeState"
-            ) from exc
-
-        expected_configuration = run.reproducibility.parallelism.dataloader
-        if resume_state.dataloader.configuration != expected_configuration:
-            raise VerificationError(
-                "resume_state DataLoader configuration does not match the run plan"
+            result = execute_artifact_loader(
+                root,
+                materialized_loader_context(
+                    root,
+                    loader_reference,
+                    artifact_name,
+                    artifact_path,
+                    run,
+                ),
             )
-
-        expected_numpy = run.reproducibility.numpy_randomness
-        saved_numpy = resume_state.main_process_rng.numpy
-
-        if set(saved_numpy.generators) != set(expected_numpy.generators):
-            raise VerificationError(
-                "resume_state NumPy generator names do not match the run plan"
-            )
-
-        has_legacy_global = saved_numpy.legacy_global is not None
-        if has_legacy_global != expected_numpy.capture_legacy_global:
-            raise VerificationError(
-                "resume_state legacy NumPy state does not match the run plan"
-            )
-
-        return resume_state
+        except ArtifactLoaderError as exc:
+            raise VerificationError(str(exc)) from exc
+        _ARTIFACT_VALIDATION_CACHE[cache_key] = result
+        return result
 
 
 def verify_run_spec(

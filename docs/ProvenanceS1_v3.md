@@ -1325,9 +1325,10 @@ within one stage are pairwise non-overlapping. Artifact paths may recur in
 distinct stage-result snapshots because each snapshot has its own immutable
 commit.
 
-The verifier verifies every file in $F_j(a)$, materializes the file or
-directory, invokes the loader named by the corresponding `ArtifactSpec`, and
-requires the loader to return successfully:
+The verifier lists the published bundle root and requires exact agreement with
+the resolved member list. It then verifies every file in $F_j(a)$, materializes
+the representation, and invokes the loader in a dedicated worker. A successful
+generic loader invocation establishes `artifact.loadability`:
 
 $$
 L_{j,a}
@@ -3495,14 +3496,20 @@ For every artifact name in the loaded resolved stage spec, the verifier:
 2. Checks single-file or bundle cardinality.
 3. Checks every path equality, bundle-member order, bundle containment, and
    cross-artifact disjointness.
-4. Retrieves every `SnapshotFileRef` from the stage-result snapshot.
-5. Checks every file's SHA-256 and byte count.
-6. Retrieves the loader from `RunSpec.source` and verifies the complete
+4. Lists every regular file beneath a bundle root and requires exact agreement
+   with the resolved member list.
+5. Retrieves every `SnapshotFileRef` from the stage-result snapshot.
+6. Checks every file's SHA-256 and byte count.
+7. Retrieves the loader from `RunSpec.source` and verifies the complete
    `ArtifactLoaderRef` identity.
-7. Materializes the verified file or directory and invokes the selected loader
-   symbol with that path.
+8. Materializes the verified file or directory and invokes the selected loader
+   symbol in a dedicated worker.
+9. Reports `artifact.loadability` when a generic loader succeeds. For
+   `resume_state`, it validates the loaded value as `ResumeState`, checks its
+   run-wide DataLoader and NumPy controls, and reports
+   `artifact.semantic.resume_state`.
 
-This traversal establishes:
+For a generic artifact, this traversal establishes:
 
 $$
 L_{j,a}

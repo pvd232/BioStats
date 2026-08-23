@@ -117,6 +117,24 @@ class LocalArtifactStore:
             raise LocalStoreError("local immutable file is missing")
         return target.read_bytes()
 
+    def list_snapshot_files(
+        self,
+        snapshot: LocalStageResultSnapshotRef,
+    ) -> tuple[RepoRelPath, ...]:
+        """List every regular file in one immutable local snapshot."""
+        if snapshot.store != self.store:
+            raise LocalStoreError("local snapshot belongs to a different store")
+        revision_root = (self.store_root / snapshot.commit).resolve()
+        if not revision_root.is_dir():
+            raise LocalStoreError("local snapshot revision is missing")
+        paths: list[RepoRelPath] = []
+        for path in sorted(revision_root.rglob("*")):
+            if path.is_symlink():
+                raise LocalStoreError("local snapshot contains a symlink")
+            if path.is_file():
+                paths.append(path.relative_to(revision_root).as_posix())
+        return tuple(paths)
+
 
 def snapshot_file(path: RepoRelPath, raw: bytes) -> SnapshotFileRef:
     """Describe one exact file included in a local stage snapshot."""

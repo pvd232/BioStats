@@ -543,7 +543,7 @@ class FileVerificationTests(unittest.TestCase):
         )
         consumer_path = "inputs/models/strand/selected.bin"
 
-        loaded = load_verified_artifact(
+        validation = load_verified_artifact(
             run,
             declaration,
             PARAMETERS,
@@ -553,7 +553,7 @@ class FileVerificationTests(unittest.TestCase):
             fetcher=lambda _: loader_raw,
         )
 
-        self.assertEqual(loaded, content)
+        self.assertEqual(validation.guarantee, "artifact.loadability")
 
     def test_artifact_loader_requires_explicit_source_trust(self) -> None:
         """Reject loader execution when the source repository is not trusted."""
@@ -587,6 +587,110 @@ class FileVerificationTests(unittest.TestCase):
                 verified,
                 policy=VerificationPolicy(trusted_source_repositories=frozenset()),
                 fetcher=lambda _: b"def load(path): return path.read_bytes()\n",
+            )
+
+    def test_artifact_loader_rejects_same_length_source_tampering(self) -> None:
+        """Reject loader bytes whose SHA-256 differs at the same byte count."""
+        spec = train_spec()
+        run, _ = run_spec([("train", spec)])
+        declaration = spec.artifacts[PARAMETERS]
+        content = b"model parameters"
+        resolved = ResolvedSingleFileArtifact(
+            file=SnapshotFileRef(
+                path=str(declaration.path),
+                sha256=sha256(content),
+                bytes=len(content),
+            )
+        )
+        verified = VerifiedArtifact(
+            artifact=resolved,
+            data_role=declaration.data_role,
+            files=(VerifiedSnapshotFile(reference=resolved.file, content=content),),
+        )
+        tampered = bytearray(DEFAULT_ARTIFACT_LOADER_SOURCE)
+        tampered[-2] = ord(" ")
+
+        with self.assertRaisesRegex(VerificationError, "loader SHA-256 differs"):
+            load_verified_artifact(
+                run,
+                declaration,
+                PARAMETERS,
+                verified,
+                policy=POLICY,
+                fetcher=lambda _: bytes(tampered),
+            )
+
+    def test_artifact_loader_failure_rejects_loadability(self) -> None:
+        """Reject a verified representation that its frozen loader cannot load."""
+        loader_raw = b"def load(path):\n    raise ValueError('broken')\n"
+        base = train_spec()
+        artifacts = dict(base.artifacts)
+        artifacts[PARAMETERS] = artifacts[PARAMETERS].model_copy(
+            update={"loader": loader_ref("parameters", loader_raw)}
+        )
+        spec = base.model_copy(update={"artifacts": artifacts})
+        run, _ = run_spec([("train", spec)])
+        declaration = spec.artifacts[PARAMETERS]
+        content = b"model parameters"
+        resolved = ResolvedSingleFileArtifact(
+            file=SnapshotFileRef(
+                path=str(declaration.path),
+                sha256=sha256(content),
+                bytes=len(content),
+            )
+        )
+        verified = VerifiedArtifact(
+            artifact=resolved,
+            data_role=declaration.data_role,
+            files=(VerifiedSnapshotFile(reference=resolved.file, content=content),),
+        )
+
+        with self.assertRaisesRegex(VerificationError, "artifact.loadability"):
+            load_verified_artifact(
+                run,
+                declaration,
+                PARAMETERS,
+                verified,
+                policy=POLICY,
+                fetcher=lambda _: loader_raw,
+            )
+
+    def test_resume_state_requires_the_reserved_value_schema(self) -> None:
+        """Reject a loadable resume_state value outside the reserved schema."""
+        loader_raw = b"def load(path):\n    return {}\n"
+        base = train_spec()
+        artifacts = dict(base.artifacts)
+        artifacts[RESUME_STATE] = artifacts[RESUME_STATE].model_copy(
+            update={"loader": loader_ref("resume_state", loader_raw)}
+        )
+        spec = base.model_copy(update={"artifacts": artifacts})
+        run, _ = run_spec([("train", spec)])
+        declaration = spec.artifacts[RESUME_STATE]
+        content = b"resume state"
+        resolved = ResolvedSingleFileArtifact(
+            file=SnapshotFileRef(
+                path=str(declaration.path),
+                sha256=sha256(content),
+                bytes=len(content),
+            )
+        )
+        verified = VerifiedArtifact(
+            artifact=resolved,
+            data_role=declaration.data_role,
+            files=(VerifiedSnapshotFile(reference=resolved.file, content=content),),
+        )
+
+        with self.assertRaisesRegex(
+            VerificationError,
+            "artifact.semantic.resume_state: loaded value is invalid",
+        ):
+            load_verified_artifact(
+                run,
+                declaration,
+                RESUME_STATE,
+                verified,
+                policy=POLICY,
+                fetcher=lambda _: loader_raw,
             )
 
     def test_resume_state_must_match_run_dataloader(self) -> None:
@@ -625,7 +729,7 @@ class FileVerificationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             VerificationError,
-            "DataLoader configuration does not match",
+            "artifact.semantic.resume_state: DataLoader configuration differs",
         ):
             load_verified_artifact(
                 run,
@@ -663,11 +767,11 @@ class FileVerificationTests(unittest.TestCase):
         numpy_state = baseline.main_process_rng.numpy
         mismatches = (
             (
-                "NumPy generator names do not match",
+                "artifact.semantic.resume_state: NumPy generator names differ",
                 numpy_state.model_copy(update={"generators": {}}),
             ),
             (
-                "legacy NumPy state does not match",
+                "artifact.semantic.resume_state: legacy NumPy state differs",
                 numpy_state.model_copy(update={"legacy_global": None}),
             ),
         )
