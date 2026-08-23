@@ -48,6 +48,7 @@ from viper.protocol import (
     ReplicateSpec,
     ReproducibilitySpec,
     ResolvedRun,
+    RunSpec,
     SingleFileArtifactSpec,
     StageArtifactRef,
     StageImplementationRef,
@@ -61,7 +62,12 @@ from viper.runner import run as execute_run
 from viper.serialization import parse_yaml_bytes, serialize_document
 from viper.stage_execution import StageExecutionError, execute_stage_process
 from viper.stages import load_stage_callable
-from viper.verifier import VerificationError, VerificationPolicy, verify_run_result
+from viper.verifier import (
+    VerificationError,
+    VerificationPolicy,
+    read_attempt_reference,
+    verify_run_result,
+)
 from viper.workspace import AttemptWorkspace
 
 REPOSITORY = "https://github.com/example/viper-local-project"
@@ -535,10 +541,19 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     failed_run = ResolvedRun.model_validate(
         parse_yaml_bytes((root / RUN_ROOT / "resolved.yaml").read_bytes())
     )
+    run_plan = RunSpec.model_validate(
+        parse_yaml_bytes(frozen.files[-1].read_bytes())
+    )
+    store = LocalArtifactStore(root)
+    fetcher = RunFetcher(root, store, REPOSITORY)
+    failed_attempts = tuple(
+        read_attempt_reference(reference, run_plan, fetcher=fetcher)
+        for reference in failed_run.attempts
+    )
     assert failed_run.status == "failed"
-    assert failed_run.attempts[0].failure is not None
-    assert failed_run.attempts[0].failure.code == "coordinator_lost"
-    failed_attempt = failed_run.attempts[1]
+    assert failed_attempts[0].failure is not None
+    assert failed_attempts[0].failure.code == "coordinator_lost"
+    failed_attempt = failed_attempts[1]
     assert failed_attempt.failure is not None
     assert failed_attempt.failure.code == "execution_failed"
     assert len(failed_attempt.resolved_stages) == 1
@@ -551,9 +566,13 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
 
     assert result.resolved_run.status == "succeeded"
     assert result.resolved_run_path.is_file()
-    assert [attempt.attempt_id for attempt in result.resolved_run.attempts] == [1, 2, 3]
+    attempts = tuple(
+        read_attempt_reference(reference, run_plan, fetcher=fetcher)
+        for reference in result.resolved_run.attempts
+    )
+    assert [attempt.attempt_id for attempt in attempts] == [1, 2, 3]
     assert (root / RUN_ROOT / "attempts/3/resolved.yaml").is_file()
-    successful_attempt = result.resolved_run.attempts[2]
+    successful_attempt = attempts[2]
     assert len(successful_attempt.resolved_stages) == 2
     assert len(successful_attempt.measurement_files) == 2
     assert len(successful_attempt.metric_verification_files) == 1
@@ -581,8 +600,6 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         "terminal",
     )
 
-    store = LocalArtifactStore(root)
-    fetcher = RunFetcher(root, store, REPOSITORY)
     live_reference = next(
         reference
         for reference in successful_attempt.measurement_files
@@ -606,7 +623,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     assert comparison.identical is True
     assert comparison.changes == ()
 
-    first_snapshot = result.resolved_run.attempts[1].resolved_stages[0].snapshot
+    first_snapshot = attempts[1].resolved_stages[0].snapshot
     assert first_snapshot.kind == "local"
     stored_artifact = (
         root

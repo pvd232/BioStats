@@ -857,7 +857,7 @@ def verify_benchmark(
         benchmark_id=benchmark.benchmark_id,
         run_id=verified.run.plan.run.run_id,
         benchmark_status=result.status,
-        confirmation_attempt_id=result.confirmation.attempt_id,
+        confirmation_attempt_id=verified.confirmation.attempt_id,
     )
 
 

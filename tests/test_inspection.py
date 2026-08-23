@@ -153,6 +153,7 @@ def _verified_result(root: Path, run_path: Path) -> VerifiedRunResult:
             benchmark=None,
             stages={run.stages[0].stage_id: stage},
         ),
+        attempts=(),
         resolved_stages={},
         measurements=(),
     )

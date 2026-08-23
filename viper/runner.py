@@ -39,6 +39,7 @@ from .protocol import (
     MetricVerificationReceipt,
     RepoRelPath,
     ResolvedArtifactPointerRef,
+    ResolvedAttemptRef,
     ResolvedBuildSpec,
     ResolvedDownloadSpec,
     ResolvedEmbedSpec,
@@ -77,6 +78,7 @@ from .verifier import (
     fetch_git_file_bytes,
     fetch_huggingface_file_bytes,
     list_huggingface_snapshot_files,
+    read_attempt_reference,
     verify_promoted_artifact,
     verify_run_result,
 )
@@ -246,11 +248,20 @@ def _write_attempt_document(
     root: Path,
     run_root: str,
     attempt: RunAttempt,
-) -> Path:
-    """Write one canonical immutable attempt document before the run head."""
+    store: LocalArtifactStore,
+) -> ResolvedAttemptRef:
+    """Publish one canonical attempt document and return its immutable reference."""
     path = root / run_root / "attempts" / str(attempt.attempt_id) / "resolved.yaml"
-    _write_synchronized(path, serialize_document(attempt))
-    return path
+    raw = serialize_document(attempt)
+    _write_synchronized(path, raw)
+    reference = store.resolved_files(
+        {path.relative_to(root).as_posix(): raw}
+    )[0]
+    return ResolvedAttemptRef(
+        sha256=reference.sha256,
+        bytes=reference.bytes,
+        stored_at=reference.stored_at,
+    )
 
 
 def _reconcile_abandoned_attempts(
@@ -326,7 +337,7 @@ def _reconcile_abandoned_attempts(
                 occurred_at=lost_at,
             ),
         )
-        _write_attempt_document(root, run_root, recovered_attempt)
+        _write_attempt_document(root, run_root, recovered_attempt, store)
         recovered[attempt_id] = recovered_attempt
     return tuple(recovered[key] for key in sorted(recovered))
 
@@ -742,13 +753,21 @@ def run(
         if previous_run.status == "succeeded":
             run_lock.release()
             raise RunError("a successful run cannot be retried")
+    known_attempts = (
+        ()
+        if previous_run is None
+        else tuple(
+            read_attempt_reference(reference, run, fetcher=fetcher)
+            for reference in previous_run.attempts
+        )
+    )
     previous_attempts = _reconcile_abandoned_attempts(
         root,
         workspace_root,
         run,
         run_root,
         store,
-        () if previous_run is None else previous_run.attempts,
+        known_attempts,
     )
     attempt_id = max(
         next_attempt_id(workspace_root, run.run_id),
@@ -1029,6 +1048,10 @@ def run(
             commit=plan_commit,
             path=relative_run_path,
         )
+        attempt_references = tuple(
+            _write_attempt_document(root, run_root, value, store)
+            for value in (*previous_attempts, attempt)
+        )
         resolved_run = ResolvedRun(
             spec=ResolvedRunSpecRef(
                 sha256=hashlib.sha256(run_raw).hexdigest(),
@@ -1036,13 +1059,12 @@ def run(
                 stored_at=run_reference,
             ),
             status="succeeded",
-            attempts=(*previous_attempts, attempt),
+            attempts=attempt_references,
             successful_attempt_id=attempt_id,
             completed_at=datetime.now(UTC),
         )
         terminal_raw = serialize_document(resolved_run)
         verify_run_result(resolved_run, policy=policy, fetcher=fetcher)
-        _write_attempt_document(root, run_root, attempt)
         _replace_synchronized(terminal_path, terminal_raw)
         _write_synchronized(workspace.terminal, terminal_raw)
         return RunResult(
@@ -1123,11 +1145,14 @@ def run(
                 occurred_at=failed_at,
             ),
         )
-        _write_attempt_document(root, run_root, failed_attempt)
         run_reference = GitFileRef(
             repository=run.source.repository,
             commit=plan_commit,
             path=relative_run_path,
+        )
+        attempt_references = tuple(
+            _write_attempt_document(root, run_root, value, store)
+            for value in (*previous_attempts, failed_attempt)
         )
         failed_run = ResolvedRun(
             spec=ResolvedRunSpecRef(
@@ -1136,7 +1161,7 @@ def run(
                 stored_at=run_reference,
             ),
             status="cancelled" if status == "cancelled" else "failed",
-            attempts=(*previous_attempts, failed_attempt),
+            attempts=attempt_references,
             successful_attempt_id=None,
             completed_at=datetime.now(UTC),
         )

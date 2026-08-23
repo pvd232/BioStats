@@ -1325,6 +1325,12 @@ class RunAttempt(ProtocolModel):
         return self
 
 
+class ResolvedAttemptRef(ResolvedFileRef):
+    """Identify one canonical immutable RunAttempt document."""
+
+    kind: Literal["resolved_attempt"] = "resolved_attempt"
+
+
 class RunStageRef(ProtocolModel):
     """Identifies and verifies one stage spec in a run-plan snapshot."""
 
@@ -1383,7 +1389,7 @@ class RunSpec(ProtocolModel):
 
 
 class ResolvedRun(ProtocolModel):
-    """Record every attempt and the terminal outcome of one run."""
+    """Reference every attempt and record the terminal outcome of one run."""
 
     schema_version: Literal[1] = 1
 
@@ -1391,68 +1397,21 @@ class ResolvedRun(ProtocolModel):
 
     status: Literal["succeeded", "failed", "cancelled"]
 
-    attempts: tuple[RunAttempt, ...] = Field(min_length=1)
+    attempts: tuple[ResolvedAttemptRef, ...] = Field(min_length=1)
     successful_attempt_id: int | None
 
     completed_at: AwareDatetime
 
     @model_validator(mode="after")
     def validate_common_invariants(self) -> ResolvedRun:
-        """Enforce attempt ordering and terminal run-status invariants."""
-        unique_attempt_ids = set()
-        successful_attempts = []
-        previous_attempt: RunAttempt | None = None
-
-        for index, attempt in enumerate(self.attempts):
-            if attempt.purpose != "run":
-                raise ValueError("resolved runs contain only ordinary run attempts")
-            if attempt.attempt_id in unique_attempt_ids:
-                raise ValueError("attempt IDs must be unique")
-            unique_attempt_ids.add(attempt.attempt_id)
-
-            if (
-                previous_attempt is not None
-                and attempt.attempt_id <= previous_attempt.attempt_id
-            ):
-                raise ValueError("attempt IDs must increase in execution order")
-
-            if (
-                previous_attempt is not None
-                and attempt.started_at < previous_attempt.completed_at
-            ):
-                raise ValueError(
-                    "an attempt cannot begin before the previous attempt finishes"
-                )
-
-            if attempt.status == "succeeded":
-                successful_attempts.append(attempt)
-                if index != len(self.attempts) - 1:
-                    raise ValueError("no attempt may occur after a successful attempt")
-
-            previous_attempt = attempt
-
-        if any(self.completed_at < attempt.completed_at for attempt in self.attempts):
-            raise ValueError(
-                "resolved run cannot complete before one of its attempts completes"
-            )
-
+        """Require the success selector only for a successful terminal run."""
         if self.status == "succeeded":
-            if len(successful_attempts) != 1:
-                raise ValueError("A succeeded run requires one successful attempt")
-
-            successful_attempt = successful_attempts[0]
-            if self.successful_attempt_id != successful_attempt.attempt_id:
-                raise ValueError(
-                    "successful_attempt_id must identify the successful attempt"
-                )
-
-        else:
-            if successful_attempts:
-                raise ValueError("A failed or cancelled run cannot have a success")
-            if self.successful_attempt_id is not None:
-                raise ValueError(
-                    "successful_attempt_id must be null without a successful attempt"
-                )
+            if self.successful_attempt_id is None:
+                raise ValueError("a succeeded run requires successful_attempt_id")
+        elif self.successful_attempt_id is not None:
+            raise ValueError(
+                "successful_attempt_id must be null without a successful run"
+            )
 
         return self
 
@@ -1463,22 +1422,9 @@ class BenchmarkResult(ProtocolModel):
     schema_version: Literal[1] = 1
     benchmark: ResolvedBenchmarkSpecRef
     run: ResolvedRunRef
-    confirmation: RunAttempt
+    confirmation: ResolvedAttemptRef
     status: Literal["passed", "failed"]
     completed_at: AwareDatetime
-
-    @model_validator(mode="after")
-    def validate_confirmation(self) -> BenchmarkResult:
-        """Require a successful confirmation completed before the result."""
-        if self.confirmation.status != "succeeded":
-            raise ValueError("benchmark confirmation attempt must succeed")
-        if self.confirmation.purpose != "benchmark_confirmation":
-            raise ValueError("benchmark confirmation has the wrong attempt purpose")
-        if self.completed_at < self.confirmation.completed_at:
-            raise ValueError(
-                "benchmark completion cannot precede confirmation completion"
-            )
-        return self
 
 
 # ---------------------------------------------------------------------------

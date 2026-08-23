@@ -69,6 +69,7 @@ from .protocol import (
     ProjectHttpTransportSpec,
     RepoRelPath,
     ResolvedArtifact,
+    ResolvedAttemptRef,
     ResolvedBaseSpec,
     ResolvedBundleArtifact,
     ResolvedDownloadSpec,
@@ -304,6 +305,7 @@ class VerifiedRunResult:
 
     result: ResolvedRun
     plan: VerifiedRunPlan
+    attempts: tuple[RunAttempt, ...]
     resolved_stages: dict[StageId, ResolvedBaseSpec]
     measurements: tuple[Measurement, ...]
 
@@ -314,6 +316,7 @@ class VerifiedBenchmarkResult:
 
     result: BenchmarkResult
     run: VerifiedRunResult
+    confirmation: RunAttempt
     confirmation_stages: dict[StageId, ResolvedBaseSpec]
     confirmation_measurements: tuple[Measurement, ...]
 
@@ -510,6 +513,95 @@ def read_resolved_file(
     retrieve = fetch_storage_bytes if fetcher is None else fetcher
     raw = retrieve(reference.stored_at)
     return verify_resolved_file_bytes(reference, raw)
+
+
+def read_attempt_reference(
+    reference: ResolvedAttemptRef,
+    run: RunSpec,
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> RunAttempt:
+    """Retrieve one canonical attempt document and verify its path identity."""
+    path = str(reference.stored_at.path)
+    prefix = f"{run_root(run)}/attempts/"
+    suffix = "/resolved.yaml"
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        raise VerificationError("attempt.identity: attempt path is not canonical")
+    attempt_text = path[len(prefix) : -len(suffix)]
+    if not attempt_text.isdecimal() or str(int(attempt_text)) != attempt_text:
+        raise VerificationError("attempt.identity: attempt path has an invalid ID")
+    try:
+        attempt = RunAttempt.model_validate(
+            parse_yaml_bytes(read_resolved_file(reference, fetcher=fetcher))
+        )
+    except (yaml.YAMLError, ValueError) as exc:
+        raise VerificationError(
+            "attempt.identity: attempt document is invalid"
+        ) from exc
+    if attempt.attempt_id != int(attempt_text):
+        raise VerificationError(
+            "attempt.identity: attempt document ID differs from its path"
+        )
+    return attempt
+
+
+def verify_run_attempt_references(
+    resolved_run: ResolvedRun,
+    run: RunSpec,
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> tuple[RunAttempt, ...]:
+    """Resolve attempt references and enforce terminal history invariants."""
+    locations = tuple(reference.stored_at for reference in resolved_run.attempts)
+    if len(set(locations)) != len(locations):
+        raise VerificationError("attempt.identity: attempt references are duplicated")
+    attempts = tuple(
+        read_attempt_reference(reference, run, fetcher=fetcher)
+        for reference in resolved_run.attempts
+    )
+    successful: list[RunAttempt] = []
+    previous: RunAttempt | None = None
+    for index, attempt in enumerate(attempts):
+        if attempt.purpose != "run":
+            raise VerificationError(
+                "attempt.purpose: resolved run contains confirmation"
+            )
+        if previous is not None and attempt.attempt_id <= previous.attempt_id:
+            raise VerificationError("attempt.order: attempt IDs do not increase")
+        if previous is not None and attempt.started_at < previous.completed_at:
+            raise VerificationError("attempt.order: attempt execution times overlap")
+        if attempt.status == "succeeded":
+            successful.append(attempt)
+            if index != len(attempts) - 1:
+                raise VerificationError("attempt.order: attempt follows a success")
+        previous = attempt
+
+    if any(resolved_run.completed_at < attempt.completed_at for attempt in attempts):
+        raise VerificationError("attempt.terminal: run predates an attempt completion")
+    if resolved_run.status == "succeeded":
+        if len(successful) != 1:
+            raise VerificationError("attempt.terminal: succeeded run lacks one success")
+        if resolved_run.successful_attempt_id != successful[0].attempt_id:
+            raise VerificationError(
+                "attempt.terminal: successful attempt selector differs"
+            )
+    else:
+        if successful:
+            raise VerificationError(
+                "attempt.terminal: terminal failure contains success"
+            )
+        if resolved_run.status == "cancelled" and attempts[-1].status != "cancelled":
+            raise VerificationError(
+                "attempt.terminal: cancelled run lacks a cancelled final attempt"
+            )
+        if resolved_run.status == "failed" and attempts[-1].status not in {
+            "failed",
+            "preempted",
+        }:
+            raise VerificationError(
+                "attempt.terminal: failed run has another final attempt status"
+            )
+    return attempts
 
 
 def read_snapshot_file(
@@ -1803,10 +1895,15 @@ def verify_resolved_stages(
     if resolved_run.status != "succeeded":
         raise VerificationError("resolved-stage verification requires a succeeded run")
 
+    attempts = verify_run_attempt_references(
+        resolved_run,
+        run,
+        fetcher=fetcher,
+    )
     successful_attempt = next(
         (
             attempt
-            for attempt in resolved_run.attempts
+            for attempt in attempts
             if attempt.attempt_id == resolved_run.successful_attempt_id
         ),
         None,
@@ -2276,12 +2373,17 @@ def verify_run_result(
 ) -> VerifiedRunResult:
     """Verify a terminal run from its RunSpec through every completed attempt."""
     plan = verify_run_plan(resolved_run, fetcher=fetcher)
+    attempts = verify_run_attempt_references(
+        resolved_run,
+        plan.run,
+        fetcher=fetcher,
+    )
     all_measurements: list[Measurement] = []
     successful_stages: dict[StageId, ResolvedBaseSpec] = {}
     stage_result_snapshots: set[tuple[str, ...]] = set()
     attempt_file_snapshots: set[tuple[str, ...]] = set()
 
-    for attempt in resolved_run.attempts:
+    for attempt in attempts:
         current_stage_result_snapshots = {
             _snapshot_identity(stage.snapshot) for stage in attempt.resolved_stages
         }
@@ -2313,7 +2415,7 @@ def verify_run_result(
             "stage-result and attempt-file snapshots must be distinct"
         )
 
-    for attempt in resolved_run.attempts:
+    for attempt in attempts:
         complete = attempt.status == "succeeded"
         verify_attempt_journal(attempt, plan.run, fetcher=fetcher)
         verified_stages = verify_attempt_stages(
@@ -2371,6 +2473,7 @@ def verify_run_result(
     return VerifiedRunResult(
         result=resolved_run,
         plan=plan,
+        attempts=attempts,
         resolved_stages=successful_stages,
         measurements=tuple(all_measurements),
     )
@@ -2457,7 +2560,7 @@ def verify_promoted_artifact(
 
     successful_attempt = next(
         attempt
-        for attempt in resolved_run.attempts
+        for attempt in verified_run.attempts
         if attempt.attempt_id == resolved_run.successful_attempt_id
     )
     producer_stage = next(
@@ -2624,10 +2727,15 @@ def verify_future_inputs(
     if resolved_run.status != "succeeded":
         raise VerificationError("future-input verification requires a succeeded run")
 
+    attempts = verify_run_attempt_references(
+        resolved_run,
+        run,
+        fetcher=fetcher,
+    )
     successful_attempt = next(
         (
             attempt
-            for attempt in resolved_run.attempts
+            for attempt in attempts
             if attempt.attempt_id == resolved_run.successful_attempt_id
         ),
         None,
@@ -2802,23 +2910,37 @@ def verify_benchmark_result(
             "benchmark result and run plan select different benchmark specs"
         )
 
+    confirmation = read_attempt_reference(
+        result.confirmation,
+        verified_run.plan.run,
+        fetcher=fetcher,
+    )
+    if confirmation.status != "succeeded":
+        raise VerificationError("benchmark confirmation attempt must succeed")
+    if confirmation.purpose != "benchmark_confirmation":
+        raise VerificationError("benchmark confirmation has the wrong purpose")
+    if result.completed_at < confirmation.completed_at:
+        raise VerificationError(
+            "benchmark result cannot precede confirmation completion"
+        )
+
     selected_attempt = next(
         attempt
-        for attempt in resolved_run.attempts
+        for attempt in verified_run.attempts
         if attempt.attempt_id == resolved_run.successful_attempt_id
     )
-    original_attempt_ids = {attempt.attempt_id for attempt in resolved_run.attempts}
-    if result.confirmation.attempt_id in original_attempt_ids:
+    original_attempt_ids = {attempt.attempt_id for attempt in verified_run.attempts}
+    if confirmation.attempt_id in original_attempt_ids:
         raise VerificationError("benchmark confirmation must use a new attempt ID")
 
     original_snapshots = {
         _snapshot_identity(stage.snapshot)
-        for attempt in resolved_run.attempts
+        for attempt in verified_run.attempts
         for stage in attempt.resolved_stages
     }
     confirmation_snapshots = {
         _snapshot_identity(stage.snapshot)
-        for stage in result.confirmation.resolved_stages
+        for stage in confirmation.resolved_stages
     }
     if original_snapshots & confirmation_snapshots:
         raise VerificationError(
@@ -2827,7 +2949,7 @@ def verify_benchmark_result(
 
     original_attempt_file_snapshots = {
         identity
-        for attempt in resolved_run.attempts
+        for attempt in verified_run.attempts
         for reference in (
             attempt.journal,
             *attempt.measurement_files,
@@ -2839,10 +2961,10 @@ def verify_benchmark_result(
     confirmation_attempt_file_snapshots = {
         identity
         for reference in (
-            result.confirmation.journal,
-            *result.confirmation.measurement_files,
-            *result.confirmation.metric_verification_files,
-            *result.confirmation.log_files,
+            confirmation.journal,
+            *confirmation.measurement_files,
+            *confirmation.metric_verification_files,
+            *confirmation.log_files,
         )
         if (identity := _artifact_revision_identity(reference.stored_at)) is not None
     }
@@ -2857,7 +2979,7 @@ def verify_benchmark_result(
         )
 
     confirmation_stages = verify_attempt_stages(
-        result.confirmation,
+        confirmation,
         verified_run.plan.run,
         verified_run.plan.stages,
         require_complete=True,
@@ -2870,13 +2992,13 @@ def verify_benchmark_result(
         fetcher=fetcher,
     )
     confirmation_future_inputs = verify_attempt_future_inputs(
-        result.confirmation,
+        confirmation,
         verified_run.plan.run,
         confirmation_stages,
         fetcher=fetcher,
     )
     confirmation_measurements = verify_attempt_files(
-        result.confirmation,
+        confirmation,
         verified_run.plan.run,
         verified_run.plan.experiment,
         verified_run.plan.stages,
@@ -2888,7 +3010,7 @@ def verify_benchmark_result(
         verified_run.plan.experiment,
     )
     verify_recomputed_metrics(
-        result.confirmation,
+        confirmation,
         verified_run.plan,
         confirmation_stages,
         confirmation_measurements,
@@ -2969,6 +3091,7 @@ def verify_benchmark_result(
     return VerifiedBenchmarkResult(
         result=result,
         run=verified_run,
+        confirmation=confirmation,
         confirmation_stages=confirmation_stages,
         confirmation_measurements=confirmation_measurements,
     )

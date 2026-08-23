@@ -85,6 +85,7 @@ from viper.protocol import (
     ReplicateSpec,
     ReproducibilitySpec,
     ResolvedArtifactPointerRef,
+    ResolvedAttemptRef,
     ResolvedBenchmarkSpecRef,
     ResolvedBuildSpec,
     ResolvedBundleArtifact,
@@ -579,6 +580,69 @@ def publish_attempt_journal(
         bytes=len(raw),
         stored_at=location,
     )
+
+
+def publish_attempt(
+    store: DocumentStore,
+    *,
+    run_root_path: str,
+    attempt: RunAttempt,
+    commit: str,
+) -> ResolvedAttemptRef:
+    """Publish one canonical attempt document and return its exact reference."""
+    raw = yaml_bytes(attempt)
+    location = hf_file(
+        commit,
+        f"{run_root_path}/attempts/{attempt.attempt_id}/resolved.yaml",
+    )
+    store.put(location, raw)
+    return ResolvedAttemptRef(
+        sha256=sha256(raw),
+        bytes=len(raw),
+        stored_at=location,
+    )
+
+
+def fetch_attempt(store: DocumentStore, reference: ResolvedAttemptRef) -> RunAttempt:
+    """Load one attempt fixture through its immutable reference."""
+    return RunAttempt.model_validate(
+        yaml.safe_load(store.fetch(reference.stored_at))
+    )
+
+
+def replace_run_attempts(
+    store: DocumentStore,
+    resolved_run: ResolvedRun,
+    attempts: tuple[RunAttempt, ...],
+) -> ResolvedRun:
+    """Publish replacement attempt fixtures and return their terminal run."""
+    run_root_path = str(resolved_run.spec.stored_at.path).removesuffix("/spec.yaml")
+    references = tuple(
+        publish_attempt(
+            store,
+            run_root_path=run_root_path,
+            attempt=attempt,
+            commit="a" * 40,
+        )
+        for attempt in attempts
+    )
+    return resolved_run.model_copy(update={"attempts": references})
+
+
+def replace_confirmation(
+    store: DocumentStore,
+    result: BenchmarkResult,
+    confirmation: RunAttempt,
+) -> BenchmarkResult:
+    """Publish a replacement confirmation and return its benchmark result."""
+    run_root_path = str(result.run.stored_at.path).removesuffix("/resolved.yaml")
+    reference = publish_attempt(
+        store,
+        run_root_path=run_root_path,
+        attempt=confirmation,
+        commit="b" * 40,
+    )
+    return result.model_copy(update={"confirmation": reference})
 
 
 def resolved_environment(
@@ -1081,7 +1145,14 @@ def publish_producer_run(
     resolved_run = ResolvedRun(
         spec=run_reference,
         status="succeeded",
-        attempts=(attempt,),
+        attempts=(
+            publish_attempt(
+                store,
+                run_root_path=run_root,
+                attempt=attempt,
+                commit=PRODUCER_RESULT_COMMIT,
+            ),
+        ),
         successful_attempt_id=1,
         completed_at=datetime(2026, 8, 20, 20, 36, tzinfo=UTC),
     )
@@ -1555,7 +1626,14 @@ def build_complete_fixture(
     resolved_run = ResolvedRun(
         spec=run_reference,
         status="succeeded",
-        attempts=(attempt,),
+        attempts=(
+            publish_attempt(
+                store,
+                run_root_path=run_root,
+                attempt=attempt,
+                commit=MAIN_FILES_COMMIT,
+            ),
+        ),
         successful_attempt_id=1,
         completed_at=datetime(2026, 8, 20, 21, 46, tzinfo=UTC),
     )
@@ -1590,7 +1668,7 @@ def build_benchmark_fixture() -> tuple[
 ]:
     """Publish a strict benchmark and its independent confirmation run."""
     resolved_run, store, _ = build_complete_fixture(benchmark_enabled=True)
-    selected_attempt = resolved_run.attempts[-1]
+    selected_attempt = fetch_attempt(store, resolved_run.attempts[-1])
     run_root = str(resolved_run.spec.stored_at.path).removesuffix("/spec.yaml")
     run = RunSpec.model_validate(
         yaml.safe_load(store.fetch(resolved_run.spec.stored_at))
@@ -1803,7 +1881,12 @@ def build_benchmark_fixture() -> tuple[
     result = BenchmarkResult(
         benchmark=benchmark_reference,
         run=run_reference,
-        confirmation=confirmation,
+        confirmation=publish_attempt(
+            store,
+            run_root_path=run_root,
+            attempt=confirmation,
+            commit="f" * 40,
+        ),
         status="passed",
         completed_at=datetime(2026, 8, 20, 21, 50, tzinfo=UTC),
     )
@@ -1830,7 +1913,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
     def test_bundle_rejects_an_unrecorded_published_member(self) -> None:
         """Reject a snapshot file omitted from the resolved bundle member list."""
         resolved_run, store, _ = build_complete_fixture()
-        build_stage = resolved_run.attempts[0].resolved_stages[0]
+        build_stage = fetch_attempt(store, resolved_run.attempts[0]).resolved_stages[0]
         extra_path = (
             "experiments/model_eval/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAB/"
             "artifacts/priors/toy/unrecorded.bin"
@@ -1843,7 +1926,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
     def test_bundle_rejects_a_missing_recorded_member(self) -> None:
         """Reject a resolved bundle member absent from its immutable snapshot."""
         resolved_run, store, _ = build_complete_fixture()
-        build_stage = resolved_run.attempts[0].resolved_stages[0]
+        build_stage = fetch_attempt(store, resolved_run.attempts[0]).resolved_stages[0]
         missing_path = (
             "experiments/model_eval/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAB/"
             "artifacts/priors/toy/metadata.json"
@@ -1882,7 +1965,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
     def test_measurement_cannot_follow_its_attempt(self) -> None:
         """Reject a recomputed measurement written after attempt completion."""
         resolved_run, store, _ = build_complete_fixture()
-        attempt = resolved_run.attempts[0]
+        attempt = fetch_attempt(store, resolved_run.attempts[0])
         measurement_raw = (
             b'{"run_id":"01ARZ3NDEKTSV4RRFFQ69G5FAB",'
             b'"attempt_id":1,"stage_id":"evaluate",'
@@ -1897,7 +1980,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         )
         store.put(reference.stored_at, measurement_raw)
         invalid_attempt = attempt.model_copy(update={"measurement_files": (reference,)})
-        invalid_run = resolved_run.model_copy(update={"attempts": (invalid_attempt,)})
+        invalid_run = replace_run_attempts(store, resolved_run, (invalid_attempt,))
 
         with self.assertRaisesRegex(VerificationError, "containing attempt"):
             verify_run_result(invalid_run, policy=POLICY, fetcher=store.fetch)
@@ -1905,7 +1988,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
     def test_run_rejects_stage_snapshot_reused_by_a_retry(self) -> None:
         """Verify that run rejects stage snapshot reused by a retry."""
         resolved_run, store, _ = build_complete_fixture()
-        successful_attempt = resolved_run.attempts[0].model_copy(
+        successful_attempt = fetch_attempt(store, resolved_run.attempts[0]).model_copy(
             update={"attempt_id": 2}
         )
         failed_attempt = RunAttempt(
@@ -1926,11 +2009,10 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
                 occurred_at=datetime(2026, 8, 20, 19, 30, tzinfo=UTC),
             ),
         )
-        retried_run = resolved_run.model_copy(
-            update={
-                "attempts": (failed_attempt, successful_attempt),
-                "successful_attempt_id": 2,
-            }
+        retried_run = replace_run_attempts(
+            store,
+            resolved_run.model_copy(update={"successful_attempt_id": 2}),
+            (failed_attempt, successful_attempt),
         )
 
         with self.assertRaisesRegex(VerificationError, "stage-result snapshots"):
@@ -1939,7 +2021,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
     def test_run_rejects_attempt_file_snapshot_reused_by_a_retry(self) -> None:
         """Verify that run rejects attempt file snapshot reused by a retry."""
         resolved_run, store, _ = build_complete_fixture()
-        successful_attempt = resolved_run.attempts[0].model_copy(
+        successful_attempt = fetch_attempt(store, resolved_run.attempts[0]).model_copy(
             update={"attempt_id": 2}
         )
         failed_attempt = RunAttempt(
@@ -1960,11 +2042,10 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
                 occurred_at=datetime(2026, 8, 20, 19, 30, tzinfo=UTC),
             ),
         )
-        retried_run = resolved_run.model_copy(
-            update={
-                "attempts": (failed_attempt, successful_attempt),
-                "successful_attempt_id": 2,
-            }
+        retried_run = replace_run_attempts(
+            store,
+            resolved_run.model_copy(update={"successful_attempt_id": 2}),
+            (failed_attempt, successful_attempt),
         )
 
         with self.assertRaisesRegex(
@@ -1976,7 +2057,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
     def test_run_separates_stage_results_from_attempt_files(self) -> None:
         """Verify that run separates stage results from attempt files."""
         resolved_run, store, _ = build_complete_fixture()
-        attempt = resolved_run.attempts[0]
+        attempt = fetch_attempt(store, resolved_run.attempts[0])
         measurement = attempt.measurement_files[0]
         reused_snapshot_measurement = measurement.model_copy(
             update={
@@ -1988,7 +2069,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         invalid_attempt = attempt.model_copy(
             update={"measurement_files": (reused_snapshot_measurement,)}
         )
-        invalid_run = resolved_run.model_copy(update={"attempts": (invalid_attempt,)})
+        invalid_run = replace_run_attempts(store, resolved_run, (invalid_attempt,))
 
         with self.assertRaisesRegex(
             VerificationError,
@@ -2012,10 +2093,12 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
     def test_strict_benchmark_rejects_reused_stage_snapshots(self) -> None:
         """Verify that strict benchmark rejects reused stage snapshots."""
         result, resolved_run, store = build_benchmark_fixture()
-        reused_confirmation = result.confirmation.model_copy(
-            update={"resolved_stages": resolved_run.attempts[-1].resolved_stages}
+        confirmation = fetch_attempt(store, result.confirmation)
+        selected_attempt = fetch_attempt(store, resolved_run.attempts[-1])
+        reused_confirmation = confirmation.model_copy(
+            update={"resolved_stages": selected_attempt.resolved_stages}
         )
-        reused_result = result.model_copy(update={"confirmation": reused_confirmation})
+        reused_result = replace_confirmation(store, result, reused_confirmation)
 
         with self.assertRaisesRegex(VerificationError, "new stage-result snapshots"):
             verify_benchmark_result(
@@ -2027,8 +2110,10 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
     def test_strict_benchmark_rejects_reused_attempt_file_snapshot(self) -> None:
         """Verify that strict benchmark rejects reused attempt file snapshot."""
         result, resolved_run, store = build_benchmark_fixture()
-        reused_confirmation = result.confirmation.model_copy(
-            update={"measurement_files": resolved_run.attempts[-1].measurement_files}
+        confirmation = fetch_attempt(store, result.confirmation)
+        selected_attempt = fetch_attempt(store, resolved_run.attempts[-1])
+        reused_confirmation = confirmation.model_copy(
+            update={"measurement_files": selected_attempt.measurement_files}
         )
 
         with self.assertRaisesRegex(
@@ -2036,7 +2121,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
             "new measurement and log snapshot",
         ):
             verify_benchmark_result(
-                result.model_copy(update={"confirmation": reused_confirmation}),
+                replace_confirmation(store, result, reused_confirmation),
                 policy=POLICY,
                 fetcher=store.fetch,
             )
@@ -2044,17 +2129,18 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
     def test_confirmation_separates_stage_results_from_attempt_files(self) -> None:
         """Verify that confirmation separates stage results from attempt files."""
         result, _, store = build_benchmark_fixture()
-        measurement = result.confirmation.measurement_files[0]
+        confirmation = fetch_attempt(store, result.confirmation)
+        measurement = confirmation.measurement_files[0]
         reused_snapshot_measurement = measurement.model_copy(
             update={
                 "stored_at": measurement.stored_at.model_copy(
                     update={
-                        "commit": result.confirmation.resolved_stages[0].snapshot.commit
+                        "commit": confirmation.resolved_stages[0].snapshot.commit
                     }
                 )
             }
         )
-        invalid_confirmation = result.confirmation.model_copy(
+        invalid_confirmation = confirmation.model_copy(
             update={"measurement_files": (reused_snapshot_measurement,)}
         )
 
@@ -2063,7 +2149,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
             "stage-result and attempt-file snapshots",
         ):
             verify_benchmark_result(
-                result.model_copy(update={"confirmation": invalid_confirmation}),
+                replace_confirmation(store, result, invalid_confirmation),
                 policy=POLICY,
                 fetcher=store.fetch,
             )
@@ -2071,10 +2157,14 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
     def test_strict_benchmark_verifies_confirmation_input_lineage(self) -> None:
         """Verify that strict benchmark verifies confirmation input lineage."""
         result, resolved_run, store = build_benchmark_fixture()
+        confirmation = fetch_attempt(store, result.confirmation)
         confirmation_build, confirmation_train, confirmation_evaluate = (
-            result.confirmation.resolved_stages
+            confirmation.resolved_stages
         )
-        original_build = resolved_run.attempts[-1].resolved_stages[0]
+        original_build = fetch_attempt(
+            store,
+            resolved_run.attempts[-1],
+        ).resolved_stages[0]
 
         resolved_train = ResolvedTrainSpec.model_validate(
             yaml.safe_load(
@@ -2123,7 +2213,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
             snapshot_commit=confirmation_evaluate.snapshot.commit,
             resolved_spec=resolved_evaluate,
         )
-        confirmation = result.confirmation.model_copy(
+        confirmation = confirmation.model_copy(
             update={
                 "resolved_stages": (
                     confirmation_build,
@@ -2138,7 +2228,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
             "does not identify the completed producer stage",
         ):
             verify_benchmark_result(
-                result.model_copy(update={"confirmation": confirmation}),
+                replace_confirmation(store, result, confirmation),
                 policy=POLICY,
                 fetcher=store.fetch,
             )
@@ -2146,8 +2236,9 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
     def test_strict_benchmark_verifies_confirmation_stored_inputs(self) -> None:
         """Verify that strict benchmark verifies confirmation stored inputs."""
         result, _, store = build_benchmark_fixture()
+        confirmation = fetch_attempt(store, result.confirmation)
         confirmation_build, confirmation_train, confirmation_evaluate = (
-            result.confirmation.resolved_stages
+            confirmation.resolved_stages
         )
         resolved_evaluate = ResolvedEvaluateSpec.model_validate(
             yaml.safe_load(
@@ -2184,7 +2275,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
             snapshot_commit=confirmation_evaluate.snapshot.commit,
             resolved_spec=tampered_evaluate_spec,
         )
-        confirmation = result.confirmation.model_copy(
+        confirmation = confirmation.model_copy(
             update={
                 "resolved_stages": (
                     confirmation_build,
@@ -2196,7 +2287,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(VerificationError, "SHA-256 mismatch"):
             verify_benchmark_result(
-                result.model_copy(update={"confirmation": confirmation}),
+                replace_confirmation(store, result, confirmation),
                 policy=POLICY,
                 fetcher=store.fetch,
             )
@@ -2206,7 +2297,8 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         store = DocumentStore()
         run_reference, records = publish_producer_run(store)
         resolved_run = records["run"]
-        download_stage, train_stage = resolved_run.attempts[0].resolved_stages
+        attempt = fetch_attempt(store, resolved_run.attempts[0])
+        download_stage, train_stage = attempt.resolved_stages
         resolved_train = ResolvedTrainSpec.model_validate(
             yaml.safe_load(
                 store.fetch(
@@ -2232,10 +2324,14 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
             snapshot_commit=train_stage.snapshot.commit,
             resolved_spec=resolved_train,
         )
-        tampered_attempt = resolved_run.attempts[0].model_copy(
+        tampered_attempt = attempt.model_copy(
             update={"resolved_stages": (download_stage, tampered_train)}
         )
-        tampered_run = resolved_run.model_copy(update={"attempts": (tampered_attempt,)})
+        tampered_run = replace_run_attempts(
+            store,
+            resolved_run,
+            (tampered_attempt,),
+        )
         tampered_raw = yaml_bytes(tampered_run)
         store.put(run_reference.stored_at, tampered_raw)
         pointer = ArtifactPointer(

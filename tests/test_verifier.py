@@ -64,6 +64,7 @@ from viper.protocol import (
     ReplicateSpec,
     ReproducibilitySpec,
     ResolvedArtifactPointerRef,
+    ResolvedAttemptRef,
     ResolvedBuildSpec,
     ResolvedFileRef,
     ResolvedFutureInputRef,
@@ -143,6 +144,24 @@ def attempt_journal(attempt_id: int) -> AttemptJournalRef:
         sha256=sha256(ATTEMPT_JOURNAL_RAW),
         bytes=len(ATTEMPT_JOURNAL_RAW),
         stored_at=git_file(f"{RUN_ROOT}/attempts/{attempt_id}/journal.jsonl"),
+    )
+
+
+def attempt_reference(attempt: RunAttempt) -> tuple[ResolvedAttemptRef, bytes]:
+    """Serialize one attempt and return its immutable fixture reference."""
+    raw = yaml_bytes(attempt)
+    return (
+        ResolvedAttemptRef(
+            sha256=sha256(raw),
+            bytes=len(raw),
+            stored_at=HuggingFaceFileRef(
+                repository=HF_REPOSITORY,
+                commit=SNAPSHOT_COMMIT,
+                path=f"{RUN_ROOT}/attempts/{attempt.attempt_id}/resolved.yaml",
+                repo_type="dataset",
+            ),
+        ),
+        raw,
     )
 
 
@@ -1143,6 +1162,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             failure=None,
         )
         run_raw = yaml_bytes(run)
+        attempt_ref, attempt_raw = attempt_reference(attempt)
         record = ResolvedRun(
             spec=ResolvedRunSpecRef(
                 sha256=sha256(run_raw),
@@ -1150,7 +1170,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
                 stored_at=git_file(f"{RUN_ROOT}/spec.yaml"),
             ),
             status="succeeded",
-            attempts=(attempt,),
+            attempts=(attempt_ref,),
             successful_attempt_id=1,
             completed_at=datetime(2026, 8, 21, 13, 1, tzinfo=UTC),
         )
@@ -1163,6 +1183,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             (f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt"): resume_raw,
             "project/loaders/parameters.py": loader_raw,
             "project/loaders/resume_state.py": loader_raw,
+            attempt_ref.stored_at.path: attempt_raw,
         }
 
         verified = verify_resolved_stages(
@@ -2057,6 +2078,7 @@ class FutureInputVerificationTests(unittest.TestCase):
             failure=None,
         )
         run_raw = yaml_bytes(run)
+        attempt_ref, attempt_raw = attempt_reference(attempt)
         record = ResolvedRun(
             spec=ResolvedRunSpecRef(
                 sha256=sha256(run_raw),
@@ -2064,7 +2086,7 @@ class FutureInputVerificationTests(unittest.TestCase):
                 stored_at=git_file(f"{RUN_ROOT}/spec.yaml"),
             ),
             status="succeeded",
-            attempts=(attempt,),
+            attempts=(attempt_ref,),
             successful_attempt_id=1,
             completed_at=datetime(2026, 8, 21, 13, 1, tzinfo=UTC),
         )
@@ -2074,7 +2096,8 @@ class FutureInputVerificationTests(unittest.TestCase):
             run,
             {"build": resolved_build, "train": resolved_train},
             fetcher=lambda location: {
-                f"{RUN_ROOT}/artifacts/priors/depmap/prior.pt": prior_raw
+                f"{RUN_ROOT}/artifacts/priors/depmap/prior.pt": prior_raw,
+                attempt_ref.stored_at.path: attempt_raw,
             }[location.path],
         )
 
@@ -2120,7 +2143,10 @@ class FutureInputVerificationTests(unittest.TestCase):
                 record,
                 run,
                 {"build": resolved_build, "train": mismatched_train},
-                fetcher=lambda location: prior_raw,
+                fetcher=lambda location: {
+                    f"{RUN_ROOT}/artifacts/priors/depmap/prior.pt": prior_raw,
+                    attempt_ref.stored_at.path: attempt_raw,
+                }[location.path],
             )
 
 
