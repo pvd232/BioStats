@@ -45,6 +45,9 @@ from .protocol import (
     BenchmarkResult,
     BenchmarkSpec,
     BuildSpec,
+    ComputeBackendContext,
+    ComputeSpec,
+    CPUBackendContext,
     CUDABackendContext,
     DataRole,
     DownloadSpec,
@@ -1529,6 +1532,11 @@ def _verify_stage_invocation(
         raise VerificationError(
             f"stage {stage_id!r} startup environment differs from the plan"
         )
+    _verify_startup_backend(
+        stage_id,
+        compute,
+        resolved_stage.execution_context.backend,
+    )
 
     generators = startup.generators
     if any(generator.seed != run.seed for generator in generators):
@@ -1574,6 +1582,36 @@ def _verify_stage_invocation(
             f"stage {stage_id!r} CUDA startup requires one visible-device receipt"
         )
     return receipt
+
+
+def _verify_startup_backend(
+    stage_id: StageId,
+    compute: ComputeSpec,
+    backend: ComputeBackendContext,
+) -> None:
+    """Apply the named startup.backend rule to observed stage evidence."""
+    if compute.kind != backend.kind:
+        raise VerificationError(
+            f"startup.backend: stage {stage_id!r} observed another backend kind"
+        )
+    if compute.kind == "cpu":
+        if not isinstance(backend, CPUBackendContext):
+            raise VerificationError(
+                f"startup.backend: stage {stage_id!r} omitted its CPU context"
+            )
+        return
+    if not isinstance(backend, CUDABackendContext):
+        raise VerificationError(
+            f"startup.backend: stage {stage_id!r} omitted its CUDA context"
+        )
+    if len(backend.gpu_devices) != compute.count:
+        raise VerificationError(
+            f"startup.backend: stage {stage_id!r} observed another CUDA device count"
+        )
+    if any(device.model != compute.model for device in backend.gpu_devices):
+        raise VerificationError(
+            f"startup.backend: stage {stage_id!r} observed another CUDA model"
+        )
 
 
 def _verify_unresolved_stage_invocation(

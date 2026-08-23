@@ -6,8 +6,11 @@ import json
 import pytest
 
 from viper.protocol import (
+    CPUBackendContext,
     CPUComputeSpec,
+    CUDABackendContext,
     CUDAComputeSpec,
+    CUDADeviceContext,
     DataLoaderConfiguration,
     NumPyRandomnessSpec,
     ParallelismSpec,
@@ -16,6 +19,7 @@ from viper.protocol import (
     TorchPrecisionSpec,
 )
 from viper.runtime import apply_reproducibility, process_environment
+from viper.verifier import VerificationError, _verify_startup_backend
 
 
 def _controls() -> ReproducibilitySpec:
@@ -95,3 +99,63 @@ def test_named_numpy_receipt_identifies_the_delivered_generator() -> None:
         separators=(",", ":"),
     ).encode("utf-8")
     assert hashlib.sha256(advanced_raw).hexdigest() != receipt.state_sha256
+
+
+def _cuda_backend(*models: str) -> CUDABackendContext:
+    """Build observed CUDA evidence for named backend-rule tests."""
+    return CUDABackendContext(
+        gpu_devices=tuple(
+            CUDADeviceContext(
+                ordinal=ordinal,
+                model=model,
+                compute_capability_major=8,
+                compute_capability_minor=9,
+                memory_bytes=24_000_000_000,
+            )
+            for ordinal, model in enumerate(models)
+        ),
+        nvidia_driver_version="560.35",
+        pytorch_cuda_version="12.6",
+        cudnn_version="9.5",
+    )
+
+
+def test_startup_backend_accepts_matching_cpu_and_cuda_evidence() -> None:
+    """Accept the backend kind, device count, and model fixed by each request."""
+    _verify_startup_backend("train", CPUComputeSpec(), CPUBackendContext())
+    _verify_startup_backend(
+        "train",
+        CUDAComputeSpec(model="NVIDIA L4", count=1),
+        _cuda_backend("NVIDIA L4"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("compute", "backend", "message"),
+    (
+        (
+            CPUComputeSpec(),
+            _cuda_backend("NVIDIA L4"),
+            "another backend kind",
+        ),
+        (
+            CUDAComputeSpec(model="NVIDIA L4", count=1),
+            _cuda_backend("NVIDIA L4", "NVIDIA L4"),
+            "another CUDA device count",
+        ),
+        (
+            CUDAComputeSpec(model="NVIDIA L4", count=1),
+            _cuda_backend("NVIDIA H100"),
+            "another CUDA model",
+        ),
+    ),
+    ids=("kind", "count", "model"),
+)
+def test_startup_backend_rejects_changed_observed_evidence(
+    compute: CPUComputeSpec | CUDAComputeSpec,
+    backend: CPUBackendContext | CUDABackendContext,
+    message: str,
+) -> None:
+    """Reject each observed backend fact that differs from the frozen request."""
+    with pytest.raises(VerificationError, match=message):
+        _verify_startup_backend("train", compute, backend)
