@@ -463,7 +463,7 @@ python -m pytest tests/test_metric_interface.py tests/test_metric_provenance.py 
   lock scoped to one run.
 - [x] Allocate `max(persisted attempt IDs) + 1` while holding that lock.
 - [x] Write the allocation event before preflight begins.
-- [ ] Persist every attempt transition before its associated side effect.
+- [x] Persist every attempt transition before its associated side effect.
 - [x] Write one standard-output file and one standard-error file for each stage
   invocation.
 - [x] Preserve every verified stage snapshot completed before an attempt ends.
@@ -481,7 +481,7 @@ python -m pytest tests/test_metric_interface.py tests/test_metric_provenance.py 
   independent confirmation directly to `BenchmarkResult`.
 - [ ] Map `SIGINT` to cancellation, map `SIGTERM` to preemption, and reconcile
   an abandoned journal as `coordinator_lost`; journal each observed event.
-- [ ] Reconcile an abandoned nonterminal journal as `coordinator_lost` after
+- [x] Reconcile an abandoned nonterminal journal as `coordinator_lost` after
   acquiring its released lock.
 - [x] Add `retry()` and `viper retry`; each retry uses the same frozen plan and
   the next attempt ID.

@@ -24,9 +24,10 @@ same frozen plan after a failed run and appends the next attempt.
 
 `SIGINT` closes the active attempt as `cancelled`. `SIGTERM` closes it as
 `preempted`. Each terminal attempt also writes its canonical
-`attempts/<attempt_id>/resolved.yaml` document. Abandoned-journal
-reconciliation and immutable references from the run head to those attempt
-documents remain open.
+`attempts/<attempt_id>/resolved.yaml` document. After acquiring the released
+run lock, the next coordinator closes an abandoned journal with
+`coordinator_lost` and allocates a greater attempt ID. Immutable references
+from the run head to the attempt documents remain open.
 
 ## Contract models
 

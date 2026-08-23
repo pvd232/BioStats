@@ -6,6 +6,7 @@ import hashlib
 import subprocess
 import threading
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -61,6 +62,7 @@ from viper.serialization import parse_yaml_bytes, serialize_document
 from viper.stage_execution import StageExecutionError, execute_stage_process
 from viper.stages import load_stage_callable
 from viper.verifier import VerificationError, VerificationPolicy, verify_run_result
+from viper.workspace import AttemptWorkspace
 
 REPOSITORY = "https://github.com/example/viper-local-project"
 RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
@@ -490,6 +492,24 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     assert len(requests) == 1
     assert requests[0].run_spec == frozen.files[-1].resolve()
 
+    orphan = AttemptWorkspace.create(
+        root / ".viper" / "workspaces",
+        RUN_ID,
+        1,
+    )
+    orphan_journal = DurableJournal(orphan.control / "journal.jsonl")
+    orphan_started = datetime.now(UTC)
+    orphan_journal.append(
+        "allocated",
+        "attempt allocated",
+        recorded_at=orphan_started,
+    )
+    orphan_journal.append(
+        "preflighting",
+        "coordinator exited during preflight",
+        recorded_at=datetime.now(UTC),
+    )
+
     first_train_call = True
 
     def fail_first_train(*args, **kwargs):
@@ -510,26 +530,30 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         return process
 
     monkeypatch.setattr("viper.runner.execute_stage_process", fail_first_train)
-    with pytest.raises(RunError, match="attempt 1 failed"):
+    with pytest.raises(RunError, match="attempt 2 failed"):
         execute_run(root, frozen.files[-1])
     failed_run = ResolvedRun.model_validate(
         parse_yaml_bytes((root / RUN_ROOT / "resolved.yaml").read_bytes())
     )
     assert failed_run.status == "failed"
     assert failed_run.attempts[0].failure is not None
-    assert failed_run.attempts[0].failure.code == "execution_failed"
-    assert len(failed_run.attempts[0].resolved_stages) == 1
-    assert len(failed_run.attempts[0].invocations) == 2
+    assert failed_run.attempts[0].failure.code == "coordinator_lost"
+    failed_attempt = failed_run.attempts[1]
+    assert failed_attempt.failure is not None
+    assert failed_attempt.failure.code == "execution_failed"
+    assert len(failed_attempt.resolved_stages) == 1
+    assert len(failed_attempt.invocations) == 2
     assert (root / RUN_ROOT / "attempts/1/resolved.yaml").is_file()
+    assert (root / RUN_ROOT / "attempts/2/resolved.yaml").is_file()
 
     monkeypatch.setattr("viper.runner.execute_stage_process", execute_stage_process)
     result = execute_run(root, frozen.files[-1], retry=True)
 
     assert result.resolved_run.status == "succeeded"
     assert result.resolved_run_path.is_file()
-    assert [attempt.attempt_id for attempt in result.resolved_run.attempts] == [1, 2]
-    assert (root / RUN_ROOT / "attempts/2/resolved.yaml").is_file()
-    successful_attempt = result.resolved_run.attempts[1]
+    assert [attempt.attempt_id for attempt in result.resolved_run.attempts] == [1, 2, 3]
+    assert (root / RUN_ROOT / "attempts/3/resolved.yaml").is_file()
+    successful_attempt = result.resolved_run.attempts[2]
     assert len(successful_attempt.resolved_stages) == 2
     assert len(successful_attempt.measurement_files) == 2
     assert len(successful_attempt.metric_verification_files) == 1
@@ -582,7 +606,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     assert comparison.identical is True
     assert comparison.changes == ()
 
-    first_snapshot = result.resolved_run.attempts[0].resolved_stages[0].snapshot
+    first_snapshot = result.resolved_run.attempts[1].resolved_stages[0].snapshot
     assert first_snapshot.kind == "local"
     stored_artifact = (
         root
