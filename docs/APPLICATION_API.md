@@ -25,7 +25,9 @@ increment replaces those pre-release names.
 | `freeze_run(request)` | `viper freeze-run` | Canonical stage and run specification paths |
 | `preflight(request)` | `viper preflight` | Every applicable check and one readiness value |
 | `execute_stage(request)` | `viper execute-stage` | Command, artifacts, standard output, and standard error |
-| `run(request)` | `viper run` | Verified terminal run and attempt journal paths |
+| `run(request)` | `viper run` | Verified terminal run, attempt document, and journal paths |
+| `retry(request)` | `viper retry` | New terminal attempt for the same frozen run plan |
+| `execute_benchmark(request)` | `viper execute-benchmark` | Verified independent benchmark confirmation |
 | `plan_diff(request)` | `viper plan-diff` | Ordered leaf differences between two complete frozen plans |
 | `lineage(request)` | `viper lineage` | Verified stages, inputs, artifacts, and their directed relationships |
 | `status(request)` | `viper status` | Latest durable attempt state and permitted successor states |
@@ -35,6 +37,7 @@ increment replaces those pre-release names.
 | `verify_pointer(request)` | `viper verify-pointer` | Verified artifact file count |
 | `get_schema(request)` | `viper schema` | JSON Schema for one registered public type |
 | `get_capabilities(request)` | `viper capabilities` | Operations, schemas, and execution backends in this installation |
+| `init_project(request)` | `viper init` | Runnable project scaffold in an empty directory |
 
 Every success contains `status="ok"` and the function's `operation` name.
 
@@ -125,16 +128,18 @@ The coordinator performs these operations in order:
 preflight plan
 -> acquire run lock
 -> materialize verified inputs
--> execute stages in RunSpec order
--> invoke after-stage metrics
+-> start one controlled child for each stage
+-> pass the exact callable its typed StageContext
+-> invoke and verify declared metrics
 -> publish immutable local snapshots
--> write attempt logs and measurements
--> write resolved.yaml
+-> publish the attempt document and evidence files
+-> write terminal resolved.yaml
 -> verify the complete terminal run
 ```
 
-The result contains `run_id`, `resolved_run`, and `journal`. Output snapshots
-live under `.viper/store/<content digest>/`. Attempt control files live under
+The result contains `run_id`, `attempt_id`, `resolved_attempt`, `resolved_run`,
+and `journal`. Output snapshots live under `.viper/store/<content digest>/`.
+Attempt control files live under
 `.viper/workspaces/<run ID>/attempt-<attempt ID>/`.
 
 The active host may satisfy `LocalEnvironmentSpec` or `GCEEnvironmentSpec`.
@@ -144,6 +149,49 @@ defines the child process used by both Python and CLI callers.
 
 Expected errors: `execution_failed`, `verification_failed`, `invalid_document`,
 `not_found`, `io_failed`.
+
+## Retry a frozen run
+
+```python
+retry(request: RetryRequest) -> RetrySuccess
+```
+
+| Request field | Type | Meaning |
+| --- | --- | --- |
+| `resolved_run` | `Path` | Terminal result containing the immutable earlier attempt references |
+| `repository_root` | `Path` | Repository containing the same frozen run plan |
+| `timeout_seconds` | positive `float` or `None` | Per-stage process deadline |
+
+The coordinator verifies the terminal result, retrieves its frozen `RunSpec`,
+requires a retry-eligible terminal status, allocates the next attempt ID, and
+executes the same plan. The result contains the new attempt reference, the new
+terminal run path, and the new journal path.
+
+Expected errors: `execution_failed`, `verification_failed`, `invalid_document`,
+`not_found`, `write_conflict`, `io_failed`.
+
+## Execute a benchmark confirmation
+
+```python
+execute_benchmark(
+    request: ExecuteBenchmarkRequest,
+) -> ExecuteBenchmarkSuccess
+```
+
+| Request field | Type | Meaning |
+| --- | --- | --- |
+| `resolved_run` | `Path` | Verified candidate run selected for qualification |
+| `benchmark_spec` | `Path` | Frozen benchmark specification governing that run |
+| `repository_root` | `Path` | Repository containing the frozen run plan |
+| `timeout_seconds` | positive `float` or `None` | Per-stage process deadline |
+
+The operation executes one independent confirmation, writes its immutable
+attempt document, constructs the artifact and metric comparison receipts, and
+publishes `BenchmarkResult` after verification succeeds. The result contains
+the benchmark-result path and the confirmation-attempt reference.
+
+Expected errors: `execution_failed`, `verification_failed`, `invalid_document`,
+`not_found`, `write_conflict`, `io_failed`.
 
 ## Compare frozen plans
 
@@ -188,9 +236,10 @@ lineage(
 ) -> LineageSuccess
 ```
 
-The request supplies a terminal run path and the source repositories permitted
-to execute frozen metric and loader code. VIPER verifies the complete run
-before constructing the graph.
+The request supplies a terminal run path and
+`trusted_source_repositories`, the repositories from which VIPER may execute
+frozen metric and loader code. VIPER verifies the complete run before
+constructing the graph.
 
 Each node identifies a stage, input, artifact, or promoted input selection.
 Each directed edge has one relation:
@@ -212,9 +261,10 @@ compare_runs(
 ) -> CompareRunsSuccess
 ```
 
-The request supplies two terminal run paths and the source repositories
-permitted to execute their frozen metric and loader code. VIPER verifies each
-run before comparison. The comparison covers:
+The request supplies two terminal run paths and
+`trusted_source_repositories`, the repositories from which VIPER may execute
+frozen metric and loader code. VIPER verifies each run before comparison. The
+comparison covers:
 
 - terminal run and attempt fields;
 - run, experiment, variant, and benchmark specifications;
@@ -249,7 +299,7 @@ verify_pointer(
 ) -> VerifyPointerSuccess
 ```
 
-Each request supplies `path` and `trusted_loader_repositories`. A supplied
+Each request supplies `path` and `trusted_source_repositories`. A supplied
 `fetcher` retrieves exact bytes for Git, Hugging Face, or local storage
 references. Verification checks the connected plan, stage results, inputs,
 artifacts, measurements, logs, runtime controls, and terminal selection.
@@ -273,6 +323,25 @@ returns `name` and `json_schema`.
 `CapabilitiesRequest` has zero fields. `CapabilitiesSuccess` returns the
 protocol version, callable operations, registered schema names, and installed
 execution backends.
+
+## Create a project
+
+```python
+init_project(request: InitProjectRequest) -> InitProjectSuccess
+```
+
+| Request field | Type | Meaning |
+| --- | --- | --- |
+| `path` | `Path` | Absent or empty target directory |
+| `package` | `PythonPackageName` | Import package created beneath `src/` |
+
+`PythonPackageName` matches `^[a-z][a-z0-9_]*$`.
+
+VIPER validates both fields before writing. The result contains the created
+project root and every generated path. A populated target returns
+`write_conflict` and preserves its contents.
+
+Expected errors: `invalid_request`, `write_conflict`, `io_failed`.
 
 ## Failures
 
@@ -301,10 +370,10 @@ viper --json capabilities
 viper --json preflight experiments/example/runs/baseline/<run_id>/spec.yaml
 viper --json run experiments/example/runs/baseline/<run_id>/spec.yaml
 viper --json plan-diff <left-spec.yaml> <right-spec.yaml>
-viper --json lineage <resolved.yaml> --trust-loader-source <repository>
+viper --json lineage <resolved.yaml> --trust-source <repository>
 viper --json status <journal.jsonl>
 viper --json compare-runs <left-resolved.yaml> <right-resolved.yaml> \
-  --trust-loader-source <repository>
+  --trust-source <repository>
 ```
 
 JSON mode writes one UTF-8 document with one trailing newline. Completed

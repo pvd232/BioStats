@@ -138,12 +138,17 @@ The coordinator assigns terminal outcomes through these operations:
 
 | Outcome | Evidence-producing operation |
 |---|---|
-| `cancelled` | The application receives an explicit cancellation request, records it in the journal, and acknowledges it before closing the attempt. |
-| `preempted` | The coordinator receives a supported host preemption signal, records that signal in the journal, and closes the attempt before exit. |
+| `cancelled` | The coordinator receives `SIGINT`, records the signal, stops the active child, and closes the attempt. |
+| `preempted` | The coordinator receives `SIGTERM`, records the signal, stops the active child, and closes the attempt. |
 | `failed` with `coordinator_lost` | A later coordinator acquires the released lock and reconciles an abandoned nonterminal journal. |
 
 An abrupt host loss that prevents terminal publication enters the third path
 when a later coordinator performs reconciliation.
+
+The durability claim assumes the attempt workspace and configured store remain
+readable and writable. Storage loss belongs to infrastructure recovery. A
+surviving nonterminal journal remains sufficient for `coordinator_lost`
+reconciliation.
 
 ## Retry
 

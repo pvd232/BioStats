@@ -50,7 +50,7 @@ The alpha release trusts the project source named by `RunSpec.source` and the
 single host on which VIPER runs. The user's infrastructure tooling owns VM
 provisioning, terminal access, source placement, and cloud-resource lifecycle.
 
-Four owner inputs enter at fixed points:
+Five owner inputs enter at fixed points:
 
 | Owner input | Required by |
 |---|---|
@@ -58,6 +58,7 @@ Four owner inputs enter at fixed points:
 | Author names and contact metadata | Phase 9 metadata gate |
 | TestPyPI credentials | Phase 10 TestPyPI upload |
 | PyPI publication authorization | Phase 10 PyPI upload |
+| Release-tag signing identity and configuration | Phase 10 signed tag |
 
 ## Checklist rules
 
@@ -81,6 +82,10 @@ When implementation reveals an incomplete contract, revise the owning file in
 `docs/contracts/`, review that revision, and resume implementation from the
 approved text.
 
+Each phase also updates the affected sections of `ProvenanceS1_v3.md`. A phase
+closes when its implementation contract, formal protocol, public API,
+implementation, and tests describe the same fields and guarantees.
+
 Items marked **Owner input** require a licensing, identity, credential, or
 publication decision from the package owner.
 
@@ -90,15 +95,15 @@ Every implementation contract appears once in the execution sequence.
 
 | Contract | Current status | Execution phase | Completion evidence |
 |---|---|---|---|
-| [Parameter models](contracts/PARAMETER_MODELS.md) | Implemented | Regression coverage in Phases 1 and 2 | The exact project class validates the frozen mapping received by the stage context. |
+| [Parameter models](contracts/PARAMETER_MODELS.md) | Implemented | Regression coverage in Phases 1 and 2 | The exact project class validates the frozen parameter mapping. Phase 1 owns typed delivery. |
 | [Stage invocation](contracts/STAGE_INVOCATION.md) | Approved | Phase 1 | The frozen callable receives the typed parameters and declared paths. |
-| [Process startup](contracts/PROCESS_STARTUP.md) | Approved | Phase 1 | The controlled child starts with the frozen process controls and writes one invocation receipt. |
-| [HTTP retrieval](contracts/HTTP_RETRIEVAL.md) | Approved | Phase 2 | The resolved exchange binds each request to the response bytes delivered to project code. |
+| [Process startup](contracts/PROCESS_STARTUP.md) | Approved | Phase 1 | The controlled child records its startup environment, applied controls, generator initialization, and observed runtime. |
+| [HTTP retrieval](contracts/HTTP_RETRIEVAL.md) | Approved | Phase 2 | Each exchange names its authored input and immutable response body; `DownloadContext` delivers the ordered verified handles. |
 | [Artifact validation](contracts/ARTIFACT_VALIDATION.md) | Approved | Phase 3 | The verifier reports representation identity, loadability, or reserved semantic validity at its established level. |
-| [Metric provenance](contracts/METRIC_PROVENANCE.md) | Approved | Phase 4 | Each measurement binds the implementation, dependency set, parameters, environment, and comparator. |
-| [Attempt execution](contracts/ATTEMPT_EXECUTION.md) | Approved | Phase 5 | Failed attempts persist; retry allocates a greater attempt ID and preserves prior evidence. |
-| [Benchmark execution](contracts/BENCHMARK_EXECUTION.md) | Approved | Phase 6 | `execute_benchmark()` produces the independent confirmation accepted by `verify_benchmark()`. |
-| [Cloud execution](contracts/CLOUD_EXECUTION.md) | Approved | Phase 7 | The installed wheel executes in place on GCE and verifies the realized host. |
+| [Metric provenance](contracts/METRIC_PROVENANCE.md) | Approved | Phase 4 | After-stage metrics bind file dependencies and recomputation evidence; during-stage metrics bind the controlled metric handle and measurement sink. |
+| [Attempt execution](contracts/ATTEMPT_EXECUTION.md) | Approved | Phase 5 | Each attempt has an immutable document and journal; retry allocates a greater ID and preserves every prior reference. |
+| [Benchmark execution](contracts/BENCHMARK_EXECUTION.md) | Approved | Phase 6 | `execute_benchmark()` produces one independent confirmation and persists the artifact and metric comparison receipts accepted by `verify_benchmark()`. |
+| [Cloud execution](contracts/CLOUD_EXECUTION.md) | Approved | Phase 7 | The installed wheel executes in place on GCE and verifies the host, backend, and exact Python environment. |
 | [Package release](contracts/PACKAGE_RELEASE.md) | Approved | Phases 8–10 | Clean installations complete the documented project path from TestPyPI and PyPI. |
 
 ## Implemented baseline
@@ -138,7 +143,11 @@ The current repository supplies the foundation consumed by Phase 1:
   symbol, SHA-256, and byte count.
 - [ ] Replace each parameterized stage's `script` field with
   `implementation: StageImplementationRef`.
-- [ ] Add `StageInvocationReceipt` to the resolved stage contract.
+- [ ] Add `StageContextBinding`, its canonical digest rule, and
+  `StageInvocationReceipt` to the resolved stage contract.
+- [ ] Add `ProcessStartupReceipt` with the allowlisted child environment,
+  applied controls, and one initialized-state digest for each configured
+  generator.
 - [ ] Update `ProvenanceS1_v3.md` with the callable, context, receipt, and
   process-startup relationships.
 - [ ] Add one public decorator for each stage kind.
@@ -148,7 +157,10 @@ The current repository supplies the foundation consumed by Phase 1:
 ### Runtime
 
 - [ ] Add generic `StageContext` with typed parameters, materialized input
-  paths, writable artifact paths, run ID, attempt ID, and stage ID.
+  paths, writable artifact paths, a metric-handle mapping, run ID, attempt ID,
+  and stage ID. Phase 1 supplies an empty mapping; Phase 4 binds the handles.
+- [ ] Construct the versioned logical `StageContextBinding` before resolving
+  attempt-local absolute paths.
 - [ ] Add `viper.run(stage_callable)` as the ordinary Python adapter.
 - [ ] Bind `--stage` to the callable launched by the project module and execute
   every stage in `RunSpec.stages` order.
@@ -176,7 +188,8 @@ The current repository supplies the foundation consumed by Phase 1:
 ### Verification and acceptance
 
 - [ ] Verify implementation identity, decorator metadata, parameter identity,
-  parameter digest, context digest, and invocation outcome.
+  parameter digest, canonical context binding, startup environment, applied
+  controls, initialized-generator receipts, and invocation outcome.
 - [ ] Replace constant fixture scripts with decorated functions that consume
   their typed parameters and declared paths.
 - [ ] Prove that `python train.py --run RUN --stage train` and `viper run RUN`
@@ -208,11 +221,15 @@ python -m pytest tests/test_stage_invocation.py tests/test_process_startup.py \
 
 ### Protocol and authoring
 
-- [ ] Add `HttpRequestSpec`, `SecretRef`, and `ResolvedHttpExchange`.
+- [ ] Add `HttpRequestSpec`, `EnvironmentSecretRef`, and
+  `ResolvedHttpExchange`.
 - [ ] Replace `RemoteFileRef` inputs on `DownloadSpec` with frozen HTTP request
   specifications.
 - [ ] Store the complete ordered exchange sequence on
   `ResolvedDownloadSpec`.
+- [ ] Bind every exchange to `input_name`, use contiguous input-scoped
+  `exchange_index` values, record its initial, redirect, or follow-up cause,
+  and store each body through `ResolvedFileRef`.
 - [ ] Expand URL templates during authoring and freeze the canonical request.
 - [ ] Reject literal authorization values and preserve secret references.
 
@@ -220,14 +237,18 @@ python -m pytest tests/test_stage_invocation.py tests/test_process_startup.py \
 
 - [ ] Implement one controlled HTTP client with scheme, host, port, request
   count, response-size, and timeout limits.
-- [ ] Resolve credentials at execution time through `SecretRef`.
+- [ ] Resolve credentials at execution time through `EnvironmentSecretRef`.
+- [ ] Inject each secret into its declared HTTP header and redact its value
+  from requests, receipts, logs, errors, and JSON results.
 - [ ] Store each response body by content digest before project code runs.
 - [ ] Add `DownloadContext` as the `StageContext` extension that exposes typed
-  `DownloadParams`, verified response handles, and the controlled follow-up
-  request interface.
+  `DownloadParams`, input-scoped ordered response handles, and the controlled
+  follow-up request interface.
 - [ ] Record redirects and project-requested pagination calls in exchange
   order.
 - [ ] Deliver only verified response handles through the download context.
+- [ ] State the 0.1 trusted-project-source boundary in public documentation;
+  complete network confinement remains deferred.
 
 ### Verification and acceptance
 
@@ -259,6 +280,9 @@ python -m pytest tests/test_http_retrieval.py tests/test_stage_invocation.py \
 - [ ] Add `ArtifactLoaderRef` with path, symbol, SHA-256, and byte count.
 - [ ] Replace artifact loader IDs and paths with exact implementation
   references.
+- [ ] Rename the verifier policy field to `trusted_source_repositories` and the
+  CLI option to `--trust-source`; apply it to every project code path executed
+  during verification.
 - [ ] Enumerate every regular bundle member during publication and reject
   symlinks, path escape, missing members, and unrecorded members.
 - [ ] Invoke project loaders through the trusted stage-worker boundary.
@@ -269,6 +293,8 @@ python -m pytest tests/test_http_retrieval.py tests/test_stage_invocation.py \
 - [ ] Exercise single-file loading, bundle loading, missing and extra members,
   same-length tampering, loader tampering, loader failure, and invalid
   `resume_state`.
+- [ ] Run the maintained project's interruption-and-resumption case and compare
+  its resumed terminal state with the uninterrupted execution.
 
 **Focused gate**
 
@@ -289,7 +315,9 @@ python -m pytest tests/test_artifact_loaders.py tests/test_artifact_validation.p
 
 ### Protocol and authoring
 
-- [ ] Add `MetricImplementationRef` and `MetricDependency`.
+- [ ] Add `MetricImplementationRef`, `FileMetricDependency`,
+  `AfterStageMetricSpec`, `DuringStageMetricSpec`, and
+  `MetricVerificationReceipt`.
 - [ ] Freeze `MetricKind`, `MetricProduction`, and `MetricVerification`.
 - [ ] Require one comparator for every recomputed floating-point metric.
 - [ ] Freeze decorator metadata, dependencies, parameters, and implementation
@@ -299,14 +327,20 @@ python -m pytest tests/test_artifact_loaders.py tests/test_artifact_validation.p
 
 ### Runtime and verification
 
-- [ ] Construct each `MetricContext` from its declared inputs and artifacts.
+- [ ] Construct each after-stage `MetricContext` from its declared file
+  dependencies.
+- [ ] Inject during-stage metric handles into `StageContext` and bind their
+  output to the active `MeasurementSink`.
+- [ ] Implement `DuringStageMetricHandle.update()` and `record()` for function
+  and stateful metric implementations.
 - [ ] Enforce every dependency's data role before invoking metric code.
 - [ ] Record during-stage measurements through the runner-owned
   `MeasurementSink`.
 - [ ] Invoke after-stage metrics through the trusted worker boundary.
 - [ ] Recompute eligible metrics from immutable dependencies and the frozen
   implementation.
-- [ ] Persist the recomputed value and comparator result.
+- [ ] Persist the dependency digest, effective-environment digest, recomputed
+  value, comparator, and result in `MetricVerificationReceipt`.
 - [ ] Verify implementation identity, dependency identity, parameters,
   measurement ownership, and comparator outcome.
 - [ ] Exercise stateless evaluation, stateful training, diagnostic,
@@ -341,6 +375,15 @@ python -m pytest tests/test_metric_interface.py tests/test_metric_provenance.py 
 - [ ] Close and publish attempts with `succeeded`, `failed`, `cancelled`, or
   `preempted` status.
 - [ ] Replace `failure_reason` with typed `AttemptFailure`.
+- [ ] Publish every attempt as
+  `attempts/<attempt_id>/resolved.yaml`; place its journal, measurements,
+  metric-verification receipts, and logs beneath the same attempt directory;
+  store one immutable `ResolvedAttemptRef` in the terminal run.
+- [ ] Add `AttemptJournalRef` and metric-verification files to `RunAttempt`.
+- [ ] Add attempt purpose; keep ordinary attempts in `ResolvedRun` and bind the
+  independent confirmation directly to `BenchmarkResult`.
+- [ ] Map `SIGINT` to cancellation, map `SIGTERM` to preemption, and reconcile
+  an abandoned journal as `coordinator_lost`; journal each observed event.
 - [ ] Reconcile an abandoned nonterminal journal as `coordinator_lost` after
   acquiring its released lock.
 - [ ] Add `retry()` and `viper retry`; each retry uses the same frozen plan and
@@ -369,10 +412,15 @@ python -m pytest tests/test_attempt_execution.py tests/test_worker.py \
 
 - [ ] Add `ExecuteBenchmarkRequest`, `ExecuteBenchmarkSuccess`, and the
   `execute_benchmark()` application operation.
+- [ ] Replace `BenchmarkSpec.confirmation_count` with
+  `execution_count: Literal[2]`; the count covers one candidate and one
+  confirmation.
+- [ ] Add typed artifact-comparison and metric-criterion receipts to
+  `BenchmarkResult`.
 - [ ] Add the `viper execute-benchmark` command with human and JSON output.
 - [ ] Verify the candidate run before allocating confirmation attempts.
-- [ ] Execute the same frozen plan for every confirmation required by
-  `BenchmarkSpec`.
+- [ ] Execute the same frozen plan for the one confirmation required by
+  `BenchmarkSpec.execution_count`.
 - [ ] Preserve distinct stage snapshots and attempt-file snapshots for each
   confirmation.
 - [ ] Recompute every benchmark metric through its Phase 4 dependency contract.
@@ -405,6 +453,8 @@ python -m pytest tests/test_benchmark_execution.py \
   project, image name, and server-defined image ID.
 - [ ] Replace `machine_image` fields with `boot_image` on requested and resolved
   GCE environments.
+- [ ] Add `PythonEnvironmentSpec` with the exact Python version and normalized,
+  sorted installed-distribution mapping.
 - [ ] Resolve the boot-image ID during plan freezing.
 - [ ] Generalize preflight from the local-only check to the effective
   environment selected for each stage.
@@ -419,8 +469,8 @@ python -m pytest tests/test_benchmark_execution.py \
 
 - [ ] Exercise deterministic local CPU, local CUDA, GCE CPU, and GCE CUDA
   fixtures.
-- [ ] Reject boot-image, machine-type, accelerator, lockfile, and numerical
-  control mismatches.
+- [ ] Reject boot-image, machine-type, accelerator, lockfile, Python
+  environment, and numerical-control mismatches.
 - [ ] Build and install the Phase 7 wheel on the designated L4 VM.
 - [ ] Execute the maintained acceptance project from the existing SSH terminal with
   `python train.py` and `viper run`.
@@ -456,6 +506,8 @@ python -m pytest tests/test_runtime.py tests/test_cloud_execution.py \
 - [ ] Freeze one `PreflightCheckCode` for every release-gated preflight rule.
 - [ ] Freeze the operation, schema, capability, decorator, context, and helper
   imports listed in `PUBLIC_API.md`.
+- [ ] Include `retry`, `execute_benchmark`, and `init_project` in application
+  dispatch, CLI dispatch, schema discovery, and capability discovery.
 
 ### Project scaffold and guides
 
@@ -540,10 +592,12 @@ those checks execute outside this repository environment.
 - [ ] Confirm that the TestPyPI file digests equal the release-candidate
   digests.
 - [ ] **Owner input:** authorize publication of the validated files to PyPI.
+- [ ] **Owner input:** provide the release-tag signing identity and signing
+  configuration.
 - [ ] Publish those exact files to PyPI.
 - [ ] Install `viper-provenance==0.1.0a1` from PyPI in a clean environment.
 - [ ] Repeat the installed-package smoke and complete example tests.
-- [ ] Tag the release commit as `v0.1.0a1` and push the tag.
+- [ ] Create the signed tag `v0.1.0a1`, verify its signature, and push the tag.
 - [ ] Publish the final release report with local, CI, GCE, TestPyPI, and PyPI
   results.
 - [ ] Verify that `main`, `origin/main`, and the release tag identify the

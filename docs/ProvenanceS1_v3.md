@@ -800,6 +800,11 @@ F_j(a)
 v_a^{(j)}.
 $$
 
+Here, $v_a^{(j)}$ denotes the value returned by the frozen loader. Generic
+artifact verification establishes representation identity and loadability.
+The reserved `resume_state` artifact also passes the protocol-owned
+`ResumeState` validator.
+
 Every member of $F_j(a)$ is required. Removing any member either prevents loading or changes the reconstructed value.
 
 The cardinality determines the physical form:
@@ -1689,6 +1694,15 @@ Its log files may identify completed stages and the next declared stage whose
 execution failed, was preempted, or was cancelled before producing a
 `ResolvedStageRef`. A successful attempt's logs identify its completed stages.
 
+The coordinator maps `SIGINT` to `cancelled` and `SIGTERM` to `preempted`. It
+records the received signal before stopping the active child and closing the
+attempt. A later coordinator maps an abandoned nonterminal journal to
+`failed` with code `coordinator_lost`.
+
+Attempt durability assumes continued access to the configured workspace and
+store. A surviving nonterminal journal supplies the evidence needed for later
+reconciliation.
+
 A successful `ResolvedRun` identifies exactly one successful attempt through
 `successful_attempt_id`. A failed or cancelled `ResolvedRun` sets
 `successful_attempt_id` to null. A terminal preempted attempt yields a failed
@@ -2368,6 +2382,8 @@ measurement file for the same stage and metric.
 class EnvironmentSecretRef(ProtocolModel):
     kind: Literal["environment"] = "environment"
     variable: NonEmptyStr
+    header: HttpHeaderName
+    prefix: str = ""
 
 
 class HttpRequestSpec(ProtocolModel):
@@ -2387,6 +2403,11 @@ InternalInputRef = Annotated[
 
 A download stage consumes one or more frozen HTTP requests. Build, embed, and
 train stages consume stored or same-run artifacts.
+
+`EnvironmentSecretRef` places the value of its named environment variable in
+the selected request header after applying the public prefix. The persisted
+request retains the reference and redacts the value. `HttpRequestSpec.headers`
+excludes the selected secret header.
 
 ### Stage specifications
 
@@ -2789,8 +2810,8 @@ ResolvedStageRef for ωₖ
 ```
 
 The verifier retrieves the producer's resolved spec, selects the two reserved
-artifacts, and verifies every file and loader identity. The replay executor
-invokes the loaders. Their returned values satisfy:
+artifacts, verifies every file and loader identity, and invokes both loaders.
+Their returned values define:
 
 $$
 L_{k,a_\theta}
@@ -2816,7 +2837,10 @@ b_k^{(N_k)}
 \right).
 $$
 
-The executor assembles the initial state of $\omega_\ell$ from those values:
+The continuing stage receives the two verified artifact paths through
+`StageContext.inputs`. Its frozen project implementation restores the initial
+state of $\omega_\ell$ from the loader values. A project that claims exact
+resumption establishes:
 
 $$
 s_\ell^{(0)}
@@ -2864,14 +2888,14 @@ external verifier
 ├── verifies both artifacts belong to one producer snapshot
 ├── verifies every referenced file
 ├── verifies both artifact-loader identities
+├── verifies `resume_state` against its protocol-owned schema
 └── verifies the resume-input and estimator selectors
 
-replay executor
-├── invokes both artifact loaders
-└── reconstructs sₗ⁽⁰⁾ from sₖ⁽ᴺᵏ⁾
+stage invocation
+└── delivers both verified paths to the frozen continuation callable
 
 parity check
-└── compares the resumed computation and terminal estimator exactly
+└── project acceptance compares the resumed and uninterrupted terminal states
 ```
 
 ## 19. Evaluation stage

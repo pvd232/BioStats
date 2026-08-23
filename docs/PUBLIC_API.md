@@ -69,6 +69,14 @@ viper.run
 `viper.run(stage_callable)` is the ordinary Python adapter. The complete-plan
 application operation remains `viper.application.run(request)`.
 
+The release application surface also includes:
+
+```python
+viper.application.retry
+viper.application.execute_benchmark
+viper.application.init_project
+```
+
 Import concrete classes and functions from their owning module. For example:
 
 ```python

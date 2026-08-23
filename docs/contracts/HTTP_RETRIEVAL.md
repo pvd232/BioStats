@@ -76,6 +76,8 @@ parsing values. `HttpRequestSpec` holds the network request that VIPER executes.
 class EnvironmentSecretRef(ProtocolModel):
     kind: Literal["environment"] = "environment"
     variable: NonEmptyStr
+    header: HttpHeaderName
+    prefix: str = ""
 
 
 class HttpRequestSpec(ProtocolModel):
@@ -94,8 +96,10 @@ equivalence rules in [RFC 3986, Section 6](https://www.rfc-editor.org/rfc/rfc398
 `headers` contains fields that select or describe the requested
 representation. VIPER rejects literal authorization credentials, cookies, and
 proxy credentials. `EnvironmentSecretRef.variable` names an environment
-variable available to the controlled retrieval process. Its value stays
-outside the run plan and resolved result.
+variable available to the controlled retrieval process. `header` selects the
+request field that receives the value, and `prefix` supplies public text such
+as `Bearer `. The secret value stays outside the run plan and resolved result.
+The ordinary `headers` mapping excludes the selected secret header.
 
 HTTP defines a request through its method, target, and fields, and defines a
 response through its status, fields, and content. The model follows those
@@ -236,6 +240,7 @@ The verifier performs these named checks:
 | `http.input` | Every exchange names one key in `DownloadSpec.inputs`. |
 | `http.request` | Exchange `0` for each input equals `DownloadSpec.inputs[input_name]`. |
 | `http.policy` | Every realized target satisfies the stage network policy. |
+| `http.credentials` | The client reads the named environment variable, injects it into the selected header, and redacts the value from persisted evidence. |
 | `http.status` | Every recorded status satisfies the declared success policy. |
 | `http.content` | The bytes retrieved through `body.stored_at` match `body.sha256` and `body.bytes`. |
 | `http.order` | Exchange indices are unique, contiguous, and ordered within each input. |
