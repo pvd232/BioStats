@@ -21,6 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "huggingface_hub>=1,<2",
+    "httpx>=0.28,<1",
     "numpy>=2,<3",
     "pydantic>=2.12,<3",
     "PyYAML>=6,<7",

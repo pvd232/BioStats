@@ -279,11 +279,11 @@ python -m pytest tests/test_stage_invocation.py tests/test_process_startup.py \
 
 ### Protocol and authoring
 
-- [ ] Add `HttpRequestSpec`, `EnvironmentSecretRef`, and
+- [x] Add `HttpRequestSpec`, `EnvironmentSecretRef`, and
   `HttpRetrievalPolicy`.
-- [ ] Require an expected SHA-256 and byte count for every experimental HTTP
+- [x] Require an expected SHA-256 and byte count for every experimental HTTP
   request.
-- [ ] Add `HttpOrigin`; scope each credential reference to one or more
+- [x] Add `HttpOrigin`; scope each credential reference to one or more
   authorized origins.
 - [ ] Replace `RemoteFileRef` inputs on `DownloadSpec` with frozen HTTP request
   specifications.
@@ -291,14 +291,14 @@ python -m pytest tests/test_stage_invocation.py tests/test_process_startup.py \
   selected transport on each `DownloadSpec`.
 - [ ] Add `HttpTransportImplementationRef`, `HttpTransportParams`, and the
   `http_transport()` decorator.
-- [ ] Add frozen external executable requirements to each project transport.
+- [x] Add frozen external executable requirements to each project transport.
 - [ ] Resolve decorated project transports to an exact callable, parameter
   class, and frozen parameter mapping.
 - [ ] Store one resolved retrieval per declared input on
   `ResolvedDownloadSpec`.
 - [ ] Bind each retrieval to its input name, frozen request, terminal response,
   selected transport, and completed body.
-- [ ] Add `ResolvedHttpTransport` and `ResolvedExternalExecutable` so a project
+- [x] Add `ResolvedHttpTransport` and `ResolvedExternalExecutable` so a project
   adapter identifies its Python wrapper and every external transfer binary.
 - [ ] Expand URL templates during authoring and freeze the canonical request.
 - [ ] Reject literal authorization values and preserve secret references.

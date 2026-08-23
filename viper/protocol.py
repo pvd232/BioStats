@@ -8,6 +8,7 @@ conditions, and immutable stage-result snapshots.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -18,6 +19,7 @@ from pydantic import (
     Field,
     HttpUrl,
     JsonValue,
+    field_validator,
     model_validator,
 )
 
@@ -112,6 +114,111 @@ class RemoteFileRef(ProtocolModel):
     kind: Literal["remote"] = "remote"
     url: HttpUrl
     version: NonEmptyStr
+
+
+HttpHeaderName = Annotated[
+    str,
+    Field(pattern=r"^[!#$%&'*+.^_`|~0-9a-z-]+$", min_length=1),
+]
+
+
+class HttpOrigin(ProtocolModel):
+    """Identify one normalized HTTP origin including its effective port."""
+
+    scheme: Literal["http", "https"]
+    host: NonEmptyStr
+    port: int = Field(ge=1, le=65535)
+
+    @field_validator("host")
+    @classmethod
+    def validate_normalized_host(cls, value: str) -> str:
+        """Require the lower-case host representation used for exact matching."""
+        if value != value.lower().rstrip("."):
+            raise ValueError("HTTP origin host must be normalized")
+        return value
+
+
+class EnvironmentSecretRef(ProtocolModel):
+    """Select one runtime secret and the HTTP origins authorized to receive it."""
+
+    kind: Literal["environment"] = "environment"
+    variable: NonEmptyStr
+    header: HttpHeaderName
+    prefix: str = ""
+    authorized_origins: frozenset[HttpOrigin] = Field(min_length=1)
+
+    @field_validator("variable")
+    @classmethod
+    def validate_variable_name(cls, value: str) -> str:
+        """Require a portable environment-variable name."""
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value) is None:
+            raise ValueError("secret variable must be an environment-variable name")
+        return value
+
+
+class HttpRequestSpec(ProtocolModel):
+    """Freeze one experimental HTTP request and its expected response body."""
+
+    kind: Literal["http"] = "http"
+    method: Literal["GET"] = "GET"
+    url: HttpUrl
+    headers: dict[HttpHeaderName, NonEmptyStr] = Field(default_factory=dict)
+    version: NonEmptyStr
+    expected_body_sha256: SHA256
+    expected_body_bytes: int = Field(gt=0)
+    credentials: EnvironmentSecretRef | None = None
+
+    @model_validator(mode="after")
+    def validate_public_headers_and_credential_origin(self) -> HttpRequestSpec:
+        """Keep literal credentials out and authorize the initial request origin."""
+        sensitive = {"authorization", "cookie", "proxy-authorization"}
+        if sensitive & set(self.headers):
+            raise ValueError("HTTP request headers contain a literal credential")
+        if self.credentials is not None:
+            if self.credentials.header in self.headers:
+                raise ValueError("credential header must not appear in public headers")
+            if http_origin(self.url) not in self.credentials.authorized_origins:
+                raise ValueError(
+                    "request origin is not authorized to receive credential"
+                )
+        return self
+
+
+class HttpRetrievalPolicy(ProtocolModel):
+    """Bound the network and response behavior of one logical retrieval."""
+
+    allowed_schemes: frozenset[Literal["http", "https"]] = Field(min_length=1)
+    allowed_hosts: frozenset[NonEmptyStr] = Field(min_length=1)
+    allowed_ports: frozenset[Annotated[int, Field(ge=1, le=65535)]] = Field(
+        min_length=1
+    )
+    accepted_statuses: frozenset[Annotated[int, Field(ge=100, le=599)]] = frozenset(
+        {200}
+    )
+    max_redirects: int = Field(ge=0)
+    max_body_bytes: int = Field(gt=0)
+    timeout_seconds: float = Field(gt=0, allow_inf_nan=False)
+
+    @field_validator("allowed_hosts")
+    @classmethod
+    def validate_normalized_hosts(cls, value: frozenset[str]) -> frozenset[str]:
+        """Require exact lower-case host policy members."""
+        if any(host != host.lower().rstrip(".") for host in value):
+            raise ValueError("HTTP policy hosts must be normalized")
+        return value
+
+
+def http_origin(url: HttpUrl) -> HttpOrigin:
+    """Return the normalized effective origin of one validated HTTP URL."""
+    raw_scheme = url.scheme
+    if raw_scheme not in {"http", "https"}:
+        raise ValueError("HTTP request URL must use HTTP or HTTPS")
+    scheme: Literal["http", "https"] = "http" if raw_scheme == "http" else "https"
+    host = url.host
+    if host is None:
+        raise ValueError("HTTP request URL must contain a host")
+    port = url.port or (80 if scheme == "http" else 443)
+    return HttpOrigin(scheme=scheme, host=host.lower().rstrip("."), port=port)
 
 
 class GitSource(ProtocolModel):
@@ -638,6 +745,136 @@ class StageImplementationRef(ProtocolModel):
     symbol: PythonSymbol
     sha256: SHA256
     bytes: int = Field(gt=0)
+
+
+class HttpTransportParams(ParameterSet):
+    """Parameters consumed by one project-defined HTTP transport."""
+
+
+class HttpTransportImplementationRef(ProtocolModel):
+    """Identify one project-owned HTTP transport callable by exact file bytes."""
+
+    path: PythonRepoRelPath
+    symbol: PythonSymbol
+    sha256: SHA256
+    bytes: int = Field(gt=0)
+
+
+class ExternalExecutableSpec(ProtocolModel):
+    """Freeze the exact executable selected by one project transport."""
+
+    executable_id: HumanId
+    command: NonEmptyStr
+    sha256: SHA256
+    bytes: int = Field(gt=0)
+
+
+class BuiltinHttpTransportSpec(ProtocolModel):
+    """Select the built-in HTTPX transport."""
+
+    kind: Literal["builtin"] = "builtin"
+    transport_id: Literal["httpx"] = "httpx"
+
+
+class ProjectHttpTransportSpec(ProtocolModel):
+    """Select one frozen project-owned HTTP transport implementation."""
+
+    kind: Literal["project"] = "project"
+    transport_id: HumanId
+    implementation: HttpTransportImplementationRef
+    parameter_model: ParameterModelRef
+    params: HttpTransportParams
+    executables: tuple[ExternalExecutableSpec, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_unique_executables(self) -> ProjectHttpTransportSpec:
+        """Require one external executable requirement per identifier."""
+        identifiers = tuple(value.executable_id for value in self.executables)
+        if len(set(identifiers)) != len(identifiers):
+            raise ValueError("external executable IDs must be unique")
+        return self
+
+
+HttpTransportSpec = Annotated[
+    BuiltinHttpTransportSpec | ProjectHttpTransportSpec,
+    Field(discriminator="kind"),
+]
+
+
+class ObservedHttpResponse(ProtocolModel):
+    """Persist the terminal status, URL, and representation response fields."""
+
+    response_url: HttpUrl
+    status: int = Field(ge=100, le=599)
+    response_headers: dict[HttpHeaderName, str]
+
+    @model_validator(mode="after")
+    def validate_persisted_headers(self) -> ObservedHttpResponse:
+        """Restrict persisted headers to representation and content identity."""
+        allowed = {
+            "content-type",
+            "content-encoding",
+            "content-length",
+            "etag",
+            "last-modified",
+            "digest",
+            "content-digest",
+        }
+        if not set(self.response_headers) <= allowed:
+            raise ValueError("response contains a non-persistable HTTP header")
+        return self
+
+
+class ResolvedExternalExecutable(ProtocolModel):
+    """Bind one frozen executable requirement to its verified host path."""
+
+    spec: ExternalExecutableSpec
+    path: Path
+
+
+class ResolvedHttpTransport(ProtocolModel):
+    """Record the transport and executable identities used for retrieval."""
+
+    spec: HttpTransportSpec
+    external_executables: tuple[ResolvedExternalExecutable, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_executable_resolution(self) -> ResolvedHttpTransport:
+        """Resolve every project executable exactly once and none for HTTPX."""
+        if isinstance(self.spec, BuiltinHttpTransportSpec):
+            if self.external_executables:
+                raise ValueError("built-in HTTP transport cannot resolve executables")
+            return self
+        expected = tuple(value.executable_id for value in self.spec.executables)
+        received = tuple(
+            value.spec.executable_id for value in self.external_executables
+        )
+        if received != expected:
+            raise ValueError("resolved HTTP executables differ from transport spec")
+        return self
+
+
+class ResolvedHttpRetrieval(ProtocolModel):
+    """Bind one logical request to its transport, response, and stored body."""
+
+    input_name: InputName
+    request: HttpRequestSpec
+    transport: ResolvedHttpTransport
+    response: ObservedHttpResponse
+    body: ResolvedFileRef
+    started_at: AwareDatetime
+    completed_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_timing_and_content(self) -> ResolvedHttpRetrieval:
+        """Require positive duration and the frozen expected body identity."""
+        if self.completed_at <= self.started_at:
+            raise ValueError("HTTP retrieval completion must follow its start")
+        if self.body.sha256 != self.request.expected_body_sha256:
+            raise ValueError("retrieved body SHA-256 differs from frozen request")
+        if self.body.bytes != self.request.expected_body_bytes:
+            raise ValueError("retrieved body byte count differs from frozen request")
+        return self
 
 
 class StageContextBinding(ProtocolModel):
