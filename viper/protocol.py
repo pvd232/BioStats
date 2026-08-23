@@ -108,14 +108,6 @@ class ProtocolModel(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class RemoteFileRef(ProtocolModel):
-    """A mutable or externally controlled source URL."""
-
-    kind: Literal["remote"] = "remote"
-    url: HttpUrl
-    version: NonEmptyStr
-
-
 HttpHeaderName = Annotated[
     str,
     Field(pattern=r"^[!#$%&'*+.^_`|~0-9a-z-]+$", min_length=1),
@@ -171,6 +163,10 @@ class HttpRequestSpec(ProtocolModel):
     @model_validator(mode="after")
     def validate_public_headers_and_credential_origin(self) -> HttpRequestSpec:
         """Keep literal credentials out and authorize the initial request origin."""
+        if self.url.username is not None or self.url.password is not None:
+            raise ValueError("HTTP request URL must not contain user information")
+        if self.url.fragment is not None:
+            raise ValueError("HTTP request URL must not contain a fragment")
         sensitive = {"authorization", "cookie", "proxy-authorization"}
         if sensitive & set(self.headers):
             raise ValueError("HTTP request headers contain a literal credential")
@@ -877,6 +873,13 @@ class ResolvedHttpRetrieval(ProtocolModel):
         return self
 
 
+class HttpRetrievalContextBinding(ProtocolModel):
+    """Bind one download context handle to response and body-file identity."""
+
+    response: ObservedHttpResponse
+    body: SnapshotFileRef
+
+
 class StageContextBinding(ProtocolModel):
     """Persist the stable values used to construct one live stage context."""
 
@@ -887,6 +890,9 @@ class StageContextBinding(ProtocolModel):
     parameter_model: ParameterModelRef
     parameter_digest: SHA256
     inputs: dict[InputName, RepoRelPath]
+    retrievals: dict[InputName, HttpRetrievalContextBinding] = Field(
+        default_factory=dict
+    )
     artifacts: dict[ArtifactName, RepoRelPath]
     metric_ids: tuple[MetricId, ...]
     numpy_generator_names: tuple[HumanId, ...]
@@ -1604,10 +1610,12 @@ class DownloadParams(ParameterSet):
 
 
 class DownloadSpec(ParameterizedSpec):
-    """Request retrieval of one remote input into declared artifacts."""
+    """Request verified HTTP retrievals followed by one project operation."""
 
     kind: Literal["download"] = "download"  # pyright: ignore[reportIncompatibleVariableOverride]
-    inputs: dict[InputName, RemoteFileRef] = Field(min_length=1, max_length=1)
+    inputs: dict[InputName, HttpRequestSpec] = Field(min_length=1)
+    transport: HttpTransportSpec
+    policy: HttpRetrievalPolicy
     params: DownloadParams
 
 
@@ -2118,29 +2126,29 @@ class ResolvedBaseSpec(ProtocolModel):
 
 
 class ResolvedDownloadSpec(ResolvedBaseSpec):
-    """Download receipt.
-
-    The input remains the source URL because no artifact exists before the
-    download. Its artifacts are the first verified values created from that URL.
-    """
+    """Bind every frozen HTTP input to its completed retrieval evidence."""
 
     kind: Literal["download"] = "download"  # pyright: ignore[reportIncompatibleVariableOverride]
     spec: DownloadSpec  # pyright: ignore[reportIncompatibleVariableOverride]
 
-    inputs: dict[InputName, RemoteFileRef]
-    retrieved_at: AwareDatetime
+    retrievals: dict[InputName, ResolvedHttpRetrieval]
 
     @model_validator(mode="after")
-    def validate_download_inputs(self) -> ResolvedDownloadSpec:
-        """Match realized download inputs to the frozen request."""
-        if self.inputs != self.spec.inputs:
-            raise ValueError(
-                "resolved download inputs must match the stage spec remote inputs"
-            )
-
-        if self.retrieved_at > self.completed_at:
-            raise ValueError("download retrieval cannot follow stage completion")
-
+    def validate_download_retrievals(self) -> ResolvedDownloadSpec:
+        """Match every retrieval to its input, request, transport, and timing."""
+        if set(self.retrievals) != set(self.spec.inputs):
+            raise ValueError("resolved retrieval names must match download inputs")
+        for input_name, retrieval in self.retrievals.items():
+            if retrieval.input_name != input_name:
+                raise ValueError("resolved retrieval input name differs from its key")
+            if retrieval.request != self.spec.inputs[input_name]:
+                raise ValueError(
+                    "resolved retrieval request differs from download input"
+                )
+            if retrieval.transport.spec != self.spec.transport:
+                raise ValueError("resolved retrieval transport differs from stage spec")
+            if retrieval.completed_at > self.completed_at:
+                raise ValueError("download retrieval cannot follow stage completion")
         return self
 
 

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from .http import HttpRetrievalError, resolve_transport, validate_request_policy
 from .ids import StageId
 from .parameter_models import (
     ParameterModelError,
@@ -17,11 +19,13 @@ from .parameter_models import (
 )
 from .protocol import (
     BaseSpec,
+    DownloadSpec,
     FutureInputRef,
     GitFileRef,
     InternalSpec,
     LocalEnvironmentSpec,
     ParameterizedSpec,
+    ProjectHttpTransportSpec,
     RunSpec,
     StorageModel,
 )
@@ -323,6 +327,66 @@ def preflight_local_plan(repository_root: Path, run_spec_path: Path) -> Prefligh
                     reference.stage_id,
                     parameter_validation_valid,
                     "stage parameters failed their project parameter model",
+                )
+            )
+
+        if isinstance(stage, DownloadSpec):
+            request_policy_valid = True
+            credentials_available = True
+            for request in stage.inputs.values():
+                try:
+                    validate_request_policy(request, stage.policy)
+                except HttpRetrievalError:
+                    request_policy_valid = False
+                if request.credentials is not None and not os.environ.get(
+                    request.credentials.variable
+                ):
+                    credentials_available = False
+            checks.append(
+                _check(
+                    "http.request",
+                    reference.stage_id,
+                    request_policy_valid,
+                    "one or more frozen HTTP requests violate stage policy",
+                )
+            )
+            checks.append(
+                _check(
+                    "http.credentials",
+                    reference.stage_id,
+                    credentials_available,
+                    "one or more required HTTP credentials are unavailable",
+                )
+            )
+            transport_valid = True
+            try:
+                resolve_transport(root, stage.transport)
+                if isinstance(stage.transport, ProjectHttpTransportSpec):
+                    transport_valid = (
+                        root / stage.transport.implementation.path
+                    ).read_bytes() == _git_bytes(
+                        root,
+                        run.source.commit,
+                        stage.transport.implementation.path,
+                    ) and (
+                        root / stage.transport.parameter_model.path
+                    ).read_bytes() == _git_bytes(
+                        root,
+                        run.source.commit,
+                        stage.transport.parameter_model.path,
+                    )
+            except (
+                HttpRetrievalError,
+                OSError,
+                subprocess.CalledProcessError,
+            ):
+                transport_valid = False
+            checks.append(
+                _check(
+                    "http.transport.identity",
+                    reference.stage_id,
+                    transport_valid,
+                    "selected HTTP transport failed source or executable checks",
                 )
             )
 

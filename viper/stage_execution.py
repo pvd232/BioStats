@@ -19,12 +19,14 @@ from .protocol import (
     BaseSpec,
     BundleArtifactSpec,
     ExecutionContext,
+    HttpRetrievalContextBinding,
     ParameterizedSpec,
     ParameterizedStageSpec,
     ProcessStartupReceipt,
     ResolvedArtifact,
     ResolvedBundleArtifact,
     ResolvedBundleMember,
+    ResolvedHttpRetrieval,
     ResolvedSingleFileArtifact,
     RunSpec,
     RunStageRef,
@@ -161,6 +163,7 @@ def execute_stage_process(
     *,
     attempt_id: int = 1,
     input_paths: dict[str, Path] | None = None,
+    retrievals: dict[str, ResolvedHttpRetrieval] | None = None,
     timeout_seconds: float | None = None,
 ) -> StageProcessResult:
     """Invoke one frozen callable and hash every declared output file."""
@@ -215,6 +218,17 @@ def execute_stage_process(
         parameter_model=parameterized_stage.parameter_model,
         parameter_digest=document_digest(parameterized_stage.params),
         inputs=logical_inputs,
+        retrievals={
+            name: HttpRetrievalContextBinding(
+                response=retrieval.response,
+                body=SnapshotFileRef(
+                    path=logical_inputs[name],
+                    sha256=retrieval.body.sha256,
+                    bytes=retrieval.body.bytes,
+                ),
+            )
+            for name, retrieval in ({} if retrievals is None else retrievals).items()
+        },
         artifacts={
             name: artifact.path for name, artifact in stage_spec.artifacts.items()
         },

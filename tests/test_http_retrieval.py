@@ -1,21 +1,46 @@
 """Tests for frozen HTTP requests, transports, and retrieval evidence."""
 
+import hashlib
+import threading
+import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
 
+from viper.http import HttpRetrievalError, invoke_transport, resolve_transport
 from viper.protocol import (
     BuiltinHttpTransportSpec,
     EnvironmentSecretRef,
+    ExternalExecutableSpec,
     HttpRequestSpec,
     HttpRetrievalPolicy,
+    HttpTransportImplementationRef,
+    HttpTransportParams,
     LocalFileRef,
     ObservedHttpResponse,
+    ParameterModelRef,
+    ProjectHttpTransportSpec,
     ResolvedFileRef,
     ResolvedHttpRetrieval,
     ResolvedHttpTransport,
 )
+
+
+def _policy(*, host: str, port: int) -> HttpRetrievalPolicy:
+    """Build one local-server policy for transport tests."""
+    return HttpRetrievalPolicy(
+        allowed_schemes=frozenset({"http"}),
+        allowed_hosts=frozenset({host}),
+        allowed_ports=frozenset({port}),
+        max_redirects=2,
+        max_body_bytes=1024,
+        timeout_seconds=5,
+    )
 
 
 def _request(**updates: object) -> HttpRequestSpec:
@@ -28,6 +53,60 @@ def _request(**updates: object) -> HttpRequestSpec:
     }
     values.update(updates)
     return HttpRequestSpec.model_validate(values)
+
+
+@pytest.fixture
+def local_http_server() -> Iterator[tuple[str, int, list[tuple[str, str | None]]]]:
+    """Serve deterministic bodies while recording credential delivery."""
+    received: list[tuple[str, str | None]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        """Serve the redirect, body, and failure responses used by the suite."""
+
+        def do_GET(self) -> None:
+            """Record the authorization field and return the selected response."""
+            received.append((self.path, self.headers.get("Authorization")))
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header(
+                    "Location",
+                    f"http://localhost:"
+                    f"{cast(ThreadingHTTPServer, self.server).server_port}/body",
+                )
+                self.end_headers()
+                return
+            if self.path == "/body":
+                body = b"verified response"
+                self.send_response(206 if self.headers.get("Range") else 200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.path == "/slow":
+                time.sleep(0.1)
+                self.send_response(200)
+                self.send_header("Content-Length", "1")
+                self.end_headers()
+                try:
+                    self.wfile.write(b"x")
+                except BrokenPipeError:
+                    pass
+                return
+            self.send_error(404)
+
+        def log_message(self, format: str, *args: object) -> None:
+            """Keep expected local-server requests out of the test output."""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield "127.0.0.1", server.server_port, received
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
 
 
 def test_request_rejects_literal_and_unauthorized_credentials() -> None:
@@ -87,4 +166,339 @@ def test_resolved_retrieval_requires_the_expected_body_identity() -> None:
             body=body,
             started_at=datetime(2026, 8, 23, 12, tzinfo=UTC),
             completed_at=datetime(2026, 8, 23, 12, 1, tzinfo=UTC),
+        )
+
+
+def test_httpx_transport_follows_policy_and_strips_cross_origin_secret(
+    tmp_path: Path,
+    local_http_server: tuple[str, int, list[tuple[str, str | None]]],
+) -> None:
+    """Enforce redirects and withhold a secret from an unauthorized origin."""
+    host, port, received = local_http_server
+    body = b"verified response"
+    request = _request(
+        url=f"http://{host}:{port}/redirect",
+        expected_body_sha256=hashlib.sha256(body).hexdigest(),
+        expected_body_bytes=len(body),
+        credentials=EnvironmentSecretRef.model_validate(
+            {
+                "variable": "TEST_HTTP_TOKEN",
+                "header": "authorization",
+                "prefix": "Bearer ",
+                "authorized_origins": [{"scheme": "http", "host": host, "port": port}],
+            }
+        ),
+    )
+    policy = HttpRetrievalPolicy(
+        allowed_schemes=frozenset({"http"}),
+        allowed_hosts=frozenset({host, "localhost"}),
+        allowed_ports=frozenset({port}),
+        max_redirects=2,
+        max_body_bytes=1024,
+        timeout_seconds=5,
+    )
+    transport = resolve_transport(tmp_path, BuiltinHttpTransportSpec())
+    workspace = tmp_path / "retrieval"
+
+    result = invoke_transport(
+        tmp_path,
+        transport,
+        request,
+        policy,
+        workspace,
+        workspace / "body",
+        environment={"TEST_HTTP_TOKEN": "secret-value"},
+    )
+
+    assert result.body.read_bytes() == body
+    assert result.response.status == 200
+    assert received == [
+        ("/redirect", "Bearer secret-value"),
+        ("/body", None),
+    ]
+
+
+def test_project_transport_receives_typed_parameters_and_exact_destination(
+    tmp_path: Path,
+    local_http_server: tuple[str, int, list[tuple[str, str | None]]],
+) -> None:
+    """Load one decorated project transport and verify its completed body."""
+    host, port, _ = local_http_server
+    body = b"verified response"
+    parameter_raw = (
+        b"from pydantic import Field\n"
+        b"from viper.protocol import HttpTransportParams\n\n"
+        b"class ProjectTransportParams(HttpTransportParams):\n"
+        b"    chunk_size: int = Field(gt=0)\n"
+    )
+    implementation_raw = (
+        b"import httpx\n"
+        b"from project.transport_params import ProjectTransportParams\n"
+        b"from viper import HttpTransportResult, http_transport\n"
+        b"from viper.protocol import ObservedHttpResponse\n\n"
+        b"@http_transport(transport_id='project_http', "
+        b"parameter_model=ProjectTransportParams)\n"
+        b"def transfer(context):\n"
+        b"    assert context.params.chunk_size == 4\n"
+        b"    response = httpx.get(str(context.request.url), "
+        b"headers={'Range': 'bytes=0-'}, "
+        b"follow_redirects=False, trust_env=False)\n"
+        b"    context.destination.write_bytes(response.content)\n"
+        b"    return HttpTransportResult(\n"
+        b"        body=context.destination,\n"
+        b"        response=ObservedHttpResponse(\n"
+        b"            response_url=str(response.url),\n"
+        b"            status=response.status_code,\n"
+        b"            response_headers={\n"
+        b"                'content-length': response.headers['content-length']\n"
+        b"            },\n"
+        b"        ),\n"
+        b"    )\n"
+    )
+    parameter_path = tmp_path / "project/transport_params.py"
+    implementation_path = tmp_path / "project/transport.py"
+    parameter_path.parent.mkdir(parents=True)
+    parameter_path.write_bytes(parameter_raw)
+    implementation_path.write_bytes(implementation_raw)
+    spec = ProjectHttpTransportSpec(
+        transport_id="project_http",
+        implementation=HttpTransportImplementationRef(
+            path="project/transport.py",
+            symbol="transfer",
+            sha256=hashlib.sha256(implementation_raw).hexdigest(),
+            bytes=len(implementation_raw),
+        ),
+        parameter_model=ParameterModelRef(
+            path="project/transport_params.py",
+            symbol="ProjectTransportParams",
+            sha256=hashlib.sha256(parameter_raw).hexdigest(),
+            bytes=len(parameter_raw),
+        ),
+        params=HttpTransportParams.model_validate({"chunk_size": 4}),
+    )
+    request = _request(
+        url=f"http://{host}:{port}/body",
+        expected_body_sha256=hashlib.sha256(body).hexdigest(),
+        expected_body_bytes=len(body),
+    )
+    transport = resolve_transport(tmp_path, spec)
+    workspace = tmp_path / "retrieval"
+    workspace.mkdir()
+    policy = _policy(host=host, port=port).model_copy(
+        update={"accepted_statuses": frozenset({206})}
+    )
+
+    result = invoke_transport(
+        tmp_path,
+        transport,
+        request,
+        policy,
+        workspace,
+        workspace / "body",
+    )
+
+    assert result.body.read_bytes() == body
+    assert result.response.status == 206
+
+    missing_executable = spec.model_copy(
+        update={
+            "executables": (
+                ExternalExecutableSpec(
+                    executable_id="missing",
+                    command="viper-definitely-absent-executable",
+                    sha256="a" * 64,
+                    bytes=1,
+                ),
+            )
+        }
+    )
+    with pytest.raises(HttpRetrievalError, match="unavailable"):
+        resolve_transport(tmp_path, missing_executable)
+
+    implementation_path.write_bytes(implementation_raw + b"# modified\n")
+    with pytest.raises(HttpRetrievalError, match="byte count"):
+        resolve_transport(tmp_path, spec)
+
+
+def test_transport_rejects_unaccepted_status(
+    tmp_path: Path,
+    local_http_server: tuple[str, int, list[tuple[str, str | None]]],
+) -> None:
+    """Reject a terminal response outside the frozen accepted-status set."""
+    host, port, _ = local_http_server
+    request = _request(
+        url=f"http://{host}:{port}/missing",
+        expected_body_sha256="b" * 64,
+        expected_body_bytes=1,
+    )
+    workspace = tmp_path / "retrieval"
+
+    with pytest.raises(HttpRetrievalError, match="status"):
+        invoke_transport(
+            tmp_path,
+            resolve_transport(tmp_path, BuiltinHttpTransportSpec()),
+            request,
+            _policy(host=host, port=port),
+            workspace,
+            workspace / "body",
+        )
+
+
+def test_transport_rejects_policy_secret_and_same_length_body_failures(
+    tmp_path: Path,
+    local_http_server: tuple[str, int, list[tuple[str, str | None]]],
+) -> None:
+    """Reject a disallowed host, missing secret, and changed body identity."""
+    host, port, _ = local_http_server
+    body = b"verified response"
+    request = _request(
+        url=f"http://{host}:{port}/body",
+        expected_body_sha256=hashlib.sha256(body).hexdigest(),
+        expected_body_bytes=len(body),
+    )
+    transport = resolve_transport(tmp_path, BuiltinHttpTransportSpec())
+    workspace = tmp_path / "retrieval"
+    disallowed = _policy(host="example.test", port=port)
+    with pytest.raises(HttpRetrievalError, match="host"):
+        invoke_transport(
+            tmp_path,
+            transport,
+            request,
+            disallowed,
+            workspace,
+            workspace / "body",
+        )
+
+    oversized = request.model_copy(update={"expected_body_bytes": 2048})
+    with pytest.raises(HttpRetrievalError, match="exceeds"):
+        invoke_transport(
+            tmp_path,
+            transport,
+            oversized,
+            _policy(host=host, port=port),
+            workspace,
+            workspace / "body",
+        )
+
+    secret_request = request.model_copy(
+        update={
+            "credentials": EnvironmentSecretRef.model_validate(
+                {
+                    "variable": "MISSING_HTTP_TOKEN",
+                    "header": "authorization",
+                    "authorized_origins": [
+                        {"scheme": "http", "host": host, "port": port}
+                    ],
+                }
+            )
+        }
+    )
+    with pytest.raises(HttpRetrievalError, match="credential"):
+        invoke_transport(
+            tmp_path,
+            transport,
+            secret_request,
+            _policy(host=host, port=port),
+            workspace,
+            workspace / "body",
+            environment={},
+        )
+
+    changed_identity = request.model_copy(update={"expected_body_sha256": "b" * 64})
+    with pytest.raises(HttpRetrievalError, match="SHA-256"):
+        invoke_transport(
+            tmp_path,
+            transport,
+            changed_identity,
+            _policy(host=host, port=port),
+            workspace,
+            workspace / "body",
+        )
+
+    timeout_request = _request(
+        url=f"http://{host}:{port}/slow",
+        expected_body_sha256=hashlib.sha256(b"x").hexdigest(),
+        expected_body_bytes=1,
+    )
+    timeout_policy = _policy(host=host, port=port).model_copy(
+        update={"timeout_seconds": 0.01}
+    )
+    with pytest.raises(HttpRetrievalError, match="timeout"):
+        invoke_transport(
+            tmp_path,
+            transport,
+            timeout_request,
+            timeout_policy,
+            workspace,
+            workspace / "body",
+        )
+
+
+def test_project_transport_rejects_returned_path_escape(tmp_path: Path) -> None:
+    """Reject a project transport that returns a file outside its workspace."""
+    parameter_raw = (
+        b"from viper.protocol import HttpTransportParams\n\n"
+        b"class EscapeParams(HttpTransportParams):\n"
+        b'    """Validate the empty escape-test parameter mapping."""\n'
+    )
+    implementation_raw = (
+        b"from project.params import EscapeParams\n"
+        b"from viper import HttpTransportResult, http_transport\n"
+        b"from viper.protocol import ObservedHttpResponse\n\n"
+        b"@http_transport(transport_id='escape', parameter_model=EscapeParams)\n"
+        b"def transfer(context):\n"
+        b"    escaped = context.workspace.parent / 'escaped'\n"
+        b"    escaped.write_bytes(b'x')\n"
+        b"    return HttpTransportResult(\n"
+        b"        body=escaped,\n"
+        b"        response=ObservedHttpResponse(\n"
+        b"            response_url=context.request.url,\n"
+        b"            status=200,\n"
+        b"            response_headers={},\n"
+        b"        ),\n"
+        b"    )\n"
+    )
+    parameter_path = tmp_path / "project/params.py"
+    implementation_path = tmp_path / "project/escape.py"
+    parameter_path.parent.mkdir(parents=True)
+    parameter_path.write_bytes(parameter_raw)
+    implementation_path.write_bytes(implementation_raw)
+    spec = ProjectHttpTransportSpec(
+        transport_id="escape",
+        implementation=HttpTransportImplementationRef(
+            path="project/escape.py",
+            symbol="transfer",
+            sha256=hashlib.sha256(implementation_raw).hexdigest(),
+            bytes=len(implementation_raw),
+        ),
+        parameter_model=ParameterModelRef(
+            path="project/params.py",
+            symbol="EscapeParams",
+            sha256=hashlib.sha256(parameter_raw).hexdigest(),
+            bytes=len(parameter_raw),
+        ),
+        params=HttpTransportParams(),
+    )
+    workspace = tmp_path / "retrieval"
+    workspace.mkdir()
+
+    with pytest.raises(HttpRetrievalError, match="another body path"):
+        invoke_transport(
+            tmp_path,
+            resolve_transport(tmp_path, spec),
+            _request(
+                url="https://example.com/body",
+                expected_body_sha256=hashlib.sha256(b"x").hexdigest(),
+                expected_body_bytes=1,
+            ),
+            HttpRetrievalPolicy(
+                allowed_schemes=frozenset({"https"}),
+                allowed_hosts=frozenset({"example.com"}),
+                allowed_ports=frozenset({443}),
+                max_redirects=0,
+                max_body_bytes=1,
+                timeout_seconds=5,
+            ),
+            workspace,
+            workspace / "body",
         )

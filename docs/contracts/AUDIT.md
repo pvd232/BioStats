@@ -61,7 +61,7 @@ constraints expressed through field declarations, and repeated aliases.
 | Value | Producer | First available | Runtime form | Persisted form | Verifier reconstruction |
 |---|---|---|---|---|---|
 | Validated stage parameters | Parameter worker | Plan freeze and child startup | Project `ParameterSet` subclass | Stage params plus `parameter_digest` | Load the frozen class and validate the same mapping |
-| Stage context binding | Coordinator | Before child launch | `StageContextBinding` | Invocation receipt | Rebuild from the run, attempt, stage, inputs, artifacts, metric IDs, and configured NumPy generator names |
+| Stage context binding | Coordinator | Before child launch | `StageContextBinding` | Invocation receipt | Rebuild from the run, attempt, stage, inputs, retrieval handles, artifacts, metric IDs, and configured NumPy generator names |
 | Live stage context | Child | Immediately before callable invocation | Frozen dataclass with paths and handles | None | Verify its serialized binding and invocation receipt |
 | Invocation outcome | Coordinator | Child termination | Terminal child result | `StageInvocationReceipt` | Load the attempt-owned receipt and compare it with attempt state |
 | Startup controls | Coordinator and child | Process launch and control application | Environment and library state | `ProcessStartupReceipt` | Derive expected values from `RunSpec` and query recorded runtime evidence |

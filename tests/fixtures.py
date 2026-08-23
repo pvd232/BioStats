@@ -3,8 +3,11 @@
 import hashlib
 
 from viper.protocol import (
+    BuiltinHttpTransportSpec,
     DataLoaderConfiguration,
     DataLoaderResumeState,
+    HttpRequestSpec,
+    HttpRetrievalPolicy,
     LegacyNumPyRNGState,
     MainProcessRNGState,
     MetricKind,
@@ -57,6 +60,44 @@ def stage_implementation_ref(
         sha256=hashlib.sha256(raw).hexdigest(),
         bytes=len(raw),
     )
+
+
+def http_request(
+    *,
+    url: str = "https://example.com/fixture.bin",
+    body: bytes = b"fixture HTTP body",
+    version: str = "v1",
+) -> HttpRequestSpec:
+    """Build one frozen request whose expected identity matches ``body``."""
+    return HttpRequestSpec.model_validate(
+        {
+            "url": url,
+            "version": version,
+            "expected_body_sha256": hashlib.sha256(body).hexdigest(),
+            "expected_body_bytes": len(body),
+        }
+    )
+
+
+def http_policy(
+    *,
+    hosts: frozenset[str] = frozenset({"example.com"}),
+    ports: frozenset[int] = frozenset({443}),
+) -> HttpRetrievalPolicy:
+    """Build the bounded retrieval policy used by synthetic download stages."""
+    return HttpRetrievalPolicy(
+        allowed_schemes=frozenset({"http", "https"}),
+        allowed_hosts=hosts,
+        allowed_ports=ports,
+        max_redirects=2,
+        max_body_bytes=1024 * 1024,
+        timeout_seconds=30,
+    )
+
+
+def builtin_http_transport() -> BuiltinHttpTransportSpec:
+    """Select the HTTPX transport for one synthetic download stage."""
+    return BuiltinHttpTransportSpec()
 
 
 def verification_policy(*repositories: object) -> VerificationPolicy:

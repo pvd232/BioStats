@@ -20,9 +20,11 @@ import yaml
 from huggingface_hub import hf_hub_download
 from pydantic import TypeAdapter
 
+from .http import HttpRetrievalError, validate_request_policy
 from .ids import InputName, StageId
 from .metrics import MetricContext, compare_metric_values, load_metric
 from .parameter_models import ParameterModelError, verify_parameter_model_bytes
+from .paths import retrieval_body_path
 from .protocol import (
     PARAMETERS,
     PARAMETERS_INPUT,
@@ -44,6 +46,7 @@ from .protocol import (
     FutureInputRef,
     GCEEnvironmentSpec,
     GitFileRef,
+    HttpRetrievalContextBinding,
     HuggingFaceFileRef,
     InternalSpec,
     LocalFileRef,
@@ -51,6 +54,7 @@ from .protocol import (
     Measurement,
     ParameterizedSpec,
     ParameterizedStageSpec,
+    ProjectHttpTransportSpec,
     RepoRelPath,
     ResolvedArtifact,
     ResolvedBaseSpec,
@@ -1135,10 +1139,14 @@ def verify_run_plan(
 
 
 def _logical_input_paths(
+    run: RunSpec,
+    stage_id: StageId,
     stage: BaseSpec,
     stage_specs: Mapping[StageId, BaseSpec],
 ) -> dict[InputName, RepoRelPath]:
     """Reconstruct the repository-relative input paths delivered to one stage."""
+    if isinstance(stage, DownloadSpec):
+        return {name: retrieval_body_path(run, stage_id, name) for name in stage.inputs}
     if not isinstance(stage, InternalSpec):
         return {}
     paths: dict[InputName, RepoRelPath] = {}
@@ -1176,13 +1184,27 @@ def _verify_stage_invocation(
         raise VerificationError(
             f"stage {stage_id!r} invocation receipt is invalid"
         ) from exc
+    retrieval_bindings: dict[InputName, HttpRetrievalContextBinding] = {}
+    if isinstance(resolved_stage, ResolvedDownloadSpec):
+        retrieval_bindings = {
+            name: HttpRetrievalContextBinding(
+                response=retrieval.response,
+                body=SnapshotFileRef(
+                    path=retrieval.body.stored_at.path,
+                    sha256=retrieval.body.sha256,
+                    bytes=retrieval.body.bytes,
+                ),
+            )
+            for name, retrieval in resolved_stage.retrievals.items()
+        }
     expected_binding = StageContextBinding(
         run_id=run.run_id,
         attempt_id=attempt.attempt_id,
         stage_id=stage_id,
         parameter_model=stage.parameter_model,
         parameter_digest=document_digest(stage.params),
-        inputs=_logical_input_paths(stage, stage_specs),
+        inputs=_logical_input_paths(run, stage_id, stage, stage_specs),
+        retrievals=retrieval_bindings,
         artifacts={name: value.path for name, value in stage.artifacts.items()},
         metric_ids=stage.metric_ids,
         numpy_generator_names=tuple(
@@ -1287,6 +1309,114 @@ def _verify_stage_invocation(
             f"stage {stage_id!r} CUDA startup requires one visible-device receipt"
         )
     return receipt
+
+
+def _verify_download_retrievals(
+    attempt: RunAttempt,
+    run: RunSpec,
+    stage_id: StageId,
+    resolved: ResolvedDownloadSpec,
+    snapshot: StageResultSnapshotRef | LocalStageResultSnapshotRef,
+    *,
+    fetcher: StorageFetcher | None,
+) -> None:
+    """Verify each HTTP request, response, body, transport, and delivery path."""
+    retrieve = fetch_storage_bytes if fetcher is None else fetcher
+    for input_name, retrieval in resolved.retrievals.items():
+        try:
+            validate_request_policy(retrieval.request, resolved.spec.policy)
+            terminal_request = retrieval.request.model_copy(
+                update={"url": retrieval.response.response_url}
+            )
+            validate_request_policy(terminal_request, resolved.spec.policy)
+        except HttpRetrievalError as exc:
+            raise VerificationError(
+                f"HTTP retrieval {input_name!r} violates its frozen policy"
+            ) from exc
+        if retrieval.response.status not in resolved.spec.policy.accepted_statuses:
+            raise VerificationError(
+                f"HTTP retrieval {input_name!r} has an unaccepted status"
+            )
+        expected_path = retrieval_body_path(run, stage_id, input_name)
+        if retrieval.body.stored_at.path != expected_path:
+            raise VerificationError(
+                f"HTTP retrieval {input_name!r} body uses another path"
+            )
+        body_raw = read_resolved_file(retrieval.body, fetcher=fetcher)
+        read_snapshot_file(
+            snapshot,
+            SnapshotFileRef(
+                path=expected_path,
+                sha256=retrieval.body.sha256,
+                bytes=retrieval.body.bytes,
+            ),
+            fetcher=fetcher,
+        )
+        if (
+            hashlib.sha256(body_raw).hexdigest()
+            != retrieval.request.expected_body_sha256
+            or len(body_raw) != retrieval.request.expected_body_bytes
+        ):
+            raise VerificationError(
+                f"HTTP retrieval {input_name!r} body differs from its request"
+            )
+        if not (
+            attempt.started_at
+            <= retrieval.started_at
+            < retrieval.completed_at
+            <= resolved.completed_at
+        ):
+            raise VerificationError(
+                f"HTTP retrieval {input_name!r} timing falls outside its stage"
+            )
+
+        transport = retrieval.transport
+        if isinstance(transport.spec, ProjectHttpTransportSpec):
+            implementation = transport.spec.implementation
+            implementation_raw = retrieve(
+                GitFileRef(
+                    repository=run.source.repository,
+                    commit=run.source.commit,
+                    path=implementation.path,
+                )
+            )
+            if (
+                len(implementation_raw) != implementation.bytes
+                or hashlib.sha256(implementation_raw).hexdigest()
+                != implementation.sha256
+            ):
+                raise VerificationError(
+                    f"HTTP retrieval {input_name!r} transport source differs"
+                )
+            parameter_reference = transport.spec.parameter_model
+            parameter_raw = retrieve(
+                GitFileRef(
+                    repository=run.source.repository,
+                    commit=run.source.commit,
+                    path=parameter_reference.path,
+                )
+            )
+            try:
+                verify_parameter_model_bytes(parameter_reference, parameter_raw)
+            except ParameterModelError as exc:
+                raise VerificationError(
+                    f"HTTP retrieval {input_name!r} transport parameter model differs"
+                ) from exc
+            for executable in transport.external_executables:
+                try:
+                    executable_raw = executable.path.read_bytes()
+                except OSError as exc:
+                    raise VerificationError(
+                        f"HTTP retrieval {input_name!r} executable is unavailable"
+                    ) from exc
+                if (
+                    len(executable_raw) != executable.spec.bytes
+                    or hashlib.sha256(executable_raw).hexdigest()
+                    != executable.spec.sha256
+                ):
+                    raise VerificationError(
+                        f"HTTP retrieval {input_name!r} executable identity differs"
+                    )
 
 
 def verify_attempt_stages(
@@ -1407,14 +1537,14 @@ def verify_attempt_stages(
                 "its containing attempt"
             )
 
-        if isinstance(resolved_spec, ResolvedDownloadSpec) and not (
-            attempt.started_at
-            <= resolved_spec.retrieved_at
-            <= resolved_spec.completed_at
-        ):
-            raise VerificationError(
-                f"stage {stage_reference.stage_id!r} retrieval time falls outside "
-                "the stage execution"
+        if isinstance(resolved_spec, ResolvedDownloadSpec):
+            _verify_download_retrievals(
+                attempt,
+                run,
+                stage_reference.stage_id,
+                resolved_spec,
+                stage_reference.snapshot,
+                fetcher=fetcher,
             )
 
         if verified_stages:

@@ -285,53 +285,53 @@ python -m pytest tests/test_stage_invocation.py tests/test_process_startup.py \
   request.
 - [x] Add `HttpOrigin`; scope each credential reference to one or more
   authorized origins.
-- [ ] Replace `RemoteFileRef` inputs on `DownloadSpec` with frozen HTTP request
+- [x] Replace `RemoteFileRef` inputs on `DownloadSpec` with frozen HTTP request
   specifications.
-- [ ] Add the built-in and project `HttpTransportSpec` variants and require one
+- [x] Add the built-in and project `HttpTransportSpec` variants and require one
   selected transport on each `DownloadSpec`.
-- [ ] Add `HttpTransportImplementationRef`, `HttpTransportParams`, and the
+- [x] Add `HttpTransportImplementationRef`, `HttpTransportParams`, and the
   `http_transport()` decorator.
 - [x] Add frozen external executable requirements to each project transport.
-- [ ] Resolve decorated project transports to an exact callable, parameter
+- [x] Resolve decorated project transports to an exact callable, parameter
   class, and frozen parameter mapping.
-- [ ] Store one resolved retrieval per declared input on
+- [x] Store one resolved retrieval per declared input on
   `ResolvedDownloadSpec`.
-- [ ] Bind each retrieval to its input name, frozen request, terminal response,
+- [x] Bind each retrieval to its input name, frozen request, terminal response,
   selected transport, and completed body.
 - [x] Add `ResolvedHttpTransport` and `ResolvedExternalExecutable` so a project
   adapter identifies its Python wrapper and every external transfer binary.
-- [ ] Expand URL templates during authoring and freeze the canonical request.
-- [ ] Reject literal authorization values and preserve secret references.
+- [x] Expand URL templates during authoring and freeze the canonical request.
+- [x] Reject literal authorization values and preserve secret references.
 
 ### Runtime
 
-- [ ] Add HTTPX as the built-in transport and pin it through the package and
+- [x] Add HTTPX as the built-in transport and pin it through the package and
   effective Python-environment contracts.
-- [ ] Construct `HttpTransportContext` and invoke either the built-in transport
+- [x] Construct `HttpTransportContext` and invoke either the built-in transport
   or the exact decorated project transport selected by the stage.
-- [ ] Enforce scheme, host, port, accepted-status, redirect-count, body-size,
+- [x] Enforce scheme, host, port, accepted-status, redirect-count, body-size,
   and timeout limits through
   `HttpRetrievalPolicy`.
-- [ ] Resolve credentials at execution time through `EnvironmentSecretRef`.
-- [ ] Inject each secret into its declared HTTP header and redact its value
+- [x] Resolve credentials at execution time through `EnvironmentSecretRef`.
+- [x] Inject each secret into its declared HTTP header and redact its value
   from requests, receipts, logs, errors, and JSON results.
-- [ ] Strip a credential on a cross-origin redirect unless the destination
+- [x] Strip a credential on a cross-origin redirect unless the destination
   appears in its frozen authorized-origin set.
-- [ ] Assign each transport a dedicated retrieval workspace and exact body
+- [x] Assign each transport a dedicated retrieval workspace and exact body
   destination; reject returned path escape and symlinks.
-- [ ] Hash and store each completed body before project download code runs.
-- [ ] Resolve and verify every frozen external executable before transport
+- [x] Hash and store each completed body before project download code runs.
+- [x] Resolve and verify every frozen external executable before transport
   invocation; supply only verified executable paths to the transport context.
-- [ ] Require every successful transport to return its terminal HTTP response.
-- [ ] Verify the expected body identity before project download code runs.
-- [ ] Add `DownloadContext` as the `StageContext` extension that exposes typed
+- [x] Require every successful transport to return its terminal HTTP response.
+- [x] Verify the expected body identity before project download code runs.
+- [x] Add `DownloadContext` as the `StageContext` extension that exposes typed
   `DownloadParams` and one verified retrieval handle per input.
-- [ ] Treat redirects and segmented range requests as internal operations of
+- [x] Treat redirects and segmented range requests as internal operations of
   one transport invocation.
-- [ ] Keep dynamic pagination and scraping in discovery processes that publish
+- [x] Keep dynamic pagination and scraping in discovery processes that publish
   immutable inputs for later experimental plans.
-- [ ] Deliver only verified retrieval handles through the download context.
-- [ ] State the 0.1 trusted-project-source boundary in public documentation;
+- [x] Deliver only verified retrieval handles through the download context.
+- [x] State the 0.1 trusted-project-source boundary in public documentation;
   complete network confinement remains deferred.
 
 ### Verification and acceptance
@@ -342,12 +342,12 @@ python -m pytest tests/test_stage_invocation.py tests/test_process_startup.py \
   published artifact.
 - [ ] Add one reusable transport conformance suite for the built-in HTTPX
   transport and decorated project transports.
-- [ ] Require each transport to reject an unaccepted terminal HTTP status.
-- [ ] Exercise one static request, redirect, range-capable source, secret
+- [x] Require each transport to reject an unaccepted terminal HTTP status.
+- [x] Exercise one static request, redirect, range-capable source, secret
   reference, unauthorized credential origin, request-policy failure, returned
   path escape, missing executable, modified transport source, and same-length
   body tampering.
-- [ ] Prove that the acceptance download callable consumes the response selected
+- [x] Prove that the acceptance download callable consumes the response selected
   by its frozen request.
 
 **Focused gate**

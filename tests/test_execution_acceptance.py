@@ -2,14 +2,20 @@
 
 import hashlib
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from tests.fixtures import builtin_http_transport, http_policy, http_request
+from viper.local_store import LocalArtifactStore
+from viper.paths import retrieval_body_path
 from viper.protocol import (
     DownloadParams,
     DownloadSpec,
+    ObservedHttpResponse,
     ParameterModelRef,
-    RemoteFileRef,
+    ResolvedHttpRetrieval,
+    ResolvedHttpTransport,
     ResolvedSingleFileArtifact,
     RunSpec,
     RunStageRef,
@@ -41,8 +47,10 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
             b"def ingest(context):\n"
             b"    target = context.artifacts['dataset']\n"
             b"    target.parent.mkdir(parents=True, exist_ok=True)\n"
-            b"    target.write_bytes(b'tiny dataset')\n"
+            b"    source = context.retrievals['source'].body\n"
+            b"    target.write_bytes(source.read_bytes())\n"
         )
+        response_body = b"tiny response body"
         spec = DownloadSpec(
             implementation=StageImplementationRef(
                 path="jobs/ingest_tiny.py",
@@ -57,13 +65,13 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
                 bytes=len(parameter_source),
             ),
             inputs={
-                "source": RemoteFileRef.model_validate(
-                    {
-                        "url": "https://example.com/tiny-v1",
-                        "version": "v1",
-                    }
+                "source": http_request(
+                    url="https://example.com/tiny-v1",
+                    body=response_body,
                 )
             },
+            transport=builtin_http_transport(),
+            policy=http_policy(),
             artifacts={
                 "dataset": SingleFileArtifactSpec(
                     path=artifact_path,
@@ -161,7 +169,35 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
             )
             run_path = root / f"{RUN_ROOT}/spec.yaml"
             run_path.write_bytes(serialize_document(run))
-            result = execute_stage_process(root, run, reference, spec)
+            body_path = retrieval_body_path(run, "download", "source")
+            materialized_body = root / body_path
+            materialized_body.parent.mkdir(parents=True)
+            materialized_body.write_bytes(response_body)
+            body_reference = LocalArtifactStore(root).resolved_files(
+                {body_path: response_body}
+            )[0]
+            started = datetime.now(UTC)
+            retrieval = ResolvedHttpRetrieval(
+                input_name="source",
+                request=spec.inputs["source"],
+                transport=ResolvedHttpTransport(spec=spec.transport),
+                response=ObservedHttpResponse(
+                    response_url=spec.inputs["source"].url,
+                    status=200,
+                    response_headers={"content-length": str(len(response_body))},
+                ),
+                body=body_reference,
+                started_at=started,
+                completed_at=started + timedelta(microseconds=1),
+            )
+            result = execute_stage_process(
+                root,
+                run,
+                reference,
+                spec,
+                input_paths={"source": materialized_body},
+                retrievals={"source": retrieval},
+            )
             produced = result.artifacts["dataset"]
             assert isinstance(produced, ResolvedSingleFileArtifact)
             raw = (root / produced.file.path).read_bytes()
@@ -171,6 +207,6 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
             ("python", "-m", "viper.stage_worker"),
         )
         self.assertEqual(result.invocation.outcome, "succeeded")
-        self.assertEqual(raw, b"tiny dataset")
+        self.assertEqual(raw, response_body)
         self.assertEqual(produced.file.sha256, hashlib.sha256(raw).hexdigest())
         self.assertEqual(produced.file.bytes, len(raw))

@@ -3,7 +3,13 @@
 import hashlib
 from pathlib import Path
 
-from tests.fixtures import parameter_model_ref, stage_implementation_ref
+from tests.fixtures import (
+    builtin_http_transport,
+    http_policy,
+    http_request,
+    parameter_model_ref,
+    stage_implementation_ref,
+)
 from viper.materialization import future_input_paths
 from viper.preflight import preflight_local_plan
 from viper.protocol import (
@@ -14,7 +20,6 @@ from viper.protocol import (
     DownloadParams,
     DownloadSpec,
     FutureInputRef,
-    RemoteFileRef,
     RunSpec,
     RunStageRef,
     SingleFileArtifactSpec,
@@ -154,14 +159,9 @@ def test_future_input_uses_canonical_producer_path(tmp_path: Path) -> None:
     producer = DownloadSpec(
         implementation=stage_implementation_ref("project/download.py"),
         parameter_model=parameter_model_ref("download"),
-        inputs={
-            "remote": RemoteFileRef.model_validate(
-                {
-                    "url": "https://example.com/data",
-                    "version": "v1",
-                }
-            )
-        },
+        inputs={"remote": http_request(url="https://example.com/data")},
+        transport=builtin_http_transport(),
+        policy=http_policy(),
         artifacts={
             "dataset": _artifact(
                 "experiments/example/runs/baseline/01JABCDEFGHJKMNPQRSTVWXYZ0/"

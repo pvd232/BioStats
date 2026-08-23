@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
+import string
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, TypeAdapter
 
+from .http import resolve_transport, validate_request_policy
 from .ids import ExperimentId, ReplicateId, RunId, StageId, VariantId
 from .parameter_models import (
     ParameterModelError,
@@ -20,10 +25,12 @@ from .parameter_models import (
 from .protocol import (
     BenchmarkId,
     BenchmarkSpec,
+    DownloadSpec,
     EnvironmentSpec,
     ExperimentSpec,
     GitSource,
     ParameterizedSpec,
+    ProjectHttpTransportSpec,
     ReproducibilitySpec,
     RNGSeed,
     RunSpec,
@@ -36,6 +43,8 @@ from .serialization import parse_yaml_bytes, serialize_document
 from .stages import StageDefinitionError, validate_stage_definition
 
 SPEC_ADAPTER = TypeAdapter(Spec)
+HTTP_URL_ADAPTER = TypeAdapter(HttpUrl)
+UrlValue = str | int | float | bool
 
 
 class StageDraft(BaseModel):
@@ -73,6 +82,65 @@ class FrozenPlanFiles(BaseModel):
 
     run: RunSpec
     files: tuple[Path, ...]
+
+
+def expand_http_url(
+    template: str,
+    *,
+    path_values: Mapping[str, UrlValue] | None = None,
+    query_values: Mapping[str, UrlValue] | None = None,
+) -> HttpUrl:
+    """Expand path fields and freeze one normalized, ordered HTTP URL."""
+    components = urlsplit(template)
+    if components.scheme not in {"http", "https"} or components.hostname is None:
+        raise ValueError("HTTP URL template requires an HTTP origin")
+    if components.username is not None or components.password is not None:
+        raise ValueError("HTTP URL template must not contain user information")
+    if components.fragment:
+        raise ValueError("HTTP URL template must not contain a fragment")
+    if any(
+        "{" in value or "}" in value for value in (components.netloc, components.query)
+    ):
+        raise ValueError("HTTP URL fields are permitted only in the path")
+
+    supplied_paths = {} if path_values is None else dict(path_values)
+    expected_paths: set[str] = set()
+    rendered_path: list[str] = []
+    formatter = string.Formatter()
+    for literal, field_name, format_spec, conversion in formatter.parse(
+        components.path
+    ):
+        rendered_path.append(literal)
+        if field_name is None:
+            continue
+        if (
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", field_name) is None
+            or format_spec
+            or conversion is not None
+        ):
+            raise ValueError("HTTP path fields must be simple identifiers")
+        if field_name not in supplied_paths:
+            raise ValueError(f"HTTP path field {field_name!r} has no value")
+        expected_paths.add(field_name)
+        rendered_path.append(quote(str(supplied_paths[field_name]), safe=""))
+    if set(supplied_paths) != expected_paths:
+        raise ValueError("HTTP path values contain an unused field")
+
+    query = list(parse_qsl(components.query, keep_blank_values=True))
+    for name, value in sorted(({} if query_values is None else query_values).items()):
+        rendered = str(value).lower() if isinstance(value, bool) else str(value)
+        query.append((name, rendered))
+    query.sort()
+    expanded = urlunsplit(
+        (
+            components.scheme.lower(),
+            components.netloc.lower(),
+            "".join(rendered_path),
+            urlencode(query),
+            "",
+        )
+    )
+    return HTTP_URL_ADAPTER.validate_python(expanded)
 
 
 def _target_path(repository_root: Path, relative_path: str) -> Path:
@@ -214,6 +282,31 @@ def freeze_run_plan(
                     "stage implementation differs from the frozen source commit"
                 )
             validate_stage_definition(root, spec)
+            if isinstance(spec, DownloadSpec):
+                for request in spec.inputs.values():
+                    validate_request_policy(request, spec.policy)
+                resolve_transport(root, spec.transport)
+                if isinstance(spec.transport, ProjectHttpTransportSpec):
+                    for reference in (
+                        spec.transport.implementation,
+                        spec.transport.parameter_model,
+                    ):
+                        local_raw = (root / reference.path).read_bytes()
+                        committed_raw = subprocess.run(
+                            (
+                                "git",
+                                "-C",
+                                str(root),
+                                "show",
+                                f"{draft.source.commit}:{reference.path}",
+                            ),
+                            check=True,
+                            capture_output=True,
+                        ).stdout
+                        if local_raw != committed_raw:
+                            raise ValueError(
+                                "HTTP transport source differs from the frozen commit"
+                            )
         raw = serialize_document(spec)
         relative_path = f"{run_root}/stages/{stage.stage_id}/spec.yaml"
         target = _target_path(root, relative_path)

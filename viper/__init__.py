@@ -3,6 +3,7 @@
 from . import (
     application,
     authoring,
+    http,
     ids,
     inspection,
     journal,
@@ -23,6 +24,7 @@ from . import (
 __all__ = [
     "application",
     "authoring",
+    "http",
     "ids",
     "inspection",
     "journal",
@@ -41,6 +43,14 @@ __all__ = [
 ]
 
 from .api import run
+from .http import (
+    DownloadContext,
+    HttpRetrievalHandle,
+    HttpTransportContext,
+    HttpTransportResult,
+    http_transport,
+)
+from .protocol import HttpTransportParams
 from .stages import (
     StageContext,
     build_stage,
@@ -52,10 +62,16 @@ from .stages import (
 
 __all__ += [
     "StageContext",
+    "DownloadContext",
+    "HttpRetrievalHandle",
+    "HttpTransportContext",
+    "HttpTransportParams",
+    "HttpTransportResult",
     "build_stage",
     "download_stage",
     "embed_stage",
     "evaluate_stage",
     "train_stage",
+    "http_transport",
     "run",
 ]

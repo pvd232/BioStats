@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import threading
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
-from tests.fixtures import resume_state
+from tests.fixtures import (
+    builtin_http_transport,
+    http_policy,
+    http_request,
+    resume_state,
+)
 from viper import run as run_stage
 from viper.application import CompareRunsRequest, RunSuccess
 from viper.application import compare_runs as compare_runs_application
@@ -30,7 +38,6 @@ from viper.protocol import (
     MetricParams,
     MetricSpec,
     ParameterModelRef,
-    RemoteFileRef,
     ReplicateSpec,
     ReproducibilitySpec,
     SingleFileArtifactSpec,
@@ -50,6 +57,44 @@ from viper.verifier import VerificationError, VerificationPolicy, verify_run_res
 REPOSITORY = "https://github.com/example/viper-local-project"
 RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 RUN_ROOT = f"experiments/example/runs/baseline/{RUN_ID}"
+
+
+@pytest.fixture
+def http_source() -> Iterator[tuple[str, int]]:
+    """Serve one redirect followed by the exact body selected by the run."""
+
+    class Handler(BaseHTTPRequestHandler):
+        """Return the deterministic HTTP exchange used by the acceptance run."""
+
+        def do_GET(self) -> None:
+            """Redirect the initial request and serve the selected body."""
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", "/prior")
+                self.end_headers()
+                return
+            if self.path == "/prior":
+                body = b"prior"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_error(404)
+
+        def log_message(self, format: str, *args: object) -> None:
+            """Suppress HTTP server logs inside the acceptance output."""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield "127.0.0.1", server.server_port
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -125,6 +170,7 @@ def test_local_fetcher_dispatches_hugging_face_inputs(
 def test_two_stage_local_run_writes_and_verifies_terminal_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    http_source: tuple[str, int],
 ) -> None:
     """Execute source-frozen stages through immutable local publication."""
     root = tmp_path / "project"
@@ -197,7 +243,8 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             b"def download(context):\n"
             b"    path = context.artifacts['prior']\n"
             b"    path.parent.mkdir(parents=True, exist_ok=True)\n"
-            b"    path.write_bytes(b'prior')\n"
+            b"    body = context.retrievals['source'].body\n"
+            b"    path.write_bytes(body.read_bytes())\n"
         ),
         "jobs/train.py": (
             b"from project.parameters.train import TinyTrainParameters\n"
@@ -237,6 +284,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             }
         )
     )
+    host, port = http_source
     download = DownloadSpec(
         implementation=StageImplementationRef(
             path="jobs/download.py",
@@ -253,10 +301,16 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             bytes=len(source_files["project/parameters/download.py"]),
         ),
         inputs={
-            "source": RemoteFileRef.model_validate(
-                {"url": "https://example.com/prior", "version": "v1"}
+            "source": http_request(
+                url=f"http://{host}:{port}/redirect",
+                body=b"prior",
             )
         },
+        transport=builtin_http_transport(),
+        policy=http_policy(
+            hosts=frozenset({host}),
+            ports=frozenset({port}),
+        ),
         artifacts={
             "prior": SingleFileArtifactSpec(
                 path=f"{RUN_ROOT}/artifacts/datasets/tiny/prior.bin",
@@ -410,6 +464,22 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     )
     stored_artifact.write_bytes(b"tampered")
     with pytest.raises(VerificationError, match="byte-count mismatch"):
+        verify_run_result(
+            result.resolved_run,
+            policy=VerificationPolicy(
+                trusted_loader_repositories=frozenset({REPOSITORY})
+            ),
+            fetcher=RunFetcher(root, store, REPOSITORY),
+        )
+    stored_artifact.write_bytes(b"prior")
+    stored_retrieval = (
+        root
+        / first_snapshot.store
+        / first_snapshot.commit
+        / f"{RUN_ROOT}/stages/download/retrievals/source/body"
+    )
+    stored_retrieval.write_bytes(b"PRIOR")
+    with pytest.raises(VerificationError, match="SHA-256 mismatch"):
         verify_run_result(
             result.resolved_run,
             policy=VerificationPolicy(

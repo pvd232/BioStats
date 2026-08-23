@@ -10,6 +10,7 @@ import yaml
 
 from viper.authoring import (
     RunPlanDraft,
+    expand_http_url,
     freeze_run_plan,
     write_experiment_spec,
     write_variant_spec,
@@ -294,3 +295,20 @@ class RunPlanAuthoringTests(unittest.TestCase):
                 variant_path.relative_to(root).as_posix(),
                 "experiments/e001_strand/variants/baseline.spec.yaml",
             )
+
+    def test_expand_http_url_freezes_path_and_ordered_query_values(self) -> None:
+        """Encode path values and order the complete frozen query mapping."""
+        url = expand_http_url(
+            "https://DATA.example.test/files/{archive}?format=raw",
+            path_values={"archive": "batch 1/data.tar.gz"},
+            query_values={"page": 2, "compressed": True},
+        )
+
+        self.assertEqual(
+            str(url),
+            "https://data.example.test/files/"
+            "batch%201%2Fdata.tar.gz?compressed=true&format=raw&page=2",
+        )
+
+        with self.assertRaisesRegex(ValueError, "no value"):
+            expand_http_url("https://example.test/{missing}")

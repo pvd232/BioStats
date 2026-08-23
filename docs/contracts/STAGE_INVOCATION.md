@@ -185,6 +185,9 @@ class StageContextBinding(ProtocolModel):
     parameter_model: ParameterModelRef
     parameter_digest: SHA256
     inputs: dict[InputName, RepoRelPath]
+    retrievals: dict[InputName, HttpRetrievalContextBinding] = Field(
+        default_factory=dict
+    )
     artifacts: dict[ArtifactName, RepoRelPath]
     metric_ids: tuple[MetricId, ...]
     numpy_generator_names: tuple[HumanId, ...]
@@ -210,6 +213,11 @@ by the stage. `metric_ids` identifies the runner-owned handles placed in the
 runtime context. `numpy_generator_names` is the sorted tuple of configured
 generator names. Absolute workspace paths and generator objects exist only in
 `StageContext`.
+
+For a download stage, each `retrievals` value binds the terminal response to
+the path, SHA-256, and byte count delivered through `DownloadContext`. The
+child verifies those body bytes before invoking the download callable. Other
+stage kinds use an empty mapping.
 
 The canonical digests are:
 

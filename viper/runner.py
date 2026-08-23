@@ -9,14 +9,15 @@ import tempfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
 
 from pydantic import BaseModel, ConfigDict
 
+from .http import HttpRetrievalError, invoke_transport, resolve_transport
 from .ids import InputName, StageId
 from .journal import DurableJournal
 from .local_store import LocalArtifactStore, snapshot_file
 from .metrics import MeasurementSink, MetricContext, load_metric
+from .paths import retrieval_body_path
 from .preflight import preflight_local_plan
 from .protocol import (
     ArtifactPointer,
@@ -27,7 +28,6 @@ from .protocol import (
     HuggingFaceFileRef,
     InternalSpec,
     LocalEnvironmentSpec,
-    RemoteFileRef,
     ResolvedArtifactPointerRef,
     ResolvedBuildSpec,
     ResolvedDownloadSpec,
@@ -35,6 +35,7 @@ from .protocol import (
     ResolvedEvaluateSpec,
     ResolvedFutureInputRef,
     ResolvedGitFileRef,
+    ResolvedHttpRetrieval,
     ResolvedInternalInputRef,
     ResolvedLocalEnvironment,
     ResolvedRun,
@@ -234,6 +235,58 @@ def _artifact_paths(root: Path, stage: BaseSpec) -> dict[str, Path]:
     return {name: root / artifact.path for name, artifact in stage.artifacts.items()}
 
 
+def _retrieve_download_inputs(
+    root: Path,
+    workspace: AttemptWorkspace,
+    run: RunSpec,
+    stage_id: StageId,
+    stage: DownloadSpec,
+    store: LocalArtifactStore,
+) -> tuple[dict[InputName, ResolvedHttpRetrieval], dict[str, Path]]:
+    """Retrieve, verify, publish, and materialize every frozen HTTP input."""
+    try:
+        transport = resolve_transport(root, stage.transport)
+    except (HttpRetrievalError, OSError) as exc:
+        raise RunError("selected HTTP transport failed identity checks") from exc
+
+    retrievals: dict[InputName, ResolvedHttpRetrieval] = {}
+    paths: dict[str, Path] = {}
+    for input_name, request in stage.inputs.items():
+        retrieval_workspace = workspace.resolve(
+            f"stages/{stage_id}/retrievals/{input_name}"
+        )
+        retrieval_workspace.mkdir(parents=True, exist_ok=True)
+        destination = retrieval_workspace / "body"
+        started_at = datetime.now(UTC)
+        try:
+            result = invoke_transport(
+                root,
+                transport,
+                request,
+                stage.policy,
+                retrieval_workspace,
+                destination,
+            )
+        except (HttpRetrievalError, OSError) as exc:
+            raise RunError(f"HTTP input {input_name!r} failed retrieval") from exc
+        completed_at = datetime.now(UTC)
+        raw = result.body.read_bytes()
+        canonical_path = retrieval_body_path(run, stage_id, input_name)
+        body = store.resolved_files({canonical_path: raw})[0]
+        _write_materialized_file(root, canonical_path, raw)
+        retrievals[input_name] = ResolvedHttpRetrieval(
+            input_name=input_name,
+            request=request,
+            transport=transport,
+            response=result.response,
+            body=body,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
+        paths[input_name] = root / canonical_path
+    return retrievals, paths
+
+
 def _run_after_stage_metrics(
     root: Path,
     run: RunSpec,
@@ -308,6 +361,7 @@ def _resolved_stage(
     process: StageProcessResult,
     invocation: ResolvedStageInvocationRef,
     inputs: dict[InputName, ResolvedInternalInputRef] | None,
+    retrievals: dict[InputName, ResolvedHttpRetrieval] | None,
     completed_at: datetime,
 ) -> ResolvedSpec:
     """Construct the concrete resolved-spec subtype for one completed stage."""
@@ -324,11 +378,8 @@ def _resolved_stage(
         "completed_at": completed_at,
     }
     if isinstance(stage, DownloadSpec):
-        return ResolvedDownloadSpec(
-            **common,
-            inputs=cast(dict[InputName, RemoteFileRef], stage.inputs),
-            retrieved_at=result.started_at,
-        )
+        assert retrievals is not None
+        return ResolvedDownloadSpec(**common, retrievals=retrievals)
     assert inputs is not None
     if stage.kind == "build":
         return ResolvedBuildSpec(**common, inputs=inputs)
@@ -428,8 +479,18 @@ def run(
                 raise RunError("stage source differs from the frozen source")
 
             resolved_inputs: dict[InputName, ResolvedInternalInputRef] | None = None
+            resolved_retrievals: dict[InputName, ResolvedHttpRetrieval] | None = None
             input_paths: dict[str, Path] = {}
-            if isinstance(stage, InternalSpec):
+            if isinstance(stage, DownloadSpec):
+                resolved_retrievals, input_paths = _retrieve_download_inputs(
+                    root,
+                    workspace,
+                    run,
+                    stage_reference.stage_id,
+                    stage,
+                    store,
+                )
+            elif isinstance(stage, InternalSpec):
                 resolved_inputs, input_paths = _resolve_inputs(
                     root,
                     stage,
@@ -452,6 +513,7 @@ def run(
                 stage,
                 attempt_id=1,
                 input_paths=input_paths,
+                retrievals=resolved_retrievals,
                 timeout_seconds=timeout_seconds,
             )
             invocation_path = (
@@ -484,6 +546,7 @@ def run(
                 process=process,
                 invocation=invocation_ref,
                 inputs=resolved_inputs,
+                retrievals=resolved_retrievals,
                 completed_at=stage_completed,
             )
             resolved_path = (
@@ -492,6 +555,12 @@ def run(
             )
             resolved_raw = serialize_document(resolved)
             snapshot_files: dict[str, bytes] = {resolved_path: resolved_raw}
+            if resolved_retrievals is not None:
+                for retrieval in resolved_retrievals.values():
+                    retrieval_path = retrieval.body.stored_at.path
+                    snapshot_files[retrieval_path] = (
+                        root / retrieval_path
+                    ).read_bytes()
             for artifact in process.artifacts.values():
                 artifact_references: tuple[SnapshotFileRef, ...]
                 if artifact.kind == "file":

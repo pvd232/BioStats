@@ -2,9 +2,10 @@
 
 ## Status
 
-The shared parameter contract is implemented. The frozen request, selectable
-transport, retrieval receipt, stage delivery, and verification models in this
-document are approved for VIPER 0.1.
+The frozen request, selectable transport, retrieval receipt, stage delivery,
+and verification path are implemented. The reusable transport conformance
+matrix remains tracked in the master publication
+checklist.
 
 ## Required claim
 
@@ -35,18 +36,13 @@ hashing, receipt construction, and verification. The selected transport owns
 the network transfer. Project tests establish the scientific correctness of
 extraction and parsing code.
 
-## Current gap
+## Original gap
 
-[`RemoteFileRef`](../../viper/protocol.py) stores a URL and a project-supplied
-version. [`DownloadSpec`](../../viper/protocol.py) passes that declaration to a
-project script. [`stage_worker.py`](../../viper/stage_worker.py) launches the
-script with the stage-spec path. The script may ignore the declared URL.
-
-[`ResolvedDownloadSpec`](../../viper/protocol.py) currently stores the authored
-input and one timestamp. [`runner.py`](../../viper/runner.py) assigns the stage
-start time to `retrieved_at`. The current verifier establishes artifact
-identity after the stage runs while leaving the retrieval operation
-unobserved.
+The former `RemoteFileRef` stored a URL and a project-supplied version.
+`DownloadSpec` passed that declaration to a project script, which could ignore
+the declared URL. `ResolvedDownloadSpec` stored the authored input and one
+timestamp. The verifier established artifact identity after execution while
+leaving retrieval unobserved.
 
 The earlier draft also assigned transfer execution directly to one VIPER HTTP
 client. The single-client boundary left the transport implementation implicit and
@@ -115,8 +111,10 @@ class HttpRetrievalPolicy(ProtocolModel):
     timeout_seconds: float = Field(gt=0, allow_inf_nan=False)
 ```
 
-The authoring API may accept a URL template, path values, and query values. The
-frozen stage spec stores the expanded URL. URI normalization follows
+`viper.authoring.expand_http_url()` accepts a URL template, path values, and
+query values. It percent-encodes each path value, orders the complete query
+mapping, rejects user information and fragments, and returns the URL stored in
+the frozen request. URI normalization follows
 [RFC 3986, Section 6](https://www.rfc-editor.org/rfc/rfc3986.html#section-6).
 
 `headers` contains public fields that select or describe the requested
@@ -440,9 +438,12 @@ experiments/<experiment_id>/runs/<variant_id>/<run_id>/
 └── stages/<stage_id>/retrievals/<input_name>/body
 ```
 
-The stage invocation receipt binds the resulting `DownloadContext` to the
-exact download-stage callable. The stage snapshot stores the resolved download
-specification and retrieved bodies together with the declared artifacts.
+The stage invocation receipt stores one `HttpRetrievalContextBinding` per
+input. Each binding contains the terminal response and a body-file reference
+with its path, SHA-256, and byte count. The receipt digest therefore binds the
+exact `DownloadContext` handles to the download-stage callable. The stage
+snapshot stores the resolved download specification and retrieved bodies
+together with the declared artifacts.
 
 ## Verification
 

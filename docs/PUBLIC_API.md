@@ -1,9 +1,7 @@
 # Public Python API
 
 This document defines the approved VIPER 0.1 Python surface. Installed-wheel
-tests exercise each path before release. The current pre-release package still
-uses the local-only execution names; the stage-invocation increment adds
-`viper.stages`, the root stage interface, and the host-neutral `run` operation.
+tests exercise each path before release.
 
 ## Modules
 
@@ -11,7 +9,7 @@ uses the local-only execution names; the stage-invocation increment adds
 | --- | --- |
 | `viper.application` | Typed operations, requests, successes, failures, schema discovery, and capability discovery |
 | `viper.authoring` | Canonical experiment, variant, benchmark, stage, and run-plan documents |
-| `viper.http` | Built-in HTTPX retrieval, project transport decorators, typed transport contexts, and conformance helpers |
+| `viper.http` | Built-in HTTPX retrieval, project transport decorators, and typed transport contexts |
 | `viper.ids` | Validated identifier types |
 | `viper.inspection` | Deterministic attempt status, plan comparison, verified-run comparison, and lineage construction |
 | `viper.journal` | Synchronized attempt-state journals |
@@ -66,6 +64,7 @@ viper.evaluate_stage
 viper.http_transport
 viper.StageContext
 viper.DownloadContext
+viper.HttpRetrievalHandle
 viper.HttpTransportContext
 viper.HttpTransportParams
 viper.HttpTransportResult
@@ -116,6 +115,9 @@ contract.
 
 ## HTTP transports
 
+`viper.authoring.expand_http_url()` expands path fields and ordered query
+values into the normalized URL stored by `HttpRequestSpec`.
+
 `viper.http` exposes:
 
 | Name | Responsibility |
@@ -124,7 +126,6 @@ contract.
 | `HttpTransportContext` | Deliver one frozen request, a runtime credential, a dedicated retrieval workspace, the assigned destination, the retrieval policy, validated transport parameters, and preflight-verified executable paths. |
 | `HttpTransportResult` | Return the completed body path and terminal HTTP response. |
 | `HttpTransportParams` | Base class for project-defined transport parameters. |
-| `run_transport_conformance()` | Exercise a selected transport against the VIPER retrieval contract. |
 
 The built-in transport ID is `httpx`. A `ProjectHttpTransportSpec` freezes a
 decorated callable through its repository-relative path, symbol, SHA-256, byte

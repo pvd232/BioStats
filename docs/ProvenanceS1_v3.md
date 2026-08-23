@@ -1140,6 +1140,11 @@ class ParameterModelRef(ProtocolModel):
     bytes: int = Field(gt=0)
 
 
+class HttpRetrievalContextBinding(ProtocolModel):
+    response: ObservedHttpResponse
+    body: SnapshotFileRef
+
+
 class StageContextBinding(ProtocolModel):
     schema_version: Literal[1] = 1
     run_id: RunId
@@ -1148,6 +1153,9 @@ class StageContextBinding(ProtocolModel):
     parameter_model: ParameterModelRef
     parameter_digest: SHA256
     inputs: dict[InputName, RepoRelPath]
+    retrievals: dict[InputName, HttpRetrievalContextBinding] = Field(
+        default_factory=dict
+    )
     artifacts: dict[ArtifactName, RepoRelPath]
     metric_ids: tuple[MetricId, ...]
     numpy_generator_names: tuple[HumanId, ...]
@@ -2693,7 +2701,9 @@ exact callable(StageContext)
 The runtime context contains absolute attempt-workspace paths and the named
 NumPy generator objects initialized by the child. Its persisted
 `StageContextBinding` contains the canonical repository-relative paths, the
-metric IDs bound to runner-owned handles, and the sorted generator names.
+metric IDs bound to runner-owned handles, and the sorted generator names. For
+a download stage, it also binds each terminal HTTP response to the path,
+SHA-256, and byte count delivered through `DownloadContext`.
 
 `viper.http_transport()` decorates one project transport callable. Freezing
 resolves its repository-relative path, symbol, SHA-256, byte count, parameter
@@ -3457,8 +3467,9 @@ For each `ResolvedStageRef`, the verifier:
 7. Retrieves `ResolvedBaseSpec.invocation`, verifies its file identity, and
    parses `StageInvocationReceipt`.
 8. Reconstructs `StageContextBinding`; checks its parameter digest, input and
-   artifact paths, metric IDs, named NumPy generator keys, canonical context
-   digest, callable identity, and successful outcome against the receipt.
+   artifact paths, download retrieval handles, metric IDs, named NumPy
+   generator keys, canonical context digest, callable identity, and successful
+   outcome against the receipt.
 9. Checks the recorded child-process command.
 10. Checks the resolved input names and kinds against the planned inputs.
 11. Checks that `completed_at` lies within the containing attempt and is at or

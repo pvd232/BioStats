@@ -8,9 +8,13 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
+from .http import DownloadContext, HttpRetrievalHandle
 from .parameter_models import instantiate_parameters
+from .paths import retrieval_body_path
 from .protocol import (
+    DownloadSpec,
     FutureInputRef,
     InternalSpec,
     ParameterizedSpec,
@@ -64,7 +68,12 @@ def _planned_stage_context(
             raise ValueError("startup.plan: stage is not parameterized")
         if reference.stage_id == stage_id:
             selected = candidate
-            if isinstance(candidate, InternalSpec):
+            if isinstance(candidate, DownloadSpec):
+                expected_inputs = {
+                    name: retrieval_body_path(run, stage_id, name)
+                    for name in candidate.inputs
+                }
+            elif isinstance(candidate, InternalSpec):
                 for name, input_reference in candidate.inputs.items():
                     if isinstance(input_reference, StoredInputRef):
                         expected_inputs[name] = str(input_reference.path)
@@ -168,16 +177,45 @@ def main(argv: list[str] | None = None) -> int:
         ):
             raise ValueError("startup.callable: parameter model source differs")
 
-        context = StageContext(
-            run_id=binding.run_id,
-            attempt_id=binding.attempt_id,
-            stage_id=binding.stage_id,
-            params=params,
-            inputs=MappingProxyType(_workspace_paths(root, binding.inputs)),
-            artifacts=MappingProxyType(_workspace_paths(root, binding.artifacts)),
-            metrics=MappingProxyType({}),
-            numpy_generators=MappingProxyType(initialization.numpy_generators),
-        )
+        common_context = {
+            "run_id": binding.run_id,
+            "attempt_id": binding.attempt_id,
+            "stage_id": binding.stage_id,
+            "params": params,
+            "inputs": MappingProxyType(_workspace_paths(root, binding.inputs)),
+            "artifacts": MappingProxyType(_workspace_paths(root, binding.artifacts)),
+            "metrics": MappingProxyType({}),
+            "numpy_generators": MappingProxyType(initialization.numpy_generators),
+        }
+        if isinstance(stage, DownloadSpec):
+            if set(binding.retrievals) != set(stage.inputs):
+                raise ValueError("startup.context: HTTP retrieval handles differ")
+            retrievals = {
+                name: HttpRetrievalHandle(
+                    response=value.response,
+                    body=_workspace_paths(root, {name: value.body.path})[name],
+                )
+                for name, value in binding.retrievals.items()
+            }
+            if any(
+                value.body.relative_to(root).as_posix() != binding.inputs[name]
+                for name, value in retrievals.items()
+            ):
+                raise ValueError("startup.context: HTTP retrieval body path differs")
+            for name, value in binding.retrievals.items():
+                raw = retrievals[name].body.read_bytes()
+                if len(raw) != value.body.bytes:
+                    raise ValueError("startup.context: HTTP body byte count differs")
+                if hashlib.sha256(raw).hexdigest() != value.body.sha256:
+                    raise ValueError("startup.context: HTTP body SHA-256 differs")
+            context: StageContext[Any] = DownloadContext(
+                **common_context,
+                retrievals=MappingProxyType(retrievals),
+            )
+        else:
+            if binding.retrievals:
+                raise ValueError("startup.context: internal stage received retrievals")
+            context = StageContext(**common_context)
         with autocast_context(run.reproducibility):
             function(context)
     except Exception as exc:

@@ -10,6 +10,7 @@ from viper import application
 ROOT_MODULES = (
     "application",
     "authoring",
+    "http",
     "ids",
     "inspection",
     "journal",
@@ -30,11 +31,17 @@ ROOT_MODULES = (
 ROOT_EXPORTS = (
     *ROOT_MODULES,
     "StageContext",
+    "DownloadContext",
+    "HttpRetrievalHandle",
+    "HttpTransportContext",
+    "HttpTransportParams",
+    "HttpTransportResult",
     "build_stage",
     "download_stage",
     "embed_stage",
     "evaluate_stage",
     "train_stage",
+    "http_transport",
     "run",
 )
 

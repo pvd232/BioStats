@@ -18,6 +18,9 @@ import yaml
 from pydantic import HttpUrl, TypeAdapter
 
 from tests.fixtures import (
+    builtin_http_transport,
+    http_policy,
+    http_request,
     metric_spec,
     parameter_model_ref,
     parameter_model_source,
@@ -25,6 +28,7 @@ from tests.fixtures import (
     stage_implementation_ref,
     verification_policy,
 )
+from viper.paths import retrieval_body_path
 from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
@@ -57,6 +61,7 @@ from viper.protocol import (
     GeneratorInitializationReceipt,
     GitFileRef,
     GitSource,
+    HttpRetrievalContextBinding,
     HuggingFaceFileRef,
     LocalFileRef,
     MetricCriterion,
@@ -64,10 +69,10 @@ from viper.protocol import (
     NativeThreadPoolContext,
     NumericalRuntimeContext,
     NumPyRandomnessSpec,
+    ObservedHttpResponse,
     ParallelismSpec,
     ParameterizedStageSpec,
     ProcessStartupReceipt,
-    RemoteFileRef,
     ReplicateSpec,
     ReproducibilitySpec,
     ResolvedArtifactPointerRef,
@@ -82,6 +87,8 @@ from viper.protocol import (
     ResolvedGCEEnvironment,
     ResolvedGCEMachineImageRef,
     ResolvedGitFileRef,
+    ResolvedHttpRetrieval,
+    ResolvedHttpTransport,
     ResolvedRun,
     ResolvedRunRef,
     ResolvedRunSpecRef,
@@ -356,6 +363,7 @@ def publish_invocation(
     completed_at: datetime,
     commit: str,
     attempt_id: int = 1,
+    retrievals: dict[str, ResolvedHttpRetrieval] | None = None,
 ) -> ResolvedStageInvocationRef:
     """Publish one successful stage-invocation receipt."""
     binding = StageContextBinding(
@@ -365,6 +373,17 @@ def publish_invocation(
         parameter_model=stage.parameter_model,
         parameter_digest=document_digest(stage.params),
         inputs=input_paths,
+        retrievals={
+            name: HttpRetrievalContextBinding(
+                response=retrieval.response,
+                body=SnapshotFileRef(
+                    path=retrieval.body.stored_at.path,
+                    sha256=retrieval.body.sha256,
+                    bytes=retrieval.body.bytes,
+                ),
+            )
+            for name, retrieval in ({} if retrievals is None else retrievals).items()
+        },
         artifacts={name: artifact.path for name, artifact in stage.artifacts.items()},
         metric_ids=stage.metric_ids,
         numpy_generator_names=tuple(
@@ -643,6 +662,7 @@ def publish_producer_run(
 ) -> tuple[ResolvedRunRef, dict[str, Any]]:
     """Publish a complete upstream run for stored-input verification."""
     run_root = "experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA"
+    retrieved_body_raw = b"fixture HTTP body"
     download = DownloadSpec(
         implementation=stage_implementation_ref(
             "pipelines/download.py",
@@ -651,12 +671,13 @@ def publish_producer_run(
         ),
         parameter_model=parameter_model_ref("download"),
         inputs={
-            "archive": RemoteFileRef(
-                kind="remote",
-                url=HttpUrl("https://example.com/toy-v1.tar.gz"),
-                version="v1",
+            "archive": http_request(
+                url="https://example.com/toy-v1.tar.gz",
+                body=retrieved_body_raw,
             )
         },
+        transport=builtin_http_transport(),
+        policy=http_policy(),
         artifacts={
             "dataset": SingleFileArtifactSpec(
                 kind="file",
@@ -784,15 +805,35 @@ def publish_producer_run(
     training_dataset_raw = b"fixed training dataset bytes"
     evaluation_dataset_raw = b"fixed evaluation dataset bytes"
     split_raw = b'{"test":[0,1]}\n'
+    retrieved_body_path = retrieval_body_path(run, "download", "archive")
+    store.put(hf_file(download_commit, retrieved_body_path), retrieved_body_raw)
+    archive_retrieval = ResolvedHttpRetrieval(
+        input_name="archive",
+        request=download.inputs["archive"],
+        transport=ResolvedHttpTransport(spec=download.transport),
+        response=ObservedHttpResponse(
+            response_url=download.inputs["archive"].url,
+            status=200,
+            response_headers={"content-length": str(len(retrieved_body_raw))},
+        ),
+        body=ResolvedFileRef(
+            sha256=sha256(retrieved_body_raw),
+            bytes=len(retrieved_body_raw),
+            stored_at=hf_file(download_commit, retrieved_body_path),
+        ),
+        started_at=datetime(2026, 8, 20, 20, 2, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 20, 20, 5, tzinfo=UTC),
+    )
     download_invocation = publish_invocation(
         store,
         run=run,
         stage_id="download",
         stage=download,
-        input_paths={},
+        input_paths={"archive": retrieved_body_path},
         started_at=datetime(2026, 8, 20, 20, 1, tzinfo=UTC),
         completed_at=datetime(2026, 8, 20, 20, 9, tzinfo=UTC),
         commit=PRODUCER_RESULT_COMMIT,
+        retrievals={"archive": archive_retrieval},
     )
     resolved_download = ResolvedDownloadSpec(
         spec=download,
@@ -802,7 +843,7 @@ def publish_producer_run(
         startup=startup_receipt(run),
         invocation=download_invocation,
         command=("python", "-m", "viper.stage_worker"),
-        inputs=download.inputs,
+        retrievals={"archive": archive_retrieval},
         artifacts={
             "dataset": add_single_artifact(
                 store,
@@ -823,7 +864,6 @@ def publish_producer_run(
                 split_raw,
             ),
         },
-        retrieved_at=datetime(2026, 8, 20, 20, 5, tzinfo=UTC),
         completed_at=datetime(2026, 8, 20, 20, 10, tzinfo=UTC),
     )
     download_stage = publish_resolved_stage(
