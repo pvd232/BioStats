@@ -228,7 +228,8 @@ rejection.
 - Artifact loaders execute Python from the Git commit named by `RunSpec.source`.
   Verification therefore accepts only run sources trusted to execute in the
   verifier process.
-- The trusted-local runner completes successful attempts from preflight through
-  terminal publication and verification. The approved 0.1 surface generalizes
-  that coordinator to `viper.run(stage_callable)`, `viper run`, and in-place
-  GCE execution. Failed-attempt publication and retry remain 0.1 release tasks.
+- The trusted-local runner publishes successful and failed attempts, preserves
+  completed-stage evidence, and retries the same frozen plan through
+  `viper.run(stage_callable)`, `viper run`, or `viper retry`. Remaining VIPER
+  0.1 work includes immutable attempt references, direct cancellation and
+  preemption tests, and in-place GCE acceptance.

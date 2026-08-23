@@ -97,12 +97,12 @@ Every implementation contract appears once in the execution sequence.
 | Contract | Current status | Execution phase | Completion evidence |
 |---|---|---|---|
 | [Parameter models](contracts/PARAMETER_MODELS.md) | Implemented | Regression coverage in Phases 1 and 2 | The exact project class validates the frozen parameter mapping. Phase 1 owns typed delivery. |
-| [Stage invocation](contracts/STAGE_INVOCATION.md) | Approved | Phase 1 | The frozen callable receives the typed parameters and declared paths. |
-| [Process startup](contracts/PROCESS_STARTUP.md) | Approved | Phase 1 | The controlled child records its startup environment, applied controls, generator initialization, generator delivery, and observed runtime. |
-| [HTTP retrieval](contracts/HTTP_RETRIEVAL.md) | Approved | Phase 2 | Each declared input binds its frozen request, expected body identity, selected transport, terminal response, external executable identity, and delivered context handle. |
-| [Artifact validation](contracts/ARTIFACT_VALIDATION.md) | Approved | Phase 3 | The verifier reports representation identity, loadability, or reserved semantic validity at its established level. |
-| [Metric provenance](contracts/METRIC_PROVENANCE.md) | Approved | Phase 4 | Recomputed metrics bind exact dependencies and two run-owned worker executions; live metrics bind a controlled metric handle and measurement sink. |
-| [Attempt execution](contracts/ATTEMPT_EXECUTION.md) | Approved | Phase 5 | Each attempt has an immutable document and journal; retry allocates a greater ID and preserves every prior reference. |
+| [Stage invocation](contracts/STAGE_INVOCATION.md) | In progress | Phase 1 | The frozen callable receives typed parameters and declared paths. Direct Python and CLI parity plus the remaining rejection cases close the phase. |
+| [Process startup](contracts/PROCESS_STARTUP.md) | In progress | Phase 1 | The controlled child records its startup environment, applied controls, initialized generators, delivered generators, and observed runtime. CPU-on-GPU-host and one-L4 acceptance remain open. |
+| [HTTP retrieval](contracts/HTTP_RETRIEVAL.md) | In progress | Phase 2 | Each declared input binds its frozen request, expected body identity, selected transport, terminal response, external executable identity, and delivered context handle. The reusable transport conformance suite remains open. |
+| [Artifact validation](contracts/ARTIFACT_VALIDATION.md) | Implemented | Phase 3 | The verifier reports representation identity, loadability, or reserved semantic validity at its established level. |
+| [Metric provenance](contracts/METRIC_PROVENANCE.md) | Implemented | Phase 4 | Recomputed metrics bind exact dependencies and two run-owned worker executions; live metrics bind a controlled metric handle and measurement sink. |
+| [Attempt execution](contracts/ATTEMPT_EXECUTION.md) | In progress | Phase 5 | VIPER publishes durable attempts and retries the same frozen plan. `ResolvedAttemptRef` conversion and signal-driven cancellation and preemption tests close the phase. |
 | [Benchmark execution](contracts/BENCHMARK_EXECUTION.md) | Approved | Phase 6 | `execute_benchmark()` produces one independent confirmation and persists the artifact and metric comparison receipts accepted by `verify_benchmark()`. |
 | [Cloud execution](contracts/CLOUD_EXECUTION.md) | Approved | Phase 7 | The installed wheel executes in place on GCE and verifies the host, backend, and exact Python environment. |
 | [Package release](contracts/PACKAGE_RELEASE.md) | Approved | Phases 8–10 | Clean installations complete the documented project path from TestPyPI and PyPI. |
@@ -131,7 +131,8 @@ The current repository supplies the foundation consumed by Phase 1:
   and attempt status.
 - [x] Build configuration, a four-version CI matrix, and installed-wheel import
   smoke commands.
-- [x] Ruff, Pyright, 130 tests, and 13 subtests at audit baseline `6228ee6`.
+- [x] Ruff, Pyright, 161 tests, and 15 subtests at implementation baseline
+  `68cfe01`.
 
 ### Named verifier-rule coverage
 
@@ -196,7 +197,7 @@ python -m pytest tests/test_contract_audit.py -q
   `implementation: StageImplementationRef`.
 - [x] Add `StageContextBinding`, its canonical digest rule, and
   `StageInvocationReceipt` to attempt evidence.
-- [ ] Add `ResolvedStageInvocationRef`; store each successful stage's reference
+- [x] Add `ResolvedStageInvocationRef`; store each successful stage's reference
   on its resolved stage and every started invocation on `RunAttempt`.
 - [x] Add `ProcessStartupReceipt` with the allowlisted child environment,
   applied controls, and one initialized-state digest for each configured
@@ -336,7 +337,7 @@ python -m pytest tests/test_stage_invocation.py tests/test_process_startup.py \
 
 ### Verification and acceptance
 
-- [ ] Verify every frozen request, credential origin, selected transport,
+- [x] Verify every frozen request, credential origin, selected transport,
   transport parameters, preflight executable identity, terminal response,
   expected body identity, resolved body identity, stage implementation, and
   published artifact.
@@ -469,32 +470,37 @@ python -m pytest tests/test_metric_interface.py tests/test_metric_provenance.py 
 - [x] Preserve every verified stage snapshot completed before an attempt ends.
 - [x] Persist one `StageInvocationReceipt` for every started stage and include
   its `ResolvedStageInvocationRef` in `RunAttempt.invocations`.
-- [ ] Close and publish attempts with `succeeded`, `failed`, `cancelled`, or
-  `preempted` status.
+- [x] Close and publish successful and failed attempts with their terminal
+  status and typed evidence.
+- [x] Map `SIGINT` to `cancelled` and `SIGTERM` to `preempted`; close each
+  observed interruption through the terminal-attempt path.
 - [x] Replace `failure_reason` with typed `AttemptFailure`.
-- [ ] Publish every attempt as
-  `attempts/<attempt_id>/resolved.yaml`; place its journal, measurements,
-  metric-verification receipts, and logs beneath the same attempt directory;
-  store one immutable `ResolvedAttemptRef` in the terminal run.
+- [x] Publish every attempt as `attempts/<attempt_id>/resolved.yaml`; place its
+  journal, invocations, measurements, metric-verification receipts, and logs
+  beneath the same attempt directory.
+- [ ] Add `ResolvedAttemptRef`; replace `ResolvedRun.attempts: tuple[RunAttempt,
+  ...]` with ordered references to the canonical attempt documents and verify
+  each referenced document's path, byte count, SHA-256, and attempt ID.
 - [x] Add `AttemptJournalRef` and metric-verification files to `RunAttempt`.
 - [x] Add attempt purpose; keep ordinary attempts in `ResolvedRun` and bind the
   independent confirmation directly to `BenchmarkResult`.
-- [ ] Map `SIGINT` to cancellation, map `SIGTERM` to preemption, and reconcile
-  an abandoned journal as `coordinator_lost`; journal each observed event.
 - [x] Reconcile an abandoned nonterminal journal as `coordinator_lost` after
   acquiring its released lock.
 - [x] Add `retry()` and `viper retry`; each retry uses the same frozen plan and
   the next attempt ID.
 - [x] Verify attempt ordering, terminal status, failure identity, attempt files,
   and retry plan identity.
-- [ ] Exercise a failed first attempt, a successful retry, stale ownership,
-  cancellation, preemption, and tampered prior evidence.
+- [x] Exercise an abandoned attempt, a failed attempt, a successful retry, and
+  tampered prior evidence in the complete two-stage acceptance case.
+- [ ] Exercise `SIGINT` cancellation and `SIGTERM` preemption through real
+  coordinator processes; verify each terminal status, typed failure, journal,
+  logs, and preserved completed-stage prefix.
 
 **Focused gate**
 
 ```bash
-python -m pytest tests/test_attempt_execution.py tests/test_worker.py \
-  tests/test_runner_acceptance.py tests/test_verifier_acceptance.py -q
+python -m pytest tests/test_worker.py tests/test_runner_acceptance.py \
+  tests/test_verifier_acceptance.py -q
 ```
 
 **Commit boundaries**
@@ -502,6 +508,8 @@ python -m pytest tests/test_attempt_execution.py tests/test_worker.py \
 1. `Allocate and journal durable run attempts`
 2. `Publish terminal failure evidence`
 3. `Retry frozen runs with preserved history`
+4. `Reference immutable attempt documents from terminal runs`
+5. `Exercise cancellation and preemption outcomes`
 
 ## Phase 6. Implement benchmark execution
 

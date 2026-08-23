@@ -5,8 +5,8 @@
 Successful and failed local attempts are published with immutable journals,
 stage invocations, logs, measurements, and completed stage snapshots. Explicit
 retry allocates the next attempt ID and preserves the earlier attempt history.
-Cancellation, preemption, and abandoned-journal reconciliation remain approved
-for VIPER 0.1.
+The runner maps `SIGINT` to cancellation, maps `SIGTERM` to preemption, and
+reconciles an abandoned journal as `coordinator_lost`.
 
 ## Required claim
 
@@ -26,8 +26,13 @@ same frozen plan after a failed run and appends the next attempt.
 `preempted`. Each terminal attempt also writes its canonical
 `attempts/<attempt_id>/resolved.yaml` document. After acquiring the released
 run lock, the next coordinator closes an abandoned journal with
-`coordinator_lost` and allocates a greater attempt ID. Immutable references
-from the run head to the attempt documents remain open.
+`coordinator_lost` and allocates a greater attempt ID.
+
+Two tasks remain. `ResolvedRun.attempts` currently embeds each `RunAttempt`; it
+must store one immutable `ResolvedAttemptRef` for each canonical attempt
+document. Real coordinator-process tests must deliver `SIGINT` and `SIGTERM`,
+then verify the resulting attempt status, typed failure, journal, logs, and
+completed-stage prefix.
 
 ## Contract models
 
@@ -203,24 +208,21 @@ contains the ordinary run and retry history.
 
 ## Acceptance case
 
-A two-stage run completes `download` and fails during `train`. VIPER publishes
-attempt `1` as `failed`, including the download snapshot, journal, and failure
-log. An explicit retry creates attempt `2`, completes both stages, and publishes
-the terminal run with two `ResolvedAttemptRef` values.
+A three-attempt acceptance case begins with an abandoned attempt `1`. The next
+coordinator closes attempt `1` as `coordinator_lost`. Attempt `2` completes
+`download` and fails during `train`; VIPER preserves the download snapshot,
+both invocation receipts, journal, and failure logs. An explicit retry creates
+attempt `3`, completes both stages, and publishes a successful terminal run.
 
-Changing attempt `1` after attempt `2` has been published fails file-identity
-verification.
+Changing an artifact retained by attempt `2` after attempt `3` has been
+published fails file-identity verification.
 
-## Implementation order
+## Remaining implementation
 
-1. Replace the stale-file lock with an operating-system-managed advisory lock.
-2. Reconcile an abandoned nonterminal journal after lock acquisition.
-3. Add immutable attempt documents and allocate successive IDs from their
-   persisted references.
-4. Close and publish failed attempts with their journals and logs.
-5. Add explicit retry through the Python API and JSON CLI.
-6. Add attempt-order and terminal-state verifier rules.
-7. Add the fail-then-retry acceptance case.
+1. Replace embedded `RunAttempt` values in `ResolvedRun.attempts` with
+   `ResolvedAttemptRef` values and make each canonical attempt document the sole
+   persisted `RunAttempt` representation.
+2. Add real coordinator-process cancellation and preemption acceptance tests.
 
-Crash adoption, partial-publication recovery, and remote orphan reconciliation
-extend this contract after the first complete retry path works.
+Cross-host crash adoption, partial-publication recovery, and remote orphan
+reconciliation remain deferred beyond VIPER 0.1.
