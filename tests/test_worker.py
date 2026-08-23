@@ -9,7 +9,12 @@ import pytest
 
 from viper.journal import DurableJournal, JournalEntry
 from viper.worker import ExecutionPolicy, WorkerError, WorkerRequest, execute_worker
-from viper.workspace import AttemptWorkspace, WorkspaceError, next_attempt_id
+from viper.workspace import (
+    AttemptWorkspace,
+    RunWorkspaceLock,
+    WorkspaceError,
+    next_attempt_id,
+)
 
 
 def test_workspace_enforces_exclusive_run_ownership(tmp_path: Path) -> None:
@@ -40,6 +45,21 @@ def test_attempt_allocator_uses_durable_workspace_history(tmp_path: Path) -> Non
     AttemptWorkspace.create(tmp_path, run_id, 3)
 
     assert next_attempt_id(tmp_path, run_id) == 4
+
+
+def test_run_lock_coordinates_distinct_workspace_objects(tmp_path: Path) -> None:
+    """Reject a second coordinator until the operating system releases ownership."""
+    run_id = "01JABCDEFGHJKMNPQRSTVWXYZ"
+    first = RunWorkspaceLock.for_run(tmp_path, run_id)
+    second = RunWorkspaceLock.for_run(tmp_path, run_id)
+    first.acquire()
+
+    with pytest.raises(WorkspaceError, match="active owner"):
+        second.acquire()
+
+    first.release()
+    second.acquire()
+    second.release()
 
 
 def test_journal_persists_ordered_attempt_transitions(tmp_path: Path) -> None:

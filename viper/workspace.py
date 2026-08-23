@@ -15,6 +15,46 @@ class WorkspaceError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class RunWorkspaceLock:
+    """Hold advisory ownership while one coordinator allocates and runs attempts."""
+
+    path: Path
+    _descriptor: int | None = None
+
+    @classmethod
+    def for_run(cls, workspace_root: Path, run_id: RunId) -> RunWorkspaceLock:
+        """Select the persistent lock file for one run identity."""
+        return cls(workspace_root.resolve() / str(run_id) / ".active.lock")
+
+    def acquire(self) -> None:
+        """Acquire the run lock without waiting for another coordinator."""
+        if self._descriptor is not None:
+            raise WorkspaceError("run workspace already has an active owner")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError) as exc:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise WorkspaceError("run workspace already has an active owner") from exc
+        os.ftruncate(descriptor, 0)
+        os.write(descriptor, f"{os.getpid()}\n".encode())
+        os.fsync(descriptor)
+        object.__setattr__(self, "_descriptor", descriptor)
+
+    def release(self) -> None:
+        """Release this coordinator's run lock."""
+        descriptor = self._descriptor
+        if descriptor is None:
+            return
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+        object.__setattr__(self, "_descriptor", None)
+
+
+@dataclass(frozen=True)
 class AttemptWorkspace:
     """Identify every writable directory owned by one local run attempt."""
 
