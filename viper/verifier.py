@@ -28,7 +28,6 @@ from .artifact_loaders import (
 )
 from .http import HttpRetrievalError, validate_request_policy
 from .ids import InputName, StageId
-from .metric_execution import MetricExecutionError, execute_metric_process
 from .metrics import compare_metric_values
 from .parameter_models import ParameterModelError, verify_parameter_model_bytes
 from .paths import retrieval_body_path
@@ -45,6 +44,7 @@ from .protocol import (
     BenchmarkResult,
     BenchmarkSpec,
     BuildSpec,
+    CUDABackendContext,
     DataRole,
     DownloadSpec,
     EmbedSpec,
@@ -53,6 +53,7 @@ from .protocol import (
     FloatComparator,
     FutureInputRef,
     GCEEnvironmentSpec,
+    GCEHostContext,
     GitFileRef,
     HttpRetrievalContextBinding,
     HuggingFaceFileRef,
@@ -60,6 +61,8 @@ from .protocol import (
     LocalFileRef,
     LocalStageResultSnapshotRef,
     Measurement,
+    MetricExecutionReceipt,
+    MetricVerificationReceipt,
     ParameterizedSpec,
     ParameterizedStageSpec,
     ProjectHttpTransportSpec,
@@ -826,9 +829,13 @@ def verify_experiment_and_variant(
             raise VerificationError(
                 f"metric {metric.metric_id!r} implementation is not valid Python"
             ) from exc
+        permitted_nodes: tuple[type[ast.AST], ...] = (
+            (ast.FunctionDef, ast.AsyncFunctionDef)
+            if metric.mode == "recompute"
+            else (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        )
         if not any(
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == implementation.symbol
+            isinstance(node, permitted_nodes) and node.name == implementation.symbol
             for node in metric_tree.body
         ):
             raise VerificationError(
@@ -1827,7 +1834,11 @@ def verify_attempt_files(
     """Verify an attempt's measurements and logs against their file identities."""
     attempt_file_snapshots = {
         identity
-        for reference in (*attempt.measurement_files, *attempt.log_files)
+        for reference in (
+            *attempt.measurement_files,
+            *attempt.metric_verification_files,
+            *attempt.log_files,
+        )
         if (identity := _artifact_revision_identity(reference.stored_at)) is not None
     }
     if len(attempt_file_snapshots) > 1:
@@ -1976,27 +1987,65 @@ def verify_measurement_stage_times(
             )
 
 
-def _materialize_metric_value(
-    root: Path,
-    target_path: RepoRelPath,
-    artifact: VerifiedArtifact | VerifiedInput,
+def _verify_metric_worker_runtime(
+    run: RunSpec,
+    stage: BaseSpec,
+    receipt: MetricExecutionReceipt,
 ) -> None:
-    """Write one verified artifact at the path supplied to a metric."""
-    if artifact.artifact.kind == "file":
-        files = ((target_path, artifact.files[0]),)
-    else:
-        files = tuple(
-            (f"{target_path}/{member.relative_path}", verified_file)
-            for member, verified_file in zip(
-                artifact.artifact.members,
-                artifact.files,
-                strict=True,
-            )
+    """Match one metric worker's startup and runtime facts to the run plan."""
+    startup = receipt.startup
+    if startup.reproducibility != run.reproducibility:
+        raise VerificationError("metric worker reproducibility controls differ")
+    compute = (stage.environment or run.environment).compute
+    recorded_cuda = startup.environment.get("CUDA_VISIBLE_DEVICES")
+    if compute.kind == "cuda":
+        if recorded_cuda is None or not recorded_cuda.isdigit():
+            raise VerificationError("metric worker omitted its selected CUDA device")
+        expected_environment = process_environment(
+            run.seed,
+            run.reproducibility,
+            compute,
+            cuda_ordinal=int(recorded_cuda),
         )
-    for relative_path, verified_file in files:
-        path = root / relative_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(verified_file.content)
+    else:
+        expected_environment = process_environment(
+            run.seed,
+            run.reproducibility,
+            compute,
+        )
+    if startup.environment != expected_environment:
+        raise VerificationError("metric worker startup environment differs")
+    if any(generator.seed != run.seed for generator in startup.generators):
+        raise VerificationError("metric worker generator seed differs")
+    family_counts = Counter(generator.family for generator in startup.generators)
+    if family_counts["python"] != 1 or family_counts["torch_cpu"] != 1:
+        raise VerificationError("metric worker generator receipts are incomplete")
+    expected_numpy_names = set(run.reproducibility.numpy_randomness.generators)
+    received_numpy_names = {
+        generator.name
+        for generator in startup.generators
+        if generator.family == "numpy_generator"
+    }
+    if received_numpy_names != expected_numpy_names:
+        raise VerificationError("metric worker NumPy generators differ")
+    context = receipt.execution_context
+    effective_environment = stage.environment or run.environment
+    if context.host.provider != effective_environment.kind:
+        raise VerificationError("metric worker host provider differs")
+    if isinstance(effective_environment, GCEEnvironmentSpec):
+        if not isinstance(context.host, GCEHostContext):
+            raise VerificationError("metric worker omitted its GCE host context")
+        if context.host.machine_type != effective_environment.machine_type:
+            raise VerificationError("metric worker machine type differs")
+    if context.backend.kind != compute.kind:
+        raise VerificationError("metric worker compute backend differs")
+    if compute.kind == "cuda":
+        if not isinstance(context.backend, CUDABackendContext):
+            raise VerificationError("metric worker omitted its CUDA context")
+        if len(context.backend.gpu_devices) != compute.count:
+            raise VerificationError("metric worker CUDA device count differs")
+        if any(device.model != compute.model for device in context.backend.gpu_devices):
+            raise VerificationError("metric worker CUDA model differs")
 
 
 def verify_recomputed_metrics(
@@ -2010,14 +2059,50 @@ def verify_recomputed_metrics(
     policy: VerificationPolicy,
     fetcher: StorageFetcher | None = None,
 ) -> None:
-    """Recompute selected metrics from frozen code and verified dependencies."""
-    if not policy.permits_source(plan.run.source.repository):
-        raise VerificationError(
-            "metric recomputation requires an explicitly trusted source repository"
-        )
-    retrieve = fetch_storage_bytes if fetcher is None else fetcher
+    """Verify persisted production and recomputation evidence for each metric."""
+    del policy
     metric_specs = {metric.metric_id: metric for metric in plan.experiment.metrics}
     stage_refs = {stage.stage_id: stage for stage in attempt.resolved_stages}
+    expected_keys = {
+        (stage_id, metric_id)
+        for stage_id, stage in plan.stages.items()
+        for metric_id in stage.metric_ids
+        if metric_specs[metric_id].mode == "recompute"
+    }
+    if len(attempt.metric_verification_files) != len(expected_keys):
+        raise VerificationError(
+            "recomputed metrics require one immutable verification receipt each"
+        )
+    receipts: dict[tuple[StageId, str], MetricVerificationReceipt] = {}
+    root_path = run_root(plan.run)
+    for reference in attempt.metric_verification_files:
+        if not isinstance(reference.stored_at, (HuggingFaceFileRef, LocalFileRef)):
+            raise VerificationError(
+                "metric verification files must use immutable artifact storage"
+            )
+        raw = read_resolved_file(reference, fetcher=fetcher)
+        try:
+            receipt = MetricVerificationReceipt.model_validate(
+                parse_yaml_bytes(raw)
+            )
+        except (yaml.YAMLError, ValueError) as exc:
+            raise VerificationError("metric verification receipt is invalid") from exc
+        expected_path = (
+            f"{root_path}/attempts/{attempt.attempt_id}/metric_verification/"
+            f"{receipt.stage_id}.{receipt.metric_id}.yaml"
+        )
+        if reference.stored_at.path != expected_path:
+            raise VerificationError(
+                "metric verification receipt is outside its canonical path"
+            )
+        key = (receipt.stage_id, receipt.metric_id)
+        if key in receipts:
+            raise VerificationError(
+                "metric verification receipt identity is duplicated"
+            )
+        receipts[key] = receipt
+    if set(receipts) != expected_keys:
+        raise VerificationError("metric verification receipts select different metrics")
 
     for stage_id, stage in plan.stages.items():
         for metric_id in stage.metric_ids:
@@ -2034,6 +2119,23 @@ def verify_recomputed_metrics(
                 raise VerificationError(
                     f"recomputed metric {metric_id!r} of stage {stage_id!r} "
                     "requires exactly one measurement"
+                )
+            receipt = receipts[(stage_id, metric_id)]
+            if receipt.measurement != recorded[0]:
+                raise VerificationError(
+                    f"metric {metric_id!r} receipt embeds a different measurement"
+                )
+            if receipt.production.implementation != metric.implementation:
+                raise VerificationError(
+                    f"metric {metric_id!r} production implementation differs"
+                )
+            if receipt.production.params != metric.params:
+                raise VerificationError(
+                    f"metric {metric_id!r} production parameters differ"
+                )
+            if receipt.comparator != metric.comparator:
+                raise VerificationError(
+                    f"metric {metric_id!r} comparator differs from MetricSpec"
                 )
             resolved_stage = resolved_stages[stage_id]
             stage_ref = stage_refs[stage_id]
@@ -2075,12 +2177,7 @@ def verify_recomputed_metrics(
                             f"metric dependency {dependency.name!r} data role differs"
                         )
                     metric_artifacts[dependency.name] = selected_artifact
-            implementation_location = GitFileRef(
-                repository=plan.run.source.repository,
-                commit=plan.run.source.commit,
-                path=metric.implementation.path,
-            )
-            dependencies = tuple(
+            expected_dependencies = tuple(
                 ResolvedMetricDependency(
                     dependency=dependency,
                     files=(
@@ -2091,53 +2188,57 @@ def verify_recomputed_metrics(
                 )
                 for dependency in metric.dependencies
             )
-            with tempfile.TemporaryDirectory(prefix="viper-metric-") as directory:
-                root = Path(directory)
-                implementation = root / metric.implementation.path
-                implementation.parent.mkdir(parents=True, exist_ok=True)
-                implementation.write_bytes(retrieve(implementation_location))
-                for name, verified_input in metric_inputs.items():
-                    _materialize_metric_value(
-                        root,
-                        verified_input.path,
-                        verified_input,
-                    )
-                for name, verified_artifact in metric_artifacts.items():
-                    _materialize_metric_value(
-                        root,
-                        stage.artifacts[name].path,
-                        verified_artifact,
-                    )
-                try:
-                    process = execute_metric_process(
-                        root,
-                        plan.run,
-                        stage_id,
-                        stage,
-                        metric,
-                        attempt_id=attempt.attempt_id,
-                        purpose="verification",
-                        input_paths={
-                            name: root / value.path
-                            for name, value in metric_inputs.items()
-                        },
-                        artifact_paths={
-                            name: root / stage.artifacts[name].path
-                            for name in metric_artifacts
-                        },
-                        dependencies=dependencies,
-                    )
-                except MetricExecutionError as exc:
+            if tuple(
+                value.dependency for value in receipt.production.dependencies
+            ) != tuple(value.dependency for value in expected_dependencies):
+                raise VerificationError(
+                    f"metric {metric_id!r} dependency declarations differ"
+                )
+            for received, expected in zip(
+                receipt.production.dependencies,
+                expected_dependencies,
+                strict=True,
+            ):
+                received_identities = tuple(
+                    (reference.sha256, reference.bytes)
+                    for reference in received.files
+                )
+                expected_identities = tuple(
+                    (reference.sha256, reference.bytes)
+                    for reference in expected.files
+                )
+                if received_identities != expected_identities:
                     raise VerificationError(
-                        f"metric {metric_id!r} recomputation failed"
-                    ) from exc
+                        f"metric {metric_id!r} dependency file identities differ"
+                    )
+                for reference in received.files:
+                    read_resolved_file(reference, fetcher=fetcher)
+            for worker in (receipt.production, receipt.recomputation):
+                _verify_metric_worker_runtime(plan.run, stage, worker)
+            if not (
+                resolved_stage.completed_at
+                <= receipt.production.started_at
+                < receipt.production.completed_at
+                <= recorded[0].measured_at
+                <= receipt.recomputation.started_at
+                < receipt.recomputation.completed_at
+                <= receipt.completed_at
+                <= attempt.completed_at
+            ):
+                raise VerificationError(
+                    f"metric {metric_id!r} execution timing is inconsistent"
+                )
             if not compare_metric_values(
                 recorded[0].value,
-                process.receipt.value,
+                receipt.recomputation.value,
                 cast(FloatComparator, metric.comparator),
             ):
                 raise VerificationError(
                     f"recomputed metric {metric_id!r} does not match its measurement"
+                )
+            if not receipt.passed:
+                raise VerificationError(
+                    f"metric {metric_id!r} verification receipt records failure"
                 )
 
 
@@ -2166,7 +2267,11 @@ def verify_run_result(
 
         current_attempt_file_snapshots = {
             identity
-            for reference in (*attempt.measurement_files, *attempt.log_files)
+            for reference in (
+                *attempt.measurement_files,
+                *attempt.metric_verification_files,
+                *attempt.log_files,
+            )
             if (identity := _artifact_revision_identity(reference.stored_at))
             is not None
         }
@@ -2695,7 +2800,11 @@ def verify_benchmark_result(
     original_attempt_file_snapshots = {
         identity
         for attempt in resolved_run.attempts
-        for reference in (*attempt.measurement_files, *attempt.log_files)
+        for reference in (
+            *attempt.measurement_files,
+            *attempt.metric_verification_files,
+            *attempt.log_files,
+        )
         if (identity := _artifact_revision_identity(reference.stored_at)) is not None
     }
     confirmation_attempt_file_snapshots = {

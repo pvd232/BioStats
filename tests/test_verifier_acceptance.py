@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from typing import Any
 
@@ -67,7 +67,11 @@ from viper.protocol import (
     HuggingFaceFileRef,
     LocalFileRef,
     LocalStageResultSnapshotRef,
+    Measurement,
     MetricCriterion,
+    MetricExecutionReceipt,
+    MetricSpec,
+    MetricVerificationReceipt,
     NativeLibraryContext,
     NativeThreadPoolContext,
     NumericalRuntimeContext,
@@ -92,6 +96,7 @@ from viper.protocol import (
     ResolvedGitFileRef,
     ResolvedHttpRetrieval,
     ResolvedHttpTransport,
+    ResolvedMetricDependency,
     ResolvedRun,
     ResolvedRunRef,
     ResolvedRunSpecRef,
@@ -398,6 +403,75 @@ def startup_receipt(run: RunSpec) -> ProcessStartupReceipt:
         ),
         reproducibility=run.reproducibility,
         generators=tuple(generators),
+    )
+
+
+def publish_metric_verification(
+    store: DocumentStore,
+    *,
+    run: RunSpec,
+    attempt_id: int,
+    stage_id: str,
+    metric: MetricSpec,
+    measurement_raw: bytes,
+    stage_completed_at: datetime,
+    dependency_files: tuple[ResolvedFileRef, ...],
+    commit: str,
+) -> ResolvedFileRef:
+    """Publish one complete synthetic metric-verification receipt."""
+    measurement = Measurement.model_validate_json(measurement_raw)
+    assert metric.comparator is not None
+    dependencies = tuple(
+        ResolvedMetricDependency(
+            dependency=dependency,
+            files=dependency_files,
+        )
+        for dependency in metric.dependencies
+    )
+    production = MetricExecutionReceipt(
+        run_id=run.run_id,
+        attempt_id=attempt_id,
+        metric_id=metric.metric_id,
+        stage_id=stage_id,
+        purpose="measurement",
+        implementation=metric.implementation,
+        params=metric.params,
+        dependencies=dependencies,
+        startup=startup_receipt(run),
+        execution_context=execution_context(),
+        value=measurement.value,
+        started_at=stage_completed_at + timedelta(seconds=10),
+        completed_at=stage_completed_at + timedelta(seconds=20),
+    )
+    recomputation = production.model_copy(
+        update={
+            "purpose": "verification",
+            "started_at": measurement.measured_at + timedelta(seconds=10),
+            "completed_at": measurement.measured_at + timedelta(seconds=20),
+        }
+    )
+    receipt = MetricVerificationReceipt(
+        metric_id=metric.metric_id,
+        stage_id=stage_id,
+        measurement=measurement,
+        production=production,
+        recomputation=recomputation,
+        comparator=metric.comparator,
+        passed=True,
+        completed_at=measurement.measured_at + timedelta(seconds=30),
+    )
+    path = (
+        f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}/"
+        f"attempts/{attempt_id}/metric_verification/"
+        f"{stage_id}.{metric.metric_id}.yaml"
+    )
+    raw = yaml_bytes(receipt)
+    location = hf_file(commit, path)
+    store.put(location, raw)
+    return ResolvedFileRef(
+        sha256=sha256(raw),
+        bytes=len(raw),
+        stored_at=location,
     )
 
 
@@ -1403,6 +1477,25 @@ def build_complete_fixture(
         bytes=len(measurement_raw),
         stored_at=measurement_location,
     )
+    predictions = resolved_evaluate.artifacts["predictions"]
+    assert isinstance(predictions, ResolvedSingleFileArtifact)
+    metric_verification_reference = publish_metric_verification(
+        store,
+        run=run,
+        attempt_id=1,
+        stage_id="evaluate",
+        metric=experiment.metrics[0],
+        measurement_raw=measurement_raw,
+        stage_completed_at=resolved_evaluate.completed_at,
+        dependency_files=(
+            ResolvedFileRef(
+                sha256=predictions.file.sha256,
+                bytes=predictions.file.bytes,
+                stored_at=hf_file(evaluate_commit, str(predictions.file.path)),
+            ),
+        ),
+        commit=MAIN_FILES_COMMIT,
+    )
     attempt = RunAttempt(
         attempt_id=1,
         status="succeeded",
@@ -1411,6 +1504,7 @@ def build_complete_fixture(
         resolved_stages=(build_stage, train_stage, evaluate_stage),
         invocations=(build_invocation, train_invocation, evaluate_invocation),
         measurement_files=(measurement_reference,),
+        metric_verification_files=(metric_verification_reference,),
         log_files=(),
         failure_reason=None,
     )
@@ -1586,6 +1680,35 @@ def build_benchmark_fixture() -> tuple[
         f"{run_root}/measurements/evaluate.pearson_correlation.jsonl",
     )
     store.put(measurement_location, measurement_raw)
+    experiment = ExperimentSpec.model_validate(
+        yaml.safe_load(
+            store.fetch(
+                git_file(
+                    MAIN_SOURCE_COMMIT,
+                    "experiments/model_eval/spec.yaml",
+                )
+            )
+        )
+    )
+    predictions = resolved_evaluate.artifacts["predictions"]
+    assert isinstance(predictions, ResolvedSingleFileArtifact)
+    metric_verification_reference = publish_metric_verification(
+        store,
+        run=run,
+        attempt_id=2,
+        stage_id="evaluate",
+        metric=experiment.metrics[0],
+        measurement_raw=measurement_raw,
+        stage_completed_at=resolved_evaluate.completed_at,
+        dependency_files=(
+            ResolvedFileRef(
+                sha256=predictions.file.sha256,
+                bytes=predictions.file.bytes,
+                stored_at=hf_file(evaluate_commit, str(predictions.file.path)),
+            ),
+        ),
+        commit="f" * 40,
+    )
     confirmation = RunAttempt(
         attempt_id=2,
         status="succeeded",
@@ -1604,6 +1727,7 @@ def build_benchmark_fixture() -> tuple[
                 stored_at=measurement_location,
             ),
         ),
+        metric_verification_files=(metric_verification_reference,),
         log_files=(),
         failure_reason=None,
     )

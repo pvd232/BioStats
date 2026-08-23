@@ -38,6 +38,7 @@ from viper.protocol import (
     GitSource,
     HuggingFaceFileRef,
     LocalEnvironmentSpec,
+    Measurement,
     MetricDependency,
     MetricImplementationRef,
     MetricParams,
@@ -195,6 +196,17 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         b"def compute(context):\n"
         b"    return float(len(context.artifacts['parameters'].read_bytes()))\n"
     )
+    live_metric_source = (
+        b"from viper.metrics import StatefulMetric, metric\n\n"
+        b'@metric(metric_id="epoch_mean", kind="training", mode="live")\n'
+        b"class EpochMean(StatefulMetric):\n"
+        b"    def __init__(self):\n"
+        b"        self.values = []\n"
+        b"    def update(self, value):\n"
+        b"        self.values.append(float(value))\n"
+        b"    def compute(self):\n"
+        b"        return sum(self.values) / len(self.values)\n"
+    )
     parameter_bytes = MetricSpec(
         metric_id="parameter_bytes",
         kind="diagnostic",
@@ -215,12 +227,24 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         ),
         comparator=FloatComparator(),
     )
+    epoch_mean = MetricSpec(
+        metric_id="epoch_mean",
+        kind="training",
+        implementation=MetricImplementationRef(
+            path="project/metrics/epoch_mean.py",
+            symbol="EpochMean",
+            sha256=hashlib.sha256(live_metric_source).hexdigest(),
+            bytes=len(live_metric_source),
+        ),
+        params=MetricParams(),
+        mode="live",
+    )
     experiment = ExperimentSpec(
         experiment_id="example",
         factors=(),
         variant_ids=("baseline",),
         replicates=(ReplicateSpec(replicate_id="r1", seed=7),),
-        metrics=(parameter_bytes,),
+        metrics=(parameter_bytes, epoch_mean),
     )
     variant = VariantSpec(
         experiment_id="example",
@@ -244,6 +268,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             f"    return {resume_state().model_dump(mode='python')!r}\n"
         ).encode(),
         "project/metrics/parameter_bytes.py": metric_source,
+        "project/metrics/epoch_mean.py": live_metric_source,
         "project/parameters/train.py": (
             b"from pydantic import Field\n"
             b"from viper.protocol import TrainParams\n\n"
@@ -281,6 +306,10 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             b"    )\n"
             b"    context.artifacts['parameters'].write_bytes(b'parameters')\n"
             b"    context.artifacts['resume_state'].write_bytes(b'resume')\n"
+            b"    live_metric = context.metrics['epoch_mean']\n"
+            b"    live_metric.update(1.0)\n"
+            b"    live_metric.update(3.0)\n"
+            b"    live_metric.record(epoch=0, step=1)\n"
         ),
         "experiments/example/spec.yaml": serialize_document(experiment),
         "experiments/example/variants/baseline.spec.yaml": serialize_document(variant),
@@ -363,7 +392,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             ).hexdigest(),
             bytes=len(source_files["project/parameters/train.py"]),
         ),
-        metric_ids=("parameter_bytes",),
+        metric_ids=("parameter_bytes", "epoch_mean"),
         inputs={
             "prior": FutureInputRef(
                 producer_stage_id="download",
@@ -464,7 +493,8 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     assert result.resolved_run.status == "succeeded"
     assert result.resolved_run_path.is_file()
     assert len(result.resolved_run.attempts[0].resolved_stages) == 2
-    assert len(result.resolved_run.attempts[0].measurement_files) == 1
+    assert len(result.resolved_run.attempts[0].measurement_files) == 2
+    assert len(result.resolved_run.attempts[0].metric_verification_files) == 1
     assert result.journal_path.is_file()
     assert (result.journal_path.parent / "preflight.json").is_file()
     metric_runtime = root / ".viper" / "runtime"
@@ -492,6 +522,17 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
 
     store = LocalArtifactStore(root)
     fetcher = RunFetcher(root, store, REPOSITORY)
+    live_reference = next(
+        reference
+        for reference in result.resolved_run.attempts[0].measurement_files
+        if str(reference.stored_at.path).endswith("train.epoch_mean.jsonl")
+    )
+    live_measurement = Measurement.model_validate_json(
+        fetcher(live_reference.stored_at)
+    )
+    assert live_measurement.value == 2.0
+    assert live_measurement.epoch == 0
+    assert live_measurement.step == 1
     comparison = compare_runs_application(
         CompareRunsRequest(
             left_path=result.resolved_run_path,

@@ -4,10 +4,11 @@
 
 Metric decorators, exact implementation references, dependency binding,
 restricted metric contexts, controlled metric workers, measurement writing,
-and floating-point comparators are implemented. The production and
-verification workers each return a complete `MetricExecutionReceipt`. Live
-metric handles and immutable verification-receipt publication remain approved
-for VIPER 0.1.
+floating-point comparators, and immutable verification receipts are
+implemented. Each successful recomputed metric publishes the production and
+verification worker receipts with its measurement. Controlled stage children
+receive runner-owned handles for selected live metrics and write their values
+through the active measurement sink.
 
 ## Required claim
 
@@ -22,15 +23,18 @@ dependency. The runner and verifier construct
 [`MetricContext`](../../viper/metrics.py) from that dependency set and reject a
 data-role mismatch before invocation.
 
-The runner and verifier launch separate metric workers under the run's startup
-controls. Each worker records its startup and observed execution context. The
-attempt still omits the immutable file that binds both worker receipts to the
-recorded measurement. Live training metrics have decorators and a stateful base
-class. The stage runtime still omits the controlled metric handle.
+The runner launches separate production and verification workers under the
+run's startup controls. Each worker records its startup and observed execution
+context. The attempt publishes one `MetricVerificationReceipt` that binds both
+workers to the recorded measurement and dependency files. The verifier checks
+that complete evidence without invoking project metric code.
 
-The approved worker receipt adds the run ID and attempt ID that own the
-measurement. The production and verification workers must select those same
-identities.
+Live training and diagnostic metrics use the same frozen implementation
+identity. The stage worker loads each selected live implementation, binds it to
+the active attempt, and injects its handle into `StageContext.metrics`.
+
+Each worker receipt records the run ID and attempt ID that own the measurement.
+The verifier requires both worker receipts to select those same identities.
 
 ## Contract models
 

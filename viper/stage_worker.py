@@ -11,14 +11,17 @@ from types import MappingProxyType
 from typing import Any
 
 from .http import DownloadContext, HttpRetrievalHandle
+from .metrics import MeasurementSink, MetricHandle, bind_live_metric
 from .parameter_models import instantiate_parameters
 from .paths import retrieval_body_path
 from .protocol import (
     DownloadSpec,
+    ExperimentSpec,
     FutureInputRef,
     InternalSpec,
     ParameterizedSpec,
     RunSpec,
+    StageContextBinding,
     StageInvocationReceipt,
     StoredInputRef,
 )
@@ -87,6 +90,50 @@ def _planned_stage_context(
     if selected is None:
         raise ValueError("startup.plan: context stage ID is absent from RunSpec")
     return selected, expected_inputs
+
+
+def _live_metric_handles(
+    root: Path,
+    run: RunSpec,
+    stage: ParameterizedSpec,
+    binding: StageContextBinding,
+) -> dict[str, MetricHandle]:
+    """Bind every selected live metric to the active attempt's measurement file."""
+    if not stage.metric_ids:
+        return {}
+
+    experiment_path = root / f"experiments/{run.experiment_id}/spec.yaml"
+    experiment = ExperimentSpec.model_validate(
+        parse_yaml_bytes(experiment_path.read_bytes())
+    )
+    if experiment.experiment_id != run.experiment_id:
+        raise ValueError("startup.plan: experiment ID differs from RunSpec")
+    metrics = {metric.metric_id: metric for metric in experiment.metrics}
+    handles: dict[str, MetricHandle] = {}
+    for metric_id in stage.metric_ids:
+        spec = metrics.get(metric_id)
+        if spec is None:
+            raise ValueError("startup.plan: stage selects an undeclared metric")
+        if spec.mode != "live":
+            continue
+        path = (
+            root
+            / f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
+            / "measurements"
+            / f"{binding.stage_id}.{metric_id}.jsonl"
+        )
+        handles[metric_id] = bind_live_metric(
+            root,
+            spec,
+            MeasurementSink(
+                path,
+                run_id=run.run_id,
+                attempt_id=binding.attempt_id,
+                stage_id=binding.stage_id,
+                metric_id=metric_id,
+            ),
+        )
+    return handles
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -184,7 +231,9 @@ def main(argv: list[str] | None = None) -> int:
             "params": params,
             "inputs": MappingProxyType(_workspace_paths(root, binding.inputs)),
             "artifacts": MappingProxyType(_workspace_paths(root, binding.artifacts)),
-            "metrics": MappingProxyType({}),
+            "metrics": MappingProxyType(
+                _live_metric_handles(root, run, stage, binding)
+            ),
             "numpy_generators": MappingProxyType(initialization.numpy_generators),
         }
         if isinstance(stage, DownloadSpec):

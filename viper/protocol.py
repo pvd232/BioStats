@@ -1009,20 +1009,6 @@ class MetricExecutionReceipt(ProtocolModel):
     outcome: Literal["succeeded"] = "succeeded"
 
 
-class MetricVerificationReceipt(ProtocolModel):
-    """Bind one measurement to independent recomputation evidence."""
-
-    schema_version: Literal[1] = 1
-    metric_id: MetricId
-    stage_id: StageId
-    measurement: Measurement
-    production: MetricExecutionReceipt
-    recomputation: MetricExecutionReceipt
-    comparator: FloatComparator
-    passed: bool
-    completed_at: AwareDatetime
-
-
 class Measurement(ProtocolModel):
     """One observed metric value produced during a run stage."""
 
@@ -1036,6 +1022,61 @@ class Measurement(ProtocolModel):
 
     epoch: int | None = Field(default=None, ge=0)
     step: int | None = Field(default=None, ge=0)
+
+
+class MetricVerificationReceipt(ProtocolModel):
+    """Bind one measurement to independent recomputation evidence."""
+
+    schema_version: Literal[1] = 1
+    metric_id: MetricId
+    stage_id: StageId
+    measurement: Measurement
+    production: MetricExecutionReceipt
+    recomputation: MetricExecutionReceipt
+    comparator: FloatComparator
+    passed: bool
+    completed_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_execution_ownership(self) -> MetricVerificationReceipt:
+        """Require both workers to select one measurement and frozen invocation."""
+        if self.metric_id != self.measurement.metric_id:
+            raise ValueError("verification metric ID differs from its measurement")
+        if self.stage_id != self.measurement.stage_id:
+            raise ValueError("verification stage ID differs from its measurement")
+        expected_identity = (
+            self.measurement.run_id,
+            self.measurement.attempt_id,
+            self.measurement.stage_id,
+            self.measurement.metric_id,
+        )
+        for receipt in (self.production, self.recomputation):
+            received_identity = (
+                receipt.run_id,
+                receipt.attempt_id,
+                receipt.stage_id,
+                receipt.metric_id,
+            )
+            if received_identity != expected_identity:
+                raise ValueError("metric worker identity differs from its measurement")
+        if self.production.purpose != "measurement":
+            raise ValueError("production receipt must use measurement purpose")
+        if self.recomputation.purpose != "verification":
+            raise ValueError("recomputation receipt must use verification purpose")
+        if (
+            self.production.implementation != self.recomputation.implementation
+            or self.production.params != self.recomputation.params
+            or self.production.dependencies != self.recomputation.dependencies
+        ):
+            raise ValueError("metric worker invocation bindings differ")
+        if self.production.value != self.measurement.value:
+            raise ValueError("production value differs from its measurement")
+        if self.completed_at < max(
+            self.production.completed_at,
+            self.recomputation.completed_at,
+        ):
+            raise ValueError("verification completion precedes a worker receipt")
+        return self
 
 
 class MetricCriterion(ProtocolModel):
@@ -1160,6 +1201,7 @@ class RunAttempt(ProtocolModel):
     resolved_stages: tuple[ResolvedStageRef, ...]
     invocations: tuple[ResolvedStageInvocationRef, ...]
     measurement_files: tuple[ResolvedFileRef, ...]
+    metric_verification_files: tuple[ResolvedFileRef, ...] = ()
     log_files: tuple[ResolvedFileRef, ...]
 
     failure_reason: str | None
@@ -1207,6 +1249,18 @@ class RunAttempt(ProtocolModel):
 
         if set(measurement_locations) & set(log_locations):
             raise ValueError("measurement and log storage locations must be disjoint")
+
+        metric_locations = tuple(
+            reference.stored_at for reference in self.metric_verification_files
+        )
+        if len(set(metric_locations)) != len(metric_locations):
+            raise ValueError("metric verification file locations must be unique")
+        if set(metric_locations) & (
+            set(measurement_locations) | set(log_locations)
+        ):
+            raise ValueError(
+                "metric verification, measurement, and log locations must be disjoint"
+            )
 
         invocation_locations = tuple(
             reference.stored_at for reference in self.invocations

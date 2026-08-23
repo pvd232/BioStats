@@ -410,7 +410,7 @@ python -m pytest tests/test_artifact_loaders.py tests/test_artifact_validation.p
 - [x] Add `MetricImplementationRef`, `MetricDependency`,
   `ResolvedMetricDependency`, `MetricMode`, `MetricExecutionReceipt`, and
   `MetricVerificationReceipt`.
-- [ ] Add run ID and attempt ID to `MetricExecutionReceipt`; require both
+- [x] Add run ID and attempt ID to `MetricExecutionReceipt`; require both
   worker receipts to select the measurement's run and attempt.
 - [x] Use one `MetricSpec`; its `mode` selects `recompute` or `live` execution.
 - [x] Require one comparator for every recomputed floating-point metric.
@@ -423,22 +423,22 @@ python -m pytest tests/test_artifact_loaders.py tests/test_artifact_validation.p
 
 - [x] Construct each recomputed `MetricContext` from its declared file
   dependencies.
-- [ ] Inject live metric handles into `StageContext` and bind their
+- [x] Inject live metric handles into `StageContext` and bind their
   output to the active `MeasurementSink`.
-- [ ] Implement `MetricHandle.update()` and `record()` for function
+- [x] Implement `MetricHandle.update()` and `record()` for function
   and stateful metric implementations.
 - [x] Enforce every dependency's data role before invoking metric code.
-- [ ] Record live measurements through the runner-owned
+- [x] Record live measurements through the runner-owned
   `MeasurementSink`.
 - [x] Invoke recomputed metrics through a dedicated controlled worker for
   measurement production.
 - [x] Launch a second dedicated worker for independent recomputation.
-- [ ] Persist both `MetricExecutionReceipt` values in one
+- [x] Persist both `MetricExecutionReceipt` values in one
   `MetricVerificationReceipt`.
-- [ ] Verify implementation identity, dependency identity, parameters,
+- [x] Verify implementation identity, dependency identity, parameters,
   startup evidence, runtime context, measurement ownership, and comparator
   outcome.
-- [ ] Exercise stateless evaluation, stateful training, diagnostic,
+- [x] Exercise stateless evaluation, stateful training, diagnostic,
   recomputation, tolerance, undeclared dependency, ordering, and tampering
   cases.
 

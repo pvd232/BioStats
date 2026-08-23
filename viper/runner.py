@@ -9,6 +9,7 @@ import tempfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -17,7 +18,7 @@ from .ids import InputName, StageId
 from .journal import DurableJournal
 from .local_store import LocalArtifactStore, snapshot_file
 from .metric_execution import MetricExecutionError, execute_metric_process
-from .metrics import MeasurementSink
+from .metrics import MeasurementSink, compare_metric_values
 from .paths import retrieval_body_path
 from .preflight import preflight_local_plan
 from .protocol import (
@@ -25,12 +26,14 @@ from .protocol import (
     BaseSpec,
     DownloadSpec,
     ExperimentSpec,
+    FloatComparator,
     GitFileRef,
     HuggingFaceFileRef,
     InternalSpec,
     LocalEnvironmentSpec,
     LocalStageResultSnapshotRef,
     MetricSpec,
+    MetricVerificationReceipt,
     RepoRelPath,
     ResolvedArtifactPointerRef,
     ResolvedBuildSpec,
@@ -364,6 +367,7 @@ def _run_after_stage_metrics(
     experiment: ExperimentSpec,
     input_paths: Mapping[str, Path],
     measurement_paths: list[Path],
+    metric_verification_paths: list[Path],
     store: LocalArtifactStore,
     timeout_seconds: float | None,
 ) -> None:
@@ -412,7 +416,7 @@ def _run_after_stage_metrics(
             / "measurements"
             / f"{stage_id}.{metric_id}.jsonl"
         )
-        MeasurementSink(
+        measurement = MeasurementSink(
             path,
             run_id=run.run_id,
             attempt_id=1,
@@ -420,6 +424,47 @@ def _run_after_stage_metrics(
             metric_id=metric_id,
         ).append(process.receipt.value)
         measurement_paths.append(path)
+        try:
+            verification = execute_metric_process(
+                root,
+                run,
+                stage_id,
+                stage,
+                metric,
+                purpose="verification",
+                input_paths=metric_inputs,
+                artifact_paths=metric_artifacts,
+                dependencies=dependencies,
+                timeout_seconds=timeout_seconds,
+            )
+        except MetricExecutionError as exc:
+            raise RunError(f"metric {metric_id!r} verification failed") from exc
+        comparator = cast(FloatComparator, metric.comparator)
+        passed = compare_metric_values(
+            measurement.value,
+            verification.receipt.value,
+            comparator,
+        )
+        receipt = MetricVerificationReceipt(
+            metric_id=metric_id,
+            stage_id=stage_id,
+            measurement=measurement,
+            production=process.receipt,
+            recomputation=verification.receipt,
+            comparator=comparator,
+            passed=passed,
+            completed_at=datetime.now(UTC),
+        )
+        receipt_path = (
+            root
+            / f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
+            / "attempts/1/metric_verification"
+            / f"{stage_id}.{metric_id}.yaml"
+        )
+        _write_synchronized(receipt_path, serialize_document(receipt))
+        metric_verification_paths.append(receipt_path)
+        if not passed:
+            raise RunError(f"metric {metric_id!r} failed independent recomputation")
 
 
 def _resolved_environment(
@@ -524,6 +569,7 @@ def run(
     completed: dict[StageId, ResolvedStageRef] = {}
     loaded_stages: dict[StageId, BaseSpec] = {}
     measurement_paths: list[Path] = []
+    metric_verification_paths: list[Path] = []
     log_files: dict[str, bytes] = {}
     try:
         journal.append("allocated", "attempt allocated", recorded_at=attempt_started)
@@ -596,6 +642,23 @@ def run(
                 retrievals=resolved_retrievals,
                 timeout_seconds=timeout_seconds,
             )
+            metric_specs = {
+                metric.metric_id: metric for metric in experiment.metrics
+            }
+            for metric_id in stage.metric_ids:
+                if metric_specs[metric_id].mode != "live":
+                    continue
+                live_path = (
+                    root
+                    / (
+                        f"experiments/{run.experiment_id}/runs/"
+                        f"{run.variant_id}/{run.run_id}"
+                    )
+                    / "measurements"
+                    / f"{stage_reference.stage_id}.{metric_id}.jsonl"
+                )
+                if live_path.is_file() and live_path not in measurement_paths:
+                    measurement_paths.append(live_path)
             invocation_path = (
                 f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
                 f"/attempts/1/invocations/{stage_reference.stage_id}.yaml"
@@ -659,6 +722,7 @@ def run(
                 experiment,
                 input_paths,
                 measurement_paths,
+                metric_verification_paths,
                 store,
                 timeout_seconds,
             )
@@ -689,6 +753,8 @@ def run(
         attempt_files = dict(log_files)
         for path in measurement_paths:
             attempt_files[path.relative_to(root).as_posix()] = path.read_bytes()
+        for path in metric_verification_paths:
+            attempt_files[path.relative_to(root).as_posix()] = path.read_bytes()
         attempt_references = store.resolved_files(attempt_files)
         attempt_commit = (
             attempt_references[0].stored_at.commit if attempt_references else None
@@ -704,6 +770,11 @@ def run(
             for reference in attempt_references
             if "/measurements/" in str(reference.stored_at.path)
         )
+        metric_verification_references = tuple(
+            reference
+            for reference in attempt_references
+            if "/metric_verification/" in str(reference.stored_at.path)
+        )
         log_references = tuple(
             reference
             for reference in attempt_references
@@ -718,6 +789,7 @@ def run(
             resolved_stages=tuple(resolved_stage_refs),
             invocations=tuple(invocation_refs),
             measurement_files=measurement_references,
+            metric_verification_files=metric_verification_references,
             log_files=log_references,
             failure_reason=None,
         )

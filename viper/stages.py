@@ -10,11 +10,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Generic, Protocol, TypeVar, cast
+from typing import Any, Generic, TypeVar, cast
 
 import numpy as np
 
 from .ids import HumanId, InputName, MetricId, RunId, StageId
+from .metrics import MetricHandle
 from .protocol import (
     ArtifactName,
     BuildParams,
@@ -29,19 +30,6 @@ from .protocol import (
 
 ParamsT = TypeVar("ParamsT", bound=ParameterSet)
 DecoratedStage = TypeVar("DecoratedStage", bound=Callable[..., None])
-
-
-class MetricHandle(Protocol):
-    """Accept one stage-produced metric value through a runner-owned sink."""
-
-    def append(
-        self,
-        value: float,
-        *,
-        epoch: int | None = None,
-        step: int | None = None,
-    ) -> object:
-        """Persist one measurement for the active stage and metric."""
 
 
 @dataclass(frozen=True)
