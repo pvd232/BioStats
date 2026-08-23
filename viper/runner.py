@@ -61,6 +61,7 @@ from .protocol import (
     RunAttempt,
     RunSpec,
     SnapshotFileRef,
+    StageInvocationReceipt,
     StageResultSnapshotRef,
     StorageModel,
     StoredInputRef,
@@ -68,6 +69,7 @@ from .protocol import (
 from .serialization import load_stage_spec, parse_yaml_bytes, serialize_document
 from .stage_execution import (
     StageExecutionError,
+    StageProcessInterrupted,
     StageProcessResult,
     execute_stage_process,
 )
@@ -87,10 +89,6 @@ from .workspace import AttemptWorkspace, RunWorkspaceLock, next_attempt_id
 
 class RunError(RuntimeError):
     """Report a local plan, source, materialization, or execution failure."""
-
-
-class AttemptPreempted(RunError):
-    """Stop one attempt after the coordinator receives host preemption."""
 
 
 class RunResult(BaseModel):
@@ -258,6 +256,21 @@ def _write_attempt_document(
         {path.relative_to(root).as_posix(): raw}
     )[0]
     return ResolvedAttemptRef(
+        sha256=reference.sha256,
+        bytes=reference.bytes,
+        stored_at=reference.stored_at,
+    )
+
+
+def _publish_invocation_receipt(
+    store: LocalArtifactStore,
+    path: str,
+    receipt: StageInvocationReceipt,
+) -> ResolvedStageInvocationRef:
+    """Publish one stage invocation receipt at its canonical attempt path."""
+    raw = serialize_document(receipt)
+    reference = store.resolved_files({path: raw})[0]
+    return ResolvedStageInvocationRef(
         sha256=reference.sha256,
         bytes=reference.bytes,
         stored_at=reference.stored_at,
@@ -784,13 +797,20 @@ def run(
     metric_verification_paths: list[Path] = []
     log_files: dict[str, bytes] = {}
     active_stage_id: StageId | None = None
+    previous_sigint = signal.getsignal(signal.SIGINT)
     previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def cancel_attempt(signum: int, frame: object) -> None:
+        """Convert an interrupt request into a durable cancellation outcome."""
+        del signum, frame
+        raise StageProcessInterrupted("cancelled")
 
     def preempt_attempt(signum: int, frame: object) -> None:
         """Convert host termination into a durable preemption outcome."""
         del signum, frame
-        raise AttemptPreempted("coordinator received SIGTERM")
+        raise StageProcessInterrupted("preempted")
 
+    signal.signal(signal.SIGINT, cancel_attempt)
     signal.signal(signal.SIGTERM, preempt_attempt)
     try:
         journal.append("allocated", "attempt allocated", recorded_at=attempt_started)
@@ -871,7 +891,7 @@ def run(
                     retrievals=resolved_retrievals,
                     timeout_seconds=timeout_seconds,
                 )
-            except StageExecutionError as exc:
+            except (StageExecutionError, StageProcessInterrupted) as exc:
                 run_log_root = f"{run_root}/attempts/{attempt_id}/logs"
                 log_files[
                     f"{run_log_root}/{stage_reference.stage_id}.stdout.log"
@@ -884,15 +904,11 @@ def run(
                         f"{run_root}/attempts/{attempt_id}/invocations/"
                         f"{stage_reference.stage_id}.yaml"
                     )
-                    invocation_raw = serialize_document(exc.invocation)
-                    invocation_file = store.resolved_files(
-                        {invocation_path: invocation_raw}
-                    )[0]
                     invocation_refs.append(
-                        ResolvedStageInvocationRef(
-                            sha256=invocation_file.sha256,
-                            bytes=invocation_file.bytes,
-                            stored_at=invocation_file.stored_at,
+                        _publish_invocation_receipt(
+                            store,
+                            invocation_path,
+                            exc.invocation,
                         )
                     )
                 raise
@@ -917,12 +933,10 @@ def run(
                 f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
                 f"/attempts/{attempt_id}/invocations/{stage_reference.stage_id}.yaml"
             )
-            invocation_raw = serialize_document(process.invocation)
-            invocation_file = store.resolved_files({invocation_path: invocation_raw})[0]
-            invocation_ref = ResolvedStageInvocationRef(
-                sha256=invocation_file.sha256,
-                bytes=invocation_file.bytes,
-                stored_at=invocation_file.stored_at,
+            invocation_ref = _publish_invocation_receipt(
+                store,
+                invocation_path,
+                process.invocation,
             )
             invocation_refs.append(invocation_ref)
             stage_completed = datetime.now(UTC)
@@ -1074,13 +1088,13 @@ def run(
         )
     except (Exception, KeyboardInterrupt) as exc:
         failed_at = datetime.now(UTC)
-        status: Literal["failed", "cancelled", "preempted"] = (
-            "cancelled"
-            if isinstance(exc, KeyboardInterrupt)
-            else "preempted"
-            if isinstance(exc, AttemptPreempted)
-            else "failed"
-        )
+        status: Literal["failed", "cancelled", "preempted"]
+        if isinstance(exc, StageProcessInterrupted):
+            status = exc.outcome
+        elif isinstance(exc, KeyboardInterrupt):
+            status = "cancelled"
+        else:
+            status = "failed"
         latest = journal.latest()
         if latest is not None and latest.state != "terminal":
             journal.append(
@@ -1172,5 +1186,6 @@ def run(
             f"attempt {attempt_id} failed; evidence written to {terminal_path}"
         ) from exc
     finally:
+        signal.signal(signal.SIGINT, previous_sigint)
         signal.signal(signal.SIGTERM, previous_sigterm)
         run_lock.release()

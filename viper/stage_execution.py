@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -57,6 +58,18 @@ class StageExecutionError(RuntimeError):
         self.stderr = stderr
 
 
+class StageProcessInterrupted(RuntimeError):
+    """Carry one coordinator interruption and the stopped child's evidence."""
+
+    def __init__(self, outcome: Literal["cancelled", "preempted"]) -> None:
+        """Identify the requested terminal outcome before child cleanup."""
+        super().__init__(f"stage process was {outcome}")
+        self.outcome: Literal["cancelled", "preempted"] = outcome
+        self.invocation: StageInvocationReceipt | None = None
+        self.stdout = b""
+        self.stderr = b""
+
+
 class StageWorkerContext(BaseModel):
     """Supply one versioned logical invocation to the controlled child."""
 
@@ -94,6 +107,25 @@ class StageProcessResult:
     invocation: StageInvocationReceipt
     stdout: bytes
     stderr: bytes
+
+
+def _stop_process_group(
+    process: subprocess.Popen[bytes],
+) -> tuple[bytes, bytes]:
+    """Terminate one stage process group and collect its remaining output."""
+    if process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    try:
+        return process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return process.communicate()
 
 
 def _workspace_path(repository_root: Path, relative_path: str) -> Path:
@@ -281,19 +313,61 @@ def execute_stage_process(
     )
     environment["VIPER_CONTEXT_PATH"] = str(context_path)
     started_at = datetime.now(UTC)
-    completed = subprocess.run(
+    process = subprocess.Popen(
         command,
         cwd=root,
         env=environment,
-        capture_output=True,
-        check=False,
-        timeout=timeout_seconds,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
     )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except StageProcessInterrupted as exc:
+        stdout, stderr = _stop_process_group(process)
+        completed_at = datetime.now(UTC)
+        exc.invocation = StageInvocationReceipt(
+            implementation=stage_spec.implementation,
+            context=binding,
+            context_digest=document_digest(binding),
+            started_at=started_at,
+            completed_at=completed_at,
+            outcome=exc.outcome,
+        )
+        exc.stdout = stdout
+        exc.stderr = stderr
+        raise
+    except subprocess.TimeoutExpired as exc:
+        stdout, stderr = _stop_process_group(process)
+        completed_at = datetime.now(UTC)
+        raise StageExecutionError(
+            "stage command exceeded its timeout",
+            invocation=StageInvocationReceipt(
+                implementation=stage_spec.implementation,
+                context=binding,
+                context_digest=document_digest(binding),
+                started_at=started_at,
+                completed_at=completed_at,
+                outcome="failed",
+            ),
+            stdout=stdout,
+            stderr=stderr,
+        ) from exc
     completed_at = datetime.now(UTC)
     if not result_path.is_file():
         raise StageExecutionError(
-            f"stage command exited with status {completed.returncode} without "
-            "writing invocation evidence"
+            f"stage command exited with status {process.returncode} without "
+            "writing invocation evidence",
+            invocation=StageInvocationReceipt(
+                implementation=stage_spec.implementation,
+                context=binding,
+                context_digest=document_digest(binding),
+                started_at=started_at,
+                completed_at=completed_at,
+                outcome="failed",
+            ),
+            stdout=stdout,
+            stderr=stderr,
         )
     try:
         worker_result = StageWorkerResult.model_validate_json(
@@ -301,15 +375,15 @@ def execute_stage_process(
         )
     except (json.JSONDecodeError, ValueError) as exc:
         raise StageExecutionError("stage worker wrote an invalid result") from exc
-    if completed.returncode != 0 or worker_result.error is not None:
+    if process.returncode != 0 or worker_result.error is not None:
         message = (
-            worker_result.error or completed.stderr.decode(errors="replace").strip()
+            worker_result.error or stderr.decode(errors="replace").strip()
         )
         raise StageExecutionError(
-            f"stage command exited with status {completed.returncode}: {message}",
+            f"stage command exited with status {process.returncode}: {message}",
             invocation=worker_result.invocation,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            stdout=stdout,
+            stderr=stderr,
         )
     if worker_result.execution_context is None or worker_result.startup is None:
         raise StageExecutionError("successful stage omitted runtime evidence")
@@ -326,6 +400,6 @@ def execute_stage_process(
         execution_context=worker_result.execution_context,
         startup=worker_result.startup,
         invocation=worker_result.invocation,
-        stdout=completed.stdout,
-        stderr=completed.stderr,
+        stdout=stdout,
+        stderr=stderr,
     )

@@ -1576,6 +1576,68 @@ def _verify_stage_invocation(
     return receipt
 
 
+def _verify_unresolved_stage_invocation(
+    reference: ResolvedStageInvocationRef,
+    *,
+    attempt: RunAttempt,
+    run: RunSpec,
+    stage_id: StageId,
+    stage: ParameterizedStageSpec,
+    stage_specs: Mapping[StageId, BaseSpec],
+    fetcher: StorageFetcher | None,
+) -> None:
+    """Verify the terminal receipt for a started stage that did not resolve."""
+    raw = read_resolved_file(reference, fetcher=fetcher)
+    try:
+        receipt = StageInvocationReceipt.model_validate(parse_yaml_bytes(raw))
+    except (yaml.YAMLError, ValueError) as exc:
+        raise VerificationError(
+            f"stage {stage_id!r} invocation receipt is invalid"
+        ) from exc
+    expected_binding = StageContextBinding(
+        run_id=run.run_id,
+        attempt_id=attempt.attempt_id,
+        stage_id=stage_id,
+        parameter_model=stage.parameter_model,
+        parameter_digest=document_digest(stage.params),
+        inputs=_logical_input_paths(run, stage_id, stage, stage_specs),
+        retrievals=receipt.context.retrievals,
+        artifacts={name: value.path for name, value in stage.artifacts.items()},
+        metric_ids=stage.metric_ids,
+        numpy_generator_names=tuple(
+            sorted(run.reproducibility.numpy_randomness.generators)
+        ),
+    )
+    if receipt.implementation != stage.implementation:
+        raise VerificationError(
+            f"stage {stage_id!r} invocation used a different implementation"
+        )
+    if receipt.context != expected_binding:
+        raise VerificationError(
+            f"stage {stage_id!r} invocation context differs from the plan"
+        )
+    if receipt.context_digest != document_digest(expected_binding):
+        raise VerificationError(f"stage {stage_id!r} invocation context digest differs")
+    allowed_outcomes = (
+        {"succeeded", "failed"}
+        if attempt.status == "failed"
+        else {attempt.status}
+    )
+    if receipt.outcome not in allowed_outcomes:
+        raise VerificationError(
+            f"stage {stage_id!r} invocation outcome differs from its attempt"
+        )
+    if not (
+        attempt.started_at
+        <= receipt.started_at
+        < receipt.completed_at
+        <= attempt.completed_at
+    ):
+        raise VerificationError(
+            f"stage {stage_id!r} invocation timing falls outside its attempt"
+        )
+
+
 def _verify_download_retrievals(
     attempt: RunAttempt,
     run: RunSpec,
@@ -1711,6 +1773,10 @@ def verify_attempt_stages(
         )
     if len(attempt.invocations) > len(expected_stage_ids):
         raise VerificationError("attempt contains more invocations than planned stages")
+    if len(attempt.invocations) > len(attempt.resolved_stages) + 1:
+        raise VerificationError(
+            "attempt contains invocations after its unresolved active stage"
+        )
     for index, invocation in enumerate(attempt.invocations):
         expected_path = stage_invocation_path(
             run,
@@ -1879,6 +1945,21 @@ def verify_attempt_stages(
             )
 
         verified_stages[stage_reference.stage_id] = resolved_spec
+
+    if len(attempt.invocations) == len(attempt.resolved_stages) + 1:
+        stage_id = expected_stage_ids[len(attempt.resolved_stages)]
+        stage_spec = stage_specs[stage_id]
+        if not isinstance(stage_spec, ParameterizedSpec):
+            raise VerificationError("unresolved stage invocation is not parameterized")
+        _verify_unresolved_stage_invocation(
+            attempt.invocations[-1],
+            attempt=attempt,
+            run=run,
+            stage_id=stage_id,
+            stage=cast(ParameterizedStageSpec, stage_spec),
+            stage_specs=stage_specs,
+            fetcher=fetcher,
+        )
 
     return verified_stages
 
