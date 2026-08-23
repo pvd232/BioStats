@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import os
+import signal
 import subprocess
 import tempfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -84,6 +85,10 @@ from .workspace import AttemptWorkspace, RunWorkspaceLock, next_attempt_id
 
 class RunError(RuntimeError):
     """Report a local plan, source, materialization, or execution failure."""
+
+
+class AttemptPreempted(RunError):
+    """Stop one attempt after the coordinator receives host preemption."""
 
 
 class RunResult(BaseModel):
@@ -235,6 +240,17 @@ def _publish_attempt_files(
             if "/logs/" in str(reference.stored_at.path)
         ),
     )
+
+
+def _write_attempt_document(
+    root: Path,
+    run_root: str,
+    attempt: RunAttempt,
+) -> Path:
+    """Write one canonical immutable attempt document before the run head."""
+    path = root / run_root / "attempts" / str(attempt.attempt_id) / "resolved.yaml"
+    _write_synchronized(path, serialize_document(attempt))
+    return path
 
 
 def _resolved_git_file(
@@ -664,6 +680,14 @@ def run(
     metric_verification_paths: list[Path] = []
     log_files: dict[str, bytes] = {}
     active_stage_id: StageId | None = None
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def preempt_attempt(signum: int, frame: object) -> None:
+        """Convert host termination into a durable preemption outcome."""
+        del signum, frame
+        raise AttemptPreempted("coordinator received SIGTERM")
+
+    signal.signal(signal.SIGTERM, preempt_attempt)
     try:
         journal.append("allocated", "attempt allocated", recorded_at=attempt_started)
         preflight = preflight_local_plan(root, run_path)
@@ -935,21 +959,29 @@ def run(
             completed_at=datetime.now(UTC),
         )
         terminal_raw = serialize_document(resolved_run)
+        verify_run_result(resolved_run, policy=policy, fetcher=fetcher)
+        _write_attempt_document(root, run_root, attempt)
         _replace_synchronized(terminal_path, terminal_raw)
         _write_synchronized(workspace.terminal, terminal_raw)
-        verify_run_result(resolved_run, policy=policy, fetcher=fetcher)
         return RunResult(
             resolved_run=resolved_run,
             resolved_run_path=terminal_path,
             journal_path=journal.path,
         )
-    except Exception as exc:
+    except (Exception, KeyboardInterrupt) as exc:
         failed_at = datetime.now(UTC)
+        status: Literal["failed", "cancelled", "preempted"] = (
+            "cancelled"
+            if isinstance(exc, KeyboardInterrupt)
+            else "preempted"
+            if isinstance(exc, AttemptPreempted)
+            else "failed"
+        )
         latest = journal.latest()
         if latest is not None and latest.state != "terminal":
             journal.append(
                 "terminal",
-                "attempt failed",
+                f"attempt {status}",
                 recorded_at=failed_at,
                 details={
                     "stage_id": active_stage_id,
@@ -957,6 +989,11 @@ def run(
                 },
             )
         code = (
+            "cancelled"
+            if status == "cancelled"
+            else "preempted"
+            if status == "preempted"
+            else
             "preflight_failed"
             if isinstance(exc, RunError)
             and str(exc).startswith("plan preflight failed")
@@ -988,7 +1025,7 @@ def run(
         failed_attempt = RunAttempt(
             attempt_id=attempt_id,
             purpose="run",
-            status="failed",
+            status=status,
             started_at=attempt_started,
             completed_at=completed_at,
             resolved_stages=tuple(resolved_stage_refs),
@@ -1004,6 +1041,7 @@ def run(
                 occurred_at=failed_at,
             ),
         )
+        _write_attempt_document(root, run_root, failed_attempt)
         run_reference = GitFileRef(
             repository=run.source.repository,
             commit=plan_commit,
@@ -1015,7 +1053,7 @@ def run(
                 bytes=len(run_raw),
                 stored_at=run_reference,
             ),
-            status="failed",
+            status="cancelled" if status == "cancelled" else "failed",
             attempts=(*previous_attempts, failed_attempt),
             successful_attempt_id=None,
             completed_at=datetime.now(UTC),
@@ -1027,4 +1065,5 @@ def run(
             f"attempt {attempt_id} failed; evidence written to {terminal_path}"
         ) from exc
     finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
         run_lock.release()

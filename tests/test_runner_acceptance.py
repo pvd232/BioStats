@@ -520,6 +520,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     assert failed_run.attempts[0].failure.code == "execution_failed"
     assert len(failed_run.attempts[0].resolved_stages) == 1
     assert len(failed_run.attempts[0].invocations) == 2
+    assert (root / RUN_ROOT / "attempts/1/resolved.yaml").is_file()
 
     monkeypatch.setattr("viper.runner.execute_stage_process", execute_stage_process)
     result = execute_run(root, frozen.files[-1], retry=True)
@@ -527,6 +528,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     assert result.resolved_run.status == "succeeded"
     assert result.resolved_run_path.is_file()
     assert [attempt.attempt_id for attempt in result.resolved_run.attempts] == [1, 2]
+    assert (root / RUN_ROOT / "attempts/2/resolved.yaml").is_file()
     successful_attempt = result.resolved_run.attempts[1]
     assert len(successful_attempt.resolved_stages) == 2
     assert len(successful_attempt.measurement_files) == 2

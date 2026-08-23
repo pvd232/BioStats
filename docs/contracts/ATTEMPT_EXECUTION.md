@@ -22,7 +22,11 @@ Every successful or failed attempt reaches a terminal journal state and enters
 the terminal `ResolvedRun`. [`retry()`](../../viper/application.py) accepts the
 same frozen plan after a failed run and appends the next attempt.
 
-Signal handling and abandoned-journal reconciliation remain open.
+`SIGINT` closes the active attempt as `cancelled`. `SIGTERM` closes it as
+`preempted`. Each terminal attempt also writes its canonical
+`attempts/<attempt_id>/resolved.yaml` document. Abandoned-journal
+reconciliation and immutable references from the run head to those attempt
+documents remain open.
 
 ## Contract models
 
