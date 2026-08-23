@@ -27,9 +27,9 @@ Release freezes the import names listed in
 stable error codes, and capability-discovery output. Every documented name must
 exist in the installed wheel.
 
-The public project interface includes the stage decorators, typed stage
-contexts, and `viper.run(stage_callable)`. The CLI delegates execution to the
-same application coordinator.
+The public project interface includes the stage decorators, HTTP transport
+decorator, typed contexts, and `viper.run(stage_callable)`. The CLI delegates
+execution to the same application coordinator.
 
 ## Project scaffold
 

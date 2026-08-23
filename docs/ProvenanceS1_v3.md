@@ -1012,7 +1012,7 @@ The records below use these shared types:
 | `PythonRepoRelPath` | A `RepoRelPath` ending in `.py`. |
 | `PythonSymbol` | A top-level Python identifier selected from one module. |
 | `NormalizedDistributionName` | A Python distribution name normalized under the PyPA name-normalization rule. |
-| `HttpHeaderName` | A lowercase HTTP field name accepted by the controlled retrieval client. |
+| `HttpHeaderName` | A lowercase HTTP field name accepted by the controlled retriever and selected transport. |
 | `SHA256` | A 64-character lowercase hexadecimal digest. |
 | `GitCommit` | A 40- or 64-character lowercase hexadecimal commit ID. |
 | `NonEmptyStr` | A string containing at least one character. |
@@ -2395,6 +2395,51 @@ class HttpRequestSpec(ProtocolModel):
     credentials: EnvironmentSecretRef | None = None
 
 
+class HttpRetrievalPolicy(ProtocolModel):
+    allowed_schemes: frozenset[Literal["http", "https"]] = Field(min_length=1)
+    allowed_hosts: frozenset[NonEmptyStr] = Field(min_length=1)
+    allowed_ports: frozenset[
+        Annotated[int, Field(ge=1, le=65535)]
+    ] = Field(min_length=1)
+    accepted_statuses: frozenset[
+        Annotated[int, Field(ge=100, le=599)]
+    ] = frozenset({200})
+    max_redirects: int = Field(ge=0)
+    max_retrievals: int = Field(gt=0)
+    max_body_bytes: int = Field(gt=0)
+    timeout_seconds: float = Field(gt=0, allow_inf_nan=False)
+
+
+class HttpTransportParams(ParameterSet):
+    """Parameters consumed by one HTTP transport implementation."""
+
+
+class HttpTransportImplementationRef(ProtocolModel):
+    path: PythonRepoRelPath
+    symbol: PythonSymbol
+    sha256: SHA256
+    bytes: int = Field(gt=0)
+
+
+class BuiltinHttpTransportSpec(ProtocolModel):
+    kind: Literal["builtin"] = "builtin"
+    transport_id: Literal["httpx"] = "httpx"
+
+
+class ProjectHttpTransportSpec(ProtocolModel):
+    kind: Literal["project"] = "project"
+    transport_id: HumanId
+    implementation: HttpTransportImplementationRef
+    parameter_model: ParameterModelRef
+    params: HttpTransportParams
+
+
+HttpTransportSpec = Annotated[
+    BuiltinHttpTransportSpec | ProjectHttpTransportSpec,
+    Field(discriminator="kind"),
+]
+
+
 InternalInputRef = Annotated[
     StoredInputRef | FutureInputRef,
     Field(discriminator="kind"),
@@ -2407,7 +2452,15 @@ train stages consume stored or same-run artifacts.
 `EnvironmentSecretRef` places the value of its named environment variable in
 the selected request header after applying the public prefix. The persisted
 request retains the reference and redacts the value. `HttpRequestSpec.headers`
-excludes the selected secret header.
+excludes the selected secret header. `HttpRetrievalPolicy` constrains every
+initial request, follow-up request, and redirect target issued by one download
+stage. Host matching uses normalized, lower-case names and exact equality.
+Retrieval count applies to the complete stage. Body size and timeout apply to
+each logical retrieval.
+
+`BuiltinHttpTransportSpec` selects the HTTPX implementation shipped with
+VIPER. `ProjectHttpTransportSpec` selects one decorated callable from the
+project source and binds its project-defined parameter class and values.
 
 ### Stage specifications
 
@@ -2438,32 +2491,69 @@ class DownloadParams(ParameterSet):
 class DownloadSpec(ParameterizedSpec):
     kind: Literal["download"] = "download"
     inputs: dict[InputName, HttpRequestSpec] = Field(min_length=1)
+    transport: HttpTransportSpec
+    policy: HttpRetrievalPolicy
     params: DownloadParams
 
 
-class HttpResponseHandle(ProtocolModel):
-    exchange_index: int = Field(ge=0)
-    cause: Literal["initial", "redirect", "follow_up"]
+class ObservedHttpResponse(ProtocolModel):
     response_url: HttpUrl
     status: int = Field(ge=100, le=599)
     response_headers: dict[HttpHeaderName, str]
+
+
+class ExternalExecutableObservation(ProtocolModel):
+    name: HumanId
+    path: Path
+    version: NonEmptyStr
+
+
+TransportParamsT = TypeVar("TransportParamsT", bound=HttpTransportParams)
+
+
+class RuntimeHttpCredential(ProtocolModel):
+    header: HttpHeaderName
+    prefix: str
+    value: SecretStr
+
+
+class HttpTransportContext(ProtocolModel, Generic[TransportParamsT]):
+    schema_version: Literal[1] = 1
+    request: HttpRequestSpec
+    credential: RuntimeHttpCredential | None
+    workspace: Path
+    destination: Path
+    policy: HttpRetrievalPolicy
+    params: TransportParamsT
+
+
+class HttpTransportResult(ProtocolModel):
+    body: Path
+    response: ObservedHttpResponse | None = None
+    external_executables: tuple[ExternalExecutableObservation, ...] = ()
+
+
+class HttpRetrievalHandle(ProtocolModel):
+    retrieval_index: int = Field(ge=0)
+    cause: Literal["initial", "follow_up"]
+    response: ObservedHttpResponse | None
     body: Path
 
 
-class ControlledHttpClient(Protocol):
+class ControlledHttpRetriever(Protocol):
     def get(
         self,
         input_name: InputName,
         url: HttpUrl,
         *,
         headers: Mapping[HttpHeaderName, str] | None = None,
-    ) -> HttpResponseHandle:
+    ) -> HttpRetrievalHandle:
         ...
 
 
 class DownloadContext(StageContext[DownloadParams]):
-    responses: dict[InputName, tuple[HttpResponseHandle, ...]]
-    http: ControlledHttpClient
+    retrievals: dict[InputName, tuple[HttpRetrievalHandle, ...]]
+    http: ControlledHttpRetriever
 
 
 class InternalSpec(ParameterizedSpec):
@@ -2534,11 +2624,22 @@ The runtime context contains absolute attempt-workspace paths. Its persisted
 `StageContextBinding` contains their canonical repository-relative forms and
 the metric IDs bound to runner-owned handles.
 
-`DownloadContext.responses` exposes the verified response bodies already
-retrieved for each frozen input. `DownloadContext.http.get()` performs a
-follow-up request under the same input identity, credential reference, and
-network policy. The runner appends its request and response to that input's
-ordered `ResolvedHttpExchange` sequence before returning the handle.
+`viper.http_transport()` decorates one project transport callable. Freezing
+resolves its repository-relative path, symbol, SHA-256, byte count, parameter
+class, and parameter values into `ProjectHttpTransportSpec`. During execution,
+the runner constructs one `HttpTransportContext`, invokes the selected
+transport, hashes the returned body, and constructs `ResolvedHttpRetrieval`.
+
+The runner assigns each `HttpTransportContext` a dedicated retrieval workspace
+and an exact destination within it. A selected transport may use the workspace
+for temporary transfer files and returns only after the completed body exists
+at the destination.
+
+`DownloadContext.retrievals` exposes the verified bodies already retrieved for
+each frozen input. `DownloadContext.http.get()` performs a follow-up retrieval
+under the same input identity, credential reference, transport, and policy.
+The runner appends the result to that input's ordered retrieval sequence before
+returning the handle.
 
 Each core parameter class preserves a versioned JSON mapping. Every stage
 selects a project-owned Pydantic subclass through `parameter_model`.
@@ -2592,22 +2693,35 @@ inputs.
 ### Resolved stage specifications
 
 ```python
-class ResolvedHttpExchange(ProtocolModel):
+class ResolvedExternalExecutable(ProtocolModel):
+    name: HumanId
+    path: Path
+    version: NonEmptyStr
+    sha256: SHA256
+    bytes: int = Field(gt=0)
+
+
+class ResolvedHttpTransport(ProtocolModel):
+    spec: HttpTransportSpec
+    external_executables: tuple[ResolvedExternalExecutable, ...] = ()
+
+
+class ResolvedHttpRetrieval(ProtocolModel):
     input_name: InputName
-    exchange_index: int = Field(ge=0)
-    cause: Literal["initial", "redirect", "follow_up"]
+    retrieval_index: int = Field(ge=0)
+    cause: Literal["initial", "follow_up"]
     request: HttpRequestSpec
-    response_url: HttpUrl
-    status: int = Field(ge=100, le=599)
-    response_headers: dict[HttpHeaderName, str]
+    transport: ResolvedHttpTransport
+    response: ObservedHttpResponse | None
     body: ResolvedFileRef
+    started_at: AwareDatetime
     completed_at: AwareDatetime
 
 
 class ResolvedDownloadSpec(ResolvedBaseSpec):
     kind: Literal["download"] = "download"
     spec: DownloadSpec
-    exchanges: tuple[ResolvedHttpExchange, ...] = Field(min_length=1)
+    retrievals: tuple[ResolvedHttpRetrieval, ...] = Field(min_length=1)
 
 
 class ResolvedInternalSpec(ResolvedBaseSpec):
@@ -2645,37 +2759,40 @@ ResolvedSpec = Annotated[
 ]
 ```
 
-For the first exchange associated with each download input:
+For the first retrieval associated with each download input:
 
 ```text
-ResolvedHttpExchange.input_name
+ResolvedHttpRetrieval.input_name
 in keys(ResolvedDownloadSpec.spec.inputs)
 
-ResolvedHttpExchange.exchange_index
+ResolvedHttpRetrieval.retrieval_index
 == 0
 
-ResolvedHttpExchange.cause
+ResolvedHttpRetrieval.cause
 == initial
 
-ResolvedHttpExchange.request
-== ResolvedDownloadSpec.spec.inputs[ResolvedHttpExchange.input_name]
+ResolvedHttpRetrieval.request
+== ResolvedDownloadSpec.spec.inputs[ResolvedHttpRetrieval.input_name]
+
+ResolvedHttpRetrieval.transport.spec
+== ResolvedDownloadSpec.spec.transport
 ```
 
-Exchange indices begin at zero and remain contiguous within each input. Each
-exchange completion time lies within the containing attempt and precedes stage
-completion. `ResolvedHttpExchange.body` identifies the exact retrieved bytes.
-`DownloadContext.responses` supplies those verified bodies to the stage
+Retrieval indices begin at zero and remain contiguous within each input. Each
+retrieval interval lies within the containing attempt and precedes stage
+completion. `ResolvedHttpRetrieval.body` identifies the completed file.
+`DownloadContext.retrievals` supplies those verified bodies to the stage
 callable in the same input-scoped order. A promoted download artifact can then
 serve as a stored input selected by a later run.
 
-A redirect exchange follows the target declared by the preceding redirect
-response. A follow-up exchange records a call made through
+Redirects and segmented range requests remain internal to one transport
+invocation. A follow-up retrieval records one call made through
 `DownloadContext.http`.
 
 VIPER 0.1 trusts the project source identified by `RunSpec.source` to use the
-delivered handles for network input. The controlled client records every
-request made through `DownloadContext.http`. A future confinement contract
-will restrict direct outbound network access by project code.
+delivered handles for network input. The controlled retriever records every
+logical retrieval made through `DownloadContext.http`. A future confinement
+contract will restrict direct outbound network access by project code.
 
 For every resolved stage:
 
@@ -3287,9 +3404,10 @@ For each `ResolvedStageRef`, the verifier:
 9. Checks the resolved input names and kinds against the planned inputs.
 10. Checks that `completed_at` lies within the containing attempt and is at or
     after the prior completed stage.
-11. For a download stage, verifies each input-scoped HTTP exchange, cause,
-    response body, exchange index, completion time, and delivered response
-    handle.
+11. For a download stage, verifies each input-scoped logical retrieval, frozen
+    request, transport identity, transport parameters, external executable,
+    accepted terminal response when supplied, body identity, retrieval index,
+    completion interval, and delivered handle.
 
 These checks establish that the recorded runtime state satisfies:
 
@@ -3442,7 +3560,7 @@ The protocol publishes immutable snapshots in dependency order:
 |---|---|---|
 | A | Git | Source, experiment records, benchmark specs, loaders, lockfile, and existing promotion pointers. |
 | B | Git | One `RunSpec` and every stage-spec file identified by it. |
-| $C_{i,j}$ | Artifact repository | The resolved spec and every artifact file for stage $j$ of attempt $i$. |
+| $C_{i,j}$ | Artifact repository | The resolved spec, every retrieved body, and every artifact file for stage $j$ of attempt $i$. |
 | $D_i$ | Artifact repository | Attempt document, journal, metric-verification receipts, measurements, and logs for attempt $i$. |
 | E | Artifact repository | The terminal `ResolvedRun`. |
 | F | Artifact repository | The optional `BenchmarkResult`. |
@@ -3475,16 +3593,18 @@ For attempt $i$:
    environment.
 7. Launch the controlled child and record `ProcessStartupReceipt` and
    `ExecutionContext`.
-8. Validate the project parameter model, construct `StageContext`, and invoke
-   the exact callable selected by `StageImplementationRef`.
-9. Record `StageInvocationReceipt`.
-10. Resolve every declared artifact and construct the resolved stage spec.
-11. Publish the resolved stage spec and every artifact file together as
-    snapshot $C_{i,j}$.
-12. Retrieve and verify the complete snapshot.
-13. Construct `ResolvedStageRef` from the returned snapshot commit and resolved
+8. For a download stage, validate and invoke the selected HTTP transport for
+   every initial request, persist each body, and construct `DownloadContext`.
+9. Validate the stage parameter model, construct the applicable typed context,
+   and invoke the exact callable selected by `StageImplementationRef`.
+10. Record `StageInvocationReceipt`.
+11. Resolve every declared artifact and construct the resolved stage spec.
+12. Publish the resolved stage spec, every retrieved body, and every artifact
+    file together as snapshot $C_{i,j}$.
+13. Retrieve and verify the complete snapshot.
+14. Construct `ResolvedStageRef` from the returned snapshot commit and resolved
     stage-spec file identity.
-14. Append the verified stage result to the current attempt.
+15. Append the verified stage result to the current attempt.
 
 After the attempt reaches a terminal status:
 
@@ -3502,6 +3622,7 @@ stage execution
         ▼
 snapshot C_i,j
 ├── resolved stage spec
+├── every retrieved body for a download stage
 └── every file in every named artifact
         │
         ▼
@@ -3599,7 +3720,11 @@ repository/
                     ├── stages/
                     │   └── <stage_id>/
                     │       ├── spec.yaml
-                    │       └── resolved.yaml
+                    │       ├── resolved.yaml
+                    │       └── retrievals/
+                    │           └── <input_name>/
+                    │               └── <retrieval_index>/
+                    │                   └── body
                     ├── artifacts/
                     │   ├── datasets/
                     │   │   └── <dataset_id>/
@@ -3617,7 +3742,8 @@ repository/
                     │           └── <prediction file or bundle>
 ```
 
-Each `BaseSpec.implementation.path`, `MetricSpec.implementation.path`, and
+Each `BaseSpec.implementation.path`, project
+`HttpTransportImplementationRef.path`, `MetricSpec.implementation.path`, and
 `ArtifactSpec.loader.path` records its selected Python file as a
 `PythonRepoRelPath` value. For example, each of these paths is valid:
 
@@ -3625,11 +3751,12 @@ Each `BaseSpec.implementation.path`, `MetricSpec.implementation.path`, and
 src/my_project/training/fit.py
 pipelines/evaluate.py
 analysis/metrics/correlation.py
+transports/aria2.py
 loaders/model_bundle.py
 ```
 
 `RunSpec.source` fixes the exact bytes of every entrypoint, imported production
-module, metric, and artifact loader.
+module, project transport, metric, and artifact loader.
 
 When a project uses `tools/`, that directory contains repository-maintenance,
 migration, generation, and inspection utilities. A tool has one documented

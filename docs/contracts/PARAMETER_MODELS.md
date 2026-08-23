@@ -100,4 +100,5 @@ This contract proves parameter identity and validity. The current stage
 interface supplies the spec path to project code, which reloads the document.
 [Stage invocation](STAGE_INVOCATION.md) defines typed delivery of the validated
 value to the decorated callable. [HTTP retrieval](HTTP_RETRIEVAL.md) applies the
-same handoff to verified response bodies.
+same validation mechanism to `HttpTransportParams`. The selected transport
+callable receives that typed value through `HttpTransportContext`.

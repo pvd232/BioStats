@@ -98,7 +98,7 @@ Every implementation contract appears once in the execution sequence.
 | [Parameter models](contracts/PARAMETER_MODELS.md) | Implemented | Regression coverage in Phases 1 and 2 | The exact project class validates the frozen parameter mapping. Phase 1 owns typed delivery. |
 | [Stage invocation](contracts/STAGE_INVOCATION.md) | Approved | Phase 1 | The frozen callable receives the typed parameters and declared paths. |
 | [Process startup](contracts/PROCESS_STARTUP.md) | Approved | Phase 1 | The controlled child records its startup environment, applied controls, generator initialization, and observed runtime. |
-| [HTTP retrieval](contracts/HTTP_RETRIEVAL.md) | Approved | Phase 2 | Each exchange names its authored input and immutable response body; `DownloadContext` delivers the ordered verified handles. |
+| [HTTP retrieval](contracts/HTTP_RETRIEVAL.md) | Approved | Phase 2 | Each logical retrieval binds its authored request, selected transport, external executable identity, immutable body, and delivered context handle. |
 | [Artifact validation](contracts/ARTIFACT_VALIDATION.md) | Approved | Phase 3 | The verifier reports representation identity, loadability, or reserved semantic validity at its established level. |
 | [Metric provenance](contracts/METRIC_PROVENANCE.md) | Approved | Phase 4 | After-stage metrics bind file dependencies and recomputation evidence; during-stage metrics bind the controlled metric handle and measurement sink. |
 | [Attempt execution](contracts/ATTEMPT_EXECUTION.md) | Approved | Phase 5 | Each attempt has an immutable document and journal; retry allocates a greater ID and preserves every prior reference. |
@@ -222,41 +222,65 @@ python -m pytest tests/test_stage_invocation.py tests/test_process_startup.py \
 ### Protocol and authoring
 
 - [ ] Add `HttpRequestSpec`, `EnvironmentSecretRef`, and
-  `ResolvedHttpExchange`.
+  `HttpRetrievalPolicy`.
 - [ ] Replace `RemoteFileRef` inputs on `DownloadSpec` with frozen HTTP request
   specifications.
-- [ ] Store the complete ordered exchange sequence on
+- [ ] Add the built-in and project `HttpTransportSpec` variants and require one
+  selected transport on each `DownloadSpec`.
+- [ ] Add `HttpTransportImplementationRef`, `HttpTransportParams`, and the
+  `http_transport()` decorator.
+- [ ] Resolve decorated project transports to an exact callable, parameter
+  class, and frozen parameter mapping.
+- [ ] Store the complete ordered logical-retrieval sequence on
   `ResolvedDownloadSpec`.
-- [ ] Bind every exchange to `input_name`, use contiguous input-scoped
-  `exchange_index` values, record its initial, redirect, or follow-up cause,
-  and store each body through `ResolvedFileRef`.
+- [ ] Bind every retrieval to `input_name`, use contiguous input-scoped
+  `retrieval_index` values, record its initial or follow-up cause, and store
+  each completed body through `ResolvedFileRef`.
+- [ ] Add `ResolvedHttpTransport` and `ResolvedExternalExecutable` so a project
+  adapter identifies its Python wrapper and every external transfer binary.
 - [ ] Expand URL templates during authoring and freeze the canonical request.
 - [ ] Reject literal authorization values and preserve secret references.
 
 ### Runtime
 
-- [ ] Implement one controlled HTTP client with scheme, host, port, request
-  count, response-size, and timeout limits.
+- [ ] Add HTTPX as the built-in transport and pin it through the package and
+  effective Python-environment contracts.
+- [ ] Construct `HttpTransportContext` and invoke either the built-in transport
+  or the exact decorated project transport selected by the stage.
+- [ ] Enforce scheme, host, port, accepted-status, redirect-count,
+  retrieval-count, body-size, and timeout limits through
+  `HttpRetrievalPolicy`.
 - [ ] Resolve credentials at execution time through `EnvironmentSecretRef`.
 - [ ] Inject each secret into its declared HTTP header and redact its value
   from requests, receipts, logs, errors, and JSON results.
-- [ ] Store each response body by content digest before project code runs.
+- [ ] Assign each transport a dedicated retrieval workspace and exact body
+  destination; reject returned path escape and symlinks.
+- [ ] Hash and store each completed body before project download code runs.
+- [ ] Resolve, hash, and version every external executable returned by a project
+  transport.
 - [ ] Add `DownloadContext` as the `StageContext` extension that exposes typed
-  `DownloadParams`, input-scoped ordered response handles, and the controlled
-  follow-up request interface.
-- [ ] Record redirects and project-requested pagination calls in exchange
-  order.
-- [ ] Deliver only verified response handles through the download context.
+  `DownloadParams`, input-scoped ordered retrieval handles, and the controlled
+  follow-up retrieval interface.
+- [ ] Treat redirects and segmented range requests as internal operations of
+  one transport invocation; record project-requested pagination calls as new
+  logical retrievals.
+- [ ] Deliver only verified retrieval handles through the download context.
 - [ ] State the 0.1 trusted-project-source boundary in public documentation;
   complete network confinement remains deferred.
 
 ### Verification and acceptance
 
-- [ ] Verify the frozen first request, every realized target, HTTP status,
-  exchange order, response digest, response byte count, parameter model,
-  implementation identity, and published artifacts.
-- [ ] Exercise one static request, redirect, paginated source, secret reference,
-  request-policy failure, and same-length response tampering.
+- [ ] Verify the frozen first request, every follow-up target, selected transport,
+  transport parameters, external executable identity, retrieval order, body
+  digest, body byte count, stage implementation identity, and published
+  artifacts.
+- [ ] Add one reusable transport conformance suite for the built-in HTTPX
+  transport and decorated project transports.
+- [ ] Require each transport to reject an unaccepted terminal HTTP status,
+  including transports that omit structured response metadata.
+- [ ] Exercise one static request, redirect, range-capable source, paginated
+  source, secret reference, request-policy failure, returned path escape,
+  missing executable, modified transport source, and same-length body tampering.
 - [ ] Prove that the acceptance download callable consumes the response selected
   by its frozen request.
 
@@ -269,9 +293,10 @@ python -m pytest tests/test_http_retrieval.py tests/test_stage_invocation.py \
 
 **Commit boundaries**
 
-1. `Define frozen HTTP requests and resolved exchanges`
-2. `Execute downloads through the controlled HTTP client`
-3. `Verify HTTP response provenance`
+1. `Define selectable HTTP transports and logical retrievals`
+2. `Add decorated project HTTP transports`
+3. `Execute retrievals through the selected transport`
+4. `Verify HTTP retrieval provenance`
 
 ## Phase 3. Close artifact validation
 

@@ -11,6 +11,7 @@ uses the local-only execution names; the stage-invocation increment adds
 | --- | --- |
 | `viper.application` | Typed operations, requests, successes, failures, schema discovery, and capability discovery |
 | `viper.authoring` | Canonical experiment, variant, benchmark, stage, and run-plan documents |
+| `viper.http` | Built-in HTTPX retrieval, project transport decorators, typed transport contexts, and conformance helpers |
 | `viper.ids` | Validated identifier types |
 | `viper.inspection` | Deterministic attempt status, plan comparison, verified-run comparison, and lineage construction |
 | `viper.journal` | Synchronized attempt-state journals |
@@ -36,6 +37,7 @@ uses the local-only execution names; the stage-invocation increment adds
 ```python
 viper.application
 viper.authoring
+viper.http
 viper.ids
 viper.inspection
 viper.journal
@@ -61,8 +63,12 @@ viper.build_stage
 viper.embed_stage
 viper.train_stage
 viper.evaluate_stage
+viper.http_transport
 viper.StageContext
 viper.DownloadContext
+viper.HttpTransportContext
+viper.HttpTransportParams
+viper.HttpTransportResult
 viper.run
 ```
 
@@ -103,6 +109,22 @@ train, and evaluate specs inherit that contract.
 
 See [Project parameter models](contracts/PARAMETER_MODELS.md) for the authoring
 contract.
+
+## HTTP transports
+
+`viper.http` exposes:
+
+| Name | Responsibility |
+| --- | --- |
+| `http_transport()` | Decorate one project transport callable and bind its transport ID and parameter class. |
+| `HttpTransportContext` | Deliver one frozen request, a runtime credential, a dedicated retrieval workspace, the assigned destination, the retrieval policy, and validated transport parameters. |
+| `HttpTransportResult` | Return the completed body path, optional terminal HTTP response, and any external executable observations. |
+| `HttpTransportParams` | Base class for project-defined transport parameters. |
+| `run_transport_conformance()` | Exercise a selected transport against the VIPER retrieval contract. |
+
+The built-in transport ID is `httpx`. A `ProjectHttpTransportSpec` freezes a
+decorated callable through its repository-relative path, symbol, SHA-256, byte
+count, parameter model, and complete parameter mapping.
 
 ## Serialization compatibility
 
