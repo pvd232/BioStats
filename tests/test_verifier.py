@@ -127,14 +127,21 @@ RUN_ROOT = f"experiments/e001_strand/runs/baseline/{RUN_ID}"
 YAML_ADAPTER = TypeAdapter(Any)
 INSTRUCTION_SET: NonEmptyStr = "avx2"
 POLICY = verification_policy(REPOSITORY)
+ATTEMPT_JOURNAL_RAW = (
+    b'{"sequence":1,"state":"allocated",'
+    b'"recorded_at":"2026-08-21T12:00:00Z",'
+    b'"event":"attempt allocated","details":{}}\n'
+    b'{"sequence":2,"state":"terminal",'
+    b'"recorded_at":"2026-08-21T12:59:00Z",'
+    b'"event":"attempt terminal","details":{}}\n'
+)
 
 
 def attempt_journal(attempt_id: int) -> AttemptJournalRef:
     """Build one exact synthetic journal reference for an attempt fixture."""
-    raw = b'{"state":"terminal"}\n'
     return AttemptJournalRef(
-        sha256=sha256(raw),
-        bytes=len(raw),
+        sha256=sha256(ATTEMPT_JOURNAL_RAW),
+        bytes=len(ATTEMPT_JOURNAL_RAW),
         stored_at=git_file(f"{RUN_ROOT}/attempts/{attempt_id}/journal.jsonl"),
     )
 

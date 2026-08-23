@@ -561,7 +561,14 @@ def publish_attempt_journal(
     commit: str,
 ) -> AttemptJournalRef:
     """Publish one terminal attempt journal for a complete fixture chain."""
-    raw = b'{"sequence":1,"state":"terminal"}\n'
+    raw = (
+        b'{"sequence":1,"state":"allocated",'
+        b'"recorded_at":"2026-08-20T19:00:00Z",'
+        b'"event":"attempt allocated","details":{}}\n'
+        b'{"sequence":2,"state":"terminal",'
+        b'"recorded_at":"2026-08-20T19:01:00Z",'
+        b'"event":"attempt terminal","details":{}}\n'
+    )
     location = hf_file(
         commit,
         f"{run_root_path}/attempts/{attempt_id}/journal.jsonl",
