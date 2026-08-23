@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ class AttemptWorkspace:
     logs: Path
     terminal: Path
     lock: Path
+    _lock_descriptor: int | None = None
 
     @classmethod
     def create(
@@ -71,20 +73,46 @@ class AttemptWorkspace:
         return candidate
 
     def acquire(self) -> None:
-        """Acquire exclusive ownership of the run workspace."""
+        """Acquire operating-system-managed ownership of the run workspace."""
+        if self._lock_descriptor is not None:
+            raise WorkspaceError("run workspace already has an active owner")
+        self.lock.parent.mkdir(parents=True, exist_ok=True)
+        descriptor: int | None = None
         try:
             descriptor = os.open(
                 self.lock,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                os.O_CREAT | os.O_RDWR,
                 0o600,
             )
-        except FileExistsError as exc:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError) as exc:
+            if descriptor is not None:
+                os.close(descriptor)
             raise WorkspaceError("run workspace already has an active owner") from exc
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(f"{os.getpid()}\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+        os.ftruncate(descriptor, 0)
+        os.write(descriptor, f"{os.getpid()}\n".encode())
+        os.fsync(descriptor)
+        object.__setattr__(self, "_lock_descriptor", descriptor)
 
     def release(self) -> None:
-        """Release this attempt's exclusive run-workspace lock."""
-        self.lock.unlink(missing_ok=True)
+        """Release this process's advisory run-workspace lock."""
+        descriptor = self._lock_descriptor
+        if descriptor is None:
+            return
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+        object.__setattr__(self, "_lock_descriptor", None)
+
+
+def next_attempt_id(workspace_root: Path, run_id: RunId) -> int:
+    """Return one greater than every durable local attempt directory."""
+    run_root = workspace_root.resolve() / str(run_id)
+    attempt_ids: list[int] = []
+    if run_root.is_dir():
+        for path in run_root.iterdir():
+            if not path.is_dir() or not path.name.startswith("attempt-"):
+                continue
+            suffix = path.name.removeprefix("attempt-")
+            if suffix.isdecimal() and int(suffix) >= 1:
+                attempt_ids.append(int(suffix))
+    return max(attempt_ids, default=0) + 1

@@ -9,7 +9,7 @@ import pytest
 
 from viper.journal import DurableJournal, JournalEntry
 from viper.worker import ExecutionPolicy, WorkerError, WorkerRequest, execute_worker
-from viper.workspace import AttemptWorkspace, WorkspaceError
+from viper.workspace import AttemptWorkspace, WorkspaceError, next_attempt_id
 
 
 def test_workspace_enforces_exclusive_run_ownership(tmp_path: Path) -> None:
@@ -31,6 +31,15 @@ def test_workspace_rejects_path_escape(tmp_path: Path) -> None:
 
     with pytest.raises(WorkspaceError, match="escapes"):
         workspace.resolve("../../outside")
+
+
+def test_attempt_allocator_uses_durable_workspace_history(tmp_path: Path) -> None:
+    """Allocate one greater than every persisted attempt workspace ID."""
+    run_id = "01JABCDEFGHJKMNPQRSTVWXYZ"
+    AttemptWorkspace.create(tmp_path, run_id, 1)
+    AttemptWorkspace.create(tmp_path, run_id, 3)
+
+    assert next_attempt_id(tmp_path, run_id) == 4
 
 
 def test_journal_persists_ordered_attempt_transitions(tmp_path: Path) -> None:
