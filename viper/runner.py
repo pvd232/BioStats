@@ -23,6 +23,7 @@ from .paths import retrieval_body_path
 from .preflight import preflight_local_plan
 from .protocol import (
     ArtifactPointer,
+    AttemptJournalRef,
     BaseSpec,
     DownloadSpec,
     ExperimentSpec,
@@ -562,6 +563,7 @@ def run(
             )
         )
     )
+    run_root = f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
 
     workspace_root = root / ".viper" / "workspaces"
     run_lock = RunWorkspaceLock.for_run(workspace_root, run.run_id)
@@ -733,9 +735,6 @@ def run(
                 timeout_seconds,
                 attempt_id,
             )
-            run_root = (
-                f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
-            )
             log_files[
                 f"{run_root}/attempts/{attempt_id}/logs/"
                 f"{stage_reference.stage_id}.stdout.log"
@@ -764,16 +763,20 @@ def run(
             attempt_files[path.relative_to(root).as_posix()] = path.read_bytes()
         for path in metric_verification_paths:
             attempt_files[path.relative_to(root).as_posix()] = path.read_bytes()
-        attempt_references = store.resolved_files(attempt_files)
-        attempt_commit = (
-            attempt_references[0].stored_at.commit if attempt_references else None
-        )
         journal.append(
             "publishing_attempt_files",
-            "attempt files published",
+            "attempt evidence publication started",
             recorded_at=datetime.now(UTC),
-            details={"commit": attempt_commit},
+            details={},
         )
+        journal.append(
+            "terminal",
+            "attempt succeeded",
+            recorded_at=datetime.now(UTC),
+        )
+        journal_path = f"{run_root}/attempts/{attempt_id}/journal.jsonl"
+        attempt_files[journal_path] = journal.path.read_bytes()
+        attempt_references = store.resolved_files(attempt_files)
         measurement_references = tuple(
             reference
             for reference in attempt_references
@@ -789,18 +792,29 @@ def run(
             for reference in attempt_references
             if "/logs/" in str(reference.stored_at.path)
         )
+        journal_file = next(
+            reference
+            for reference in attempt_references
+            if reference.stored_at.path == journal_path
+        )
         attempt_completed = datetime.now(UTC)
         attempt = RunAttempt(
             attempt_id=attempt_id,
+            purpose="run",
             status="succeeded",
             started_at=attempt_started,
             completed_at=attempt_completed,
             resolved_stages=tuple(resolved_stage_refs),
             invocations=tuple(invocation_refs),
+            journal=AttemptJournalRef(
+                sha256=journal_file.sha256,
+                bytes=journal_file.bytes,
+                stored_at=journal_file.stored_at,
+            ),
             measurement_files=measurement_references,
             metric_verification_files=metric_verification_references,
             log_files=log_references,
-            failure_reason=None,
+            failure=None,
         )
         run_reference = GitFileRef(
             repository=run.source.repository,
@@ -820,21 +834,9 @@ def run(
         )
         terminal_raw = serialize_document(resolved_run)
         terminal_path = run_path.parent / "resolved.yaml"
-        journal.append(
-            "publishing_terminal_run",
-            "terminal run publication started",
-            recorded_at=datetime.now(UTC),
-            details={"path": terminal_path.relative_to(root).as_posix()},
-        )
         _write_synchronized(terminal_path, terminal_raw)
         _write_synchronized(workspace.terminal, terminal_raw)
         verify_run_result(resolved_run, policy=policy, fetcher=fetcher)
-        journal.append(
-            "terminal",
-            "terminal run verified",
-            recorded_at=datetime.now(UTC),
-            details={"resolved_run": terminal_path.relative_to(root).as_posix()},
-        )
         return RunResult(
             resolved_run=resolved_run,
             resolved_run_path=terminal_path,

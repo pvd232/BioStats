@@ -1180,6 +1180,33 @@ AttemptStatus = Literal[
     "cancelled",
 ]
 
+AttemptPurpose = Literal["run", "benchmark_confirmation"]
+AttemptFailureCode = Literal[
+    "preflight_failed",
+    "execution_failed",
+    "verification_failed",
+    "publication_failed",
+    "cancelled",
+    "preempted",
+    "coordinator_lost",
+    "internal_error",
+]
+
+
+class AttemptFailure(ProtocolModel):
+    """Identify the operation that terminated one unsuccessful attempt."""
+
+    code: AttemptFailureCode
+    stage_id: StageId | None
+    message: NonEmptyStr
+    occurred_at: AwareDatetime
+
+
+class AttemptJournalRef(ResolvedFileRef):
+    """Identify one immutable attempt journal."""
+
+    kind: Literal["attempt_journal"] = "attempt_journal"
+
 
 class ResolvedStageRef(ProtocolModel):
     """Binds one completed stage to its immutable stage-result snapshot."""
@@ -1193,6 +1220,7 @@ class RunAttempt(ProtocolModel):
     """Record the status and published files of one run attempt."""
 
     attempt_id: int = Field(ge=1)
+    purpose: AttemptPurpose
     status: AttemptStatus
 
     started_at: AwareDatetime
@@ -1200,28 +1228,48 @@ class RunAttempt(ProtocolModel):
 
     resolved_stages: tuple[ResolvedStageRef, ...]
     invocations: tuple[ResolvedStageInvocationRef, ...]
+    journal: AttemptJournalRef
     measurement_files: tuple[ResolvedFileRef, ...]
     metric_verification_files: tuple[ResolvedFileRef, ...] = ()
     log_files: tuple[ResolvedFileRef, ...]
 
-    failure_reason: str | None
+    failure: AttemptFailure | None
 
     @model_validator(mode="after")
     def validate_common_invariants(self) -> RunAttempt:
         """Enforce attempt outcome, timing, stage, and file invariants."""
-        if self.status == "succeeded" and self.failure_reason is not None:
-            raise ValueError("successful attempts must not have a failure reason")
+        if self.status == "succeeded" and self.failure is not None:
+            raise ValueError("successful attempts must not have failure evidence")
 
         if self.status == "succeeded" and not self.resolved_stages:
             raise ValueError("successful attempts must contain a completed stage")
 
-        if self.status != "succeeded" and (
-            self.failure_reason is None or not self.failure_reason.strip()
-        ):
+        if self.status != "succeeded" and self.failure is None:
             raise ValueError(
-                "failed, preempted, and cancelled attempts require a nonempty "
-                "failure reason"
+                "failed, preempted, and cancelled attempts require failure evidence"
             )
+
+        if self.failure is not None:
+            if self.failure.occurred_at > self.completed_at:
+                raise ValueError("attempt failure cannot follow attempt completion")
+            if self.failure.occurred_at < self.started_at:
+                raise ValueError("attempt failure cannot precede attempt start")
+            expected_code = {
+                "failed": {
+                    "preflight_failed",
+                    "execution_failed",
+                    "verification_failed",
+                    "publication_failed",
+                    "coordinator_lost",
+                    "internal_error",
+                },
+                "cancelled": {"cancelled"},
+                "preempted": {"preempted"},
+            }
+            if self.status != "succeeded" and self.failure.code not in expected_code[
+                self.status
+            ]:
+                raise ValueError("attempt failure code differs from terminal status")
 
         if self.completed_at <= self.started_at:
             raise ValueError("attempt completion must be after attempt start")

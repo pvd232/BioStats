@@ -30,6 +30,8 @@ from viper.protocol import (
     ArtifactLoaderRef,
     ArtifactPointer,
     ArtifactPointerRef,
+    AttemptFailure,
+    AttemptJournalRef,
     BenchmarkSpec,
     BuildParams,
     BuildSpec,
@@ -125,6 +127,16 @@ RUN_ROOT = f"experiments/e001_strand/runs/baseline/{RUN_ID}"
 YAML_ADAPTER = TypeAdapter(Any)
 INSTRUCTION_SET: NonEmptyStr = "avx2"
 POLICY = verification_policy(REPOSITORY)
+
+
+def attempt_journal(attempt_id: int) -> AttemptJournalRef:
+    """Build one exact synthetic journal reference for an attempt fixture."""
+    raw = b'{"state":"terminal"}\n'
+    return AttemptJournalRef(
+        sha256=sha256(raw),
+        bytes=len(raw),
+        stored_at=git_file(f"{RUN_ROOT}/attempts/{attempt_id}/journal.jsonl"),
+    )
 
 
 def loader_path(name: str) -> str:
@@ -1112,14 +1124,16 @@ class RunAndStageVerificationTests(unittest.TestCase):
         )
         attempt = RunAttempt(
             attempt_id=1,
+            purpose="run",
             status="succeeded",
             started_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
             completed_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
             resolved_stages=(stage,),
             invocations=(invocation,),
+            journal=attempt_journal(1),
             measurement_files=(),
             log_files=(),
-            failure_reason=None,
+            failure=None,
         )
         run_raw = yaml_bytes(run)
         record = ResolvedRun(
@@ -1177,11 +1191,13 @@ class RunAndStageVerificationTests(unittest.TestCase):
         )
         attempt = RunAttempt(
             attempt_id=1,
+            purpose="run",
             status="succeeded",
             started_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
             completed_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
             resolved_stages=(stage,),
             invocations=(),
+            journal=attempt_journal(1),
             measurement_files=(
                 ResolvedFileRef(
                     sha256=sha256(measurement_raw),
@@ -1189,7 +1205,10 @@ class RunAndStageVerificationTests(unittest.TestCase):
                     stored_at=HuggingFaceFileRef(
                         repository=HF_REPOSITORY,
                         commit=SNAPSHOT_COMMIT,
-                        path=f"{RUN_ROOT}/measurements/train.training_loss.jsonl",
+                        path=(
+                            f"{RUN_ROOT}/attempts/1/measurements/"
+                            "train.training_loss.jsonl"
+                        ),
                         repo_type="dataset",
                     ),
                 ),
@@ -1201,12 +1220,12 @@ class RunAndStageVerificationTests(unittest.TestCase):
                     stored_at=HuggingFaceFileRef(
                         repository=HF_REPOSITORY,
                         commit=SNAPSHOT_COMMIT,
-                        path=f"{RUN_ROOT}/logs/1.train.stdout.log",
+                        path=f"{RUN_ROOT}/attempts/1/logs/train.stdout.log",
                         repo_type="dataset",
                     ),
                 ),
             ),
-            failure_reason=None,
+            failure=None,
         )
         experiment = ExperimentSpec(
             experiment_id="e001_strand",
@@ -1216,8 +1235,9 @@ class RunAndStageVerificationTests(unittest.TestCase):
             metrics=(metric_spec("training_loss", "training"),),
         )
         documents = {
-            f"{RUN_ROOT}/measurements/train.training_loss.jsonl": measurement_raw,
-            f"{RUN_ROOT}/logs/1.train.stdout.log": log_raw,
+            f"{RUN_ROOT}/attempts/1/measurements/"
+            "train.training_loss.jsonl": measurement_raw,
+            f"{RUN_ROOT}/attempts/1/logs/train.stdout.log": log_raw,
         }
 
         measurements = verify_attempt_files(
@@ -1260,11 +1280,13 @@ class RunAndStageVerificationTests(unittest.TestCase):
         log_raw = b"training failed\n"
         attempt = RunAttempt(
             attempt_id=1,
+            purpose="run",
             status="failed",
             started_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
             completed_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
             resolved_stages=(),
             invocations=(),
+            journal=attempt_journal(1),
             measurement_files=(),
             log_files=(
                 ResolvedFileRef(
@@ -1273,12 +1295,17 @@ class RunAndStageVerificationTests(unittest.TestCase):
                     stored_at=HuggingFaceFileRef(
                         repository=HF_REPOSITORY,
                         commit=SNAPSHOT_COMMIT,
-                        path=f"{RUN_ROOT}/logs/1.train.stderr.log",
+                        path=f"{RUN_ROOT}/attempts/1/logs/train.stderr.log",
                         repo_type="dataset",
                     ),
                 ),
             ),
-            failure_reason="training process exited with status 1",
+            failure=AttemptFailure(
+                code="execution_failed",
+                stage_id="train",
+                message="training process exited with status 1",
+                occurred_at=datetime(2026, 8, 21, 12, 30, tzinfo=UTC),
+            ),
         )
         experiment = ExperimentSpec(
             experiment_id="e001_strand",
@@ -2011,14 +2038,16 @@ class FutureInputVerificationTests(unittest.TestCase):
         )
         attempt = RunAttempt(
             attempt_id=1,
+            purpose="run",
             status="succeeded",
             started_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
             completed_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
             resolved_stages=(producer_stage, consumer_stage),
             invocations=(build_invocation, train_invocation),
+            journal=attempt_journal(1),
             measurement_files=(),
             log_files=(),
-            failure_reason=None,
+            failure=None,
         )
         run_raw = yaml_bytes(run)
         record = ResolvedRun(
@@ -2050,7 +2079,12 @@ class FutureInputVerificationTests(unittest.TestCase):
         failed_attempt = attempt.model_copy(
             update={
                 "status": "failed",
-                "failure_reason": "later stage failed",
+                "failure": AttemptFailure(
+                    code="execution_failed",
+                    stage_id=None,
+                    message="later stage failed",
+                    occurred_at=datetime(2026, 8, 21, 12, 59, tzinfo=UTC),
+                ),
             }
         )
         failed_verified = verify_attempt_future_inputs(

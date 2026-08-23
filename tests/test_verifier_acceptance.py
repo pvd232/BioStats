@@ -36,6 +36,8 @@ from viper.protocol import (
     ArtifactLoaderRef,
     ArtifactPointer,
     ArtifactPointerRef,
+    AttemptFailure,
+    AttemptJournalRef,
     BaseSpec,
     BenchmarkResult,
     BenchmarkSpec,
@@ -551,6 +553,27 @@ def add_source_file(
     )
 
 
+def publish_attempt_journal(
+    store: DocumentStore,
+    *,
+    run_root_path: str,
+    attempt_id: int,
+    commit: str,
+) -> AttemptJournalRef:
+    """Publish one terminal attempt journal for a complete fixture chain."""
+    raw = b'{"sequence":1,"state":"terminal"}\n'
+    location = hf_file(
+        commit,
+        f"{run_root_path}/attempts/{attempt_id}/journal.jsonl",
+    )
+    store.put(location, raw)
+    return AttemptJournalRef(
+        sha256=sha256(raw),
+        bytes=len(raw),
+        stored_at=location,
+    )
+
+
 def resolved_environment(
     store: DocumentStore,
     source_commit: str,
@@ -1032,14 +1055,21 @@ def publish_producer_run(
     )
     attempt = RunAttempt(
         attempt_id=1,
+        purpose="run",
         status="succeeded",
         started_at=datetime(2026, 8, 20, 20, tzinfo=UTC),
         completed_at=datetime(2026, 8, 20, 20, 35, tzinfo=UTC),
         resolved_stages=(download_stage, train_stage),
         invocations=(download_invocation, train_invocation),
+        journal=publish_attempt_journal(
+            store,
+            run_root_path=run_root,
+            attempt_id=1,
+            commit=PRODUCER_RESULT_COMMIT,
+        ),
         measurement_files=(),
         log_files=(),
-        failure_reason=None,
+        failure=None,
     )
     resolved_run = ResolvedRun(
         spec=run_reference,
@@ -1469,7 +1499,7 @@ def build_complete_fixture(
     )
     measurement_location = hf_file(
         MAIN_FILES_COMMIT,
-        f"{run_root}/measurements/evaluate.pearson_correlation.jsonl",
+        f"{run_root}/attempts/1/measurements/evaluate.pearson_correlation.jsonl",
     )
     store.put(measurement_location, measurement_raw)
     measurement_reference = ResolvedFileRef(
@@ -1498,15 +1528,22 @@ def build_complete_fixture(
     )
     attempt = RunAttempt(
         attempt_id=1,
+        purpose="run",
         status="succeeded",
         started_at=datetime(2026, 8, 20, 21, tzinfo=UTC),
         completed_at=datetime(2026, 8, 20, 21, 45, tzinfo=UTC),
         resolved_stages=(build_stage, train_stage, evaluate_stage),
         invocations=(build_invocation, train_invocation, evaluate_invocation),
+        journal=publish_attempt_journal(
+            store,
+            run_root_path=run_root,
+            attempt_id=1,
+            commit=MAIN_FILES_COMMIT,
+        ),
         measurement_files=(measurement_reference,),
         metric_verification_files=(metric_verification_reference,),
         log_files=(),
-        failure_reason=None,
+        failure=None,
     )
     resolved_run = ResolvedRun(
         spec=run_reference,
@@ -1677,7 +1714,7 @@ def build_benchmark_fixture() -> tuple[
     )
     measurement_location = hf_file(
         "f" * 40,
-        f"{run_root}/measurements/evaluate.pearson_correlation.jsonl",
+        f"{run_root}/attempts/2/measurements/evaluate.pearson_correlation.jsonl",
     )
     store.put(measurement_location, measurement_raw)
     experiment = ExperimentSpec.model_validate(
@@ -1711,6 +1748,7 @@ def build_benchmark_fixture() -> tuple[
     )
     confirmation = RunAttempt(
         attempt_id=2,
+        purpose="benchmark_confirmation",
         status="succeeded",
         started_at=datetime(2026, 8, 20, 21, tzinfo=UTC),
         completed_at=datetime(2026, 8, 20, 21, 45, tzinfo=UTC),
@@ -1720,6 +1758,12 @@ def build_benchmark_fixture() -> tuple[
             confirmation_evaluate,
         ),
         invocations=(build_invocation, train_invocation, evaluate_invocation),
+        journal=publish_attempt_journal(
+            store,
+            run_root_path=run_root,
+            attempt_id=2,
+            commit="f" * 40,
+        ),
         measurement_files=(
             ResolvedFileRef(
                 sha256=sha256(measurement_raw),
@@ -1729,7 +1773,7 @@ def build_benchmark_fixture() -> tuple[
         ),
         metric_verification_files=(metric_verification_reference,),
         log_files=(),
-        failure_reason=None,
+        failure=None,
     )
 
     resolved_run_raw = yaml_bytes(resolved_run)
@@ -1859,14 +1903,21 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         )
         failed_attempt = RunAttempt(
             attempt_id=1,
+            purpose="run",
             status="failed",
             started_at=datetime(2026, 8, 20, 19, tzinfo=UTC),
             completed_at=datetime(2026, 8, 20, 20, tzinfo=UTC),
             resolved_stages=(successful_attempt.resolved_stages[0],),
             invocations=(successful_attempt.invocations[0],),
+            journal=successful_attempt.journal,
             measurement_files=(),
             log_files=(),
-            failure_reason="retry required",
+            failure=AttemptFailure(
+                code="execution_failed",
+                stage_id="train",
+                message="retry required",
+                occurred_at=datetime(2026, 8, 20, 19, 30, tzinfo=UTC),
+            ),
         )
         retried_run = resolved_run.model_copy(
             update={
@@ -1886,14 +1937,21 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         )
         failed_attempt = RunAttempt(
             attempt_id=1,
+            purpose="run",
             status="failed",
             started_at=datetime(2026, 8, 20, 19, tzinfo=UTC),
             completed_at=datetime(2026, 8, 20, 20, tzinfo=UTC),
             resolved_stages=(),
             invocations=(),
+            journal=successful_attempt.journal,
             measurement_files=successful_attempt.measurement_files,
             log_files=(),
-            failure_reason="retry required",
+            failure=AttemptFailure(
+                code="execution_failed",
+                stage_id="train",
+                message="retry required",
+                occurred_at=datetime(2026, 8, 20, 19, 30, tzinfo=UTC),
+            ),
         )
         retried_run = resolved_run.model_copy(
             update={

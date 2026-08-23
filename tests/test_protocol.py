@@ -243,14 +243,22 @@ class RunPlanTests(unittest.TestCase):
             RunAttempt.model_validate(
                 {
                     "attempt_id": 1,
+                    "purpose": "run",
                     "status": "succeeded",
                     "started_at": "2026-08-20T20:00:00Z",
                     "completed_at": "2026-08-20T20:01:00Z",
                     "resolved_stages": [],
                     "invocations": [],
+                    "journal": {
+                        "sha256": SHA_A,
+                        "bytes": 1,
+                        "stored_at": git_file(
+                            f"{RUN_ROOT}/attempts/1/journal.jsonl"
+                        ),
+                    },
                     "measurement_files": [],
                     "log_files": [],
-                    "failure_reason": None,
+                    "failure": None,
                 }
             )
 
@@ -265,17 +273,28 @@ class RunPlanTests(unittest.TestCase):
         }
         payload = {
             "attempt_id": 1,
+            "purpose": "run",
             "status": "failed",
             "started_at": "2026-08-20T20:00:00Z",
             "completed_at": "2026-08-20T20:01:00Z",
             "resolved_stages": [],
             "invocations": [],
+            "journal": {
+                "sha256": SHA_A,
+                "bytes": 1,
+                "stored_at": git_file(f"{RUN_ROOT}/attempts/1/journal.jsonl"),
+            },
             "measurement_files": [],
             "log_files": [
                 {"sha256": SHA_A, "bytes": 1, "stored_at": location},
                 {"sha256": SHA_B, "bytes": 1, "stored_at": location},
             ],
-            "failure_reason": "stage failed",
+            "failure": {
+                "code": "execution_failed",
+                "stage_id": "train",
+                "message": "stage failed",
+                "occurred_at": "2026-08-20T20:00:30Z",
+            },
         }
 
         with self.assertRaisesRegex(ValidationError, "storage locations"):

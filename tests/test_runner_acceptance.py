@@ -513,12 +513,11 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         "running_stage",
         "publishing_stage",
         "running_stage",
-        "publishing_stage",
-        "closing_attempt",
-        "publishing_attempt_files",
-        "publishing_terminal_run",
-        "terminal",
-    )
+            "publishing_stage",
+            "closing_attempt",
+            "publishing_attempt_files",
+            "terminal",
+        )
 
     store = LocalArtifactStore(root)
     fetcher = RunFetcher(root, store, REPOSITORY)
