@@ -16,6 +16,7 @@ from tests.fixtures import (
     builtin_http_transport,
     http_policy,
     http_request,
+    reproducibility,
     resume_state,
 )
 from viper import run as run_stage
@@ -46,7 +47,6 @@ from viper.protocol import (
     MetricSpec,
     ParameterModelRef,
     ReplicateSpec,
-    ReproducibilitySpec,
     ResolvedRun,
     RunSpec,
     SingleFileArtifactSpec,
@@ -121,42 +121,6 @@ def _git(root: Path, *arguments: str) -> str:
         capture_output=True,
         text=True,
     ).stdout.strip()
-
-
-def _reproducibility() -> ReproducibilitySpec:
-    """Build the strict CPU controls used by the local acceptance run."""
-    return ReproducibilitySpec.model_validate(
-        {
-            "determinism": {
-                "deterministic_algorithms": True,
-                "deterministic_warn_only": False,
-                "cudnn_deterministic": True,
-                "cudnn_benchmark": False,
-                "cublas_workspace_config": ":4096:8",
-            },
-            "precision": {
-                "float32_matmul_precision": "highest",
-                "cudnn_allow_tf32": False,
-                "autocast_enabled": False,
-                "autocast_dtype": None,
-            },
-            "parallelism": {
-                "process_count": 1,
-                "torch_intraop_threads": 1,
-                "torch_interop_threads": 1,
-                "dataloader": {
-                    "workers": 0,
-                    "prefetch_factor": None,
-                    "persistent_workers": False,
-                    "in_order": True,
-                },
-            },
-            "numpy_randomness": {
-                "generators": {"training": "PCG64"},
-                "capture_legacy_global": True,
-            },
-        }
-    )
 
 
 def test_local_fetcher_dispatches_hugging_face_inputs(
@@ -453,7 +417,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             seed=7,
             source=source,
             environment=environment,
-            reproducibility=_reproducibility(),
+            reproducibility=reproducibility(),
             stages=(
                 StageDraft(stage_id="download", spec_source=download_draft),
                 StageDraft(stage_id="train", spec_source=train_draft),

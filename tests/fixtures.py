@@ -23,6 +23,7 @@ from viper.protocol import (
     PCG64GeneratorState,
     PCG64InternalState,
     PythonRNGState,
+    ReproducibilitySpec,
     ResumeState,
     StageImplementationRef,
 )
@@ -131,6 +132,42 @@ def http_policy(
 def builtin_http_transport() -> BuiltinHttpTransportSpec:
     """Select the HTTPX transport for one synthetic download stage."""
     return BuiltinHttpTransportSpec()
+
+
+def reproducibility() -> ReproducibilitySpec:
+    """Build the strict single-process CPU controls used by execution tests."""
+    return ReproducibilitySpec.model_validate(
+        {
+            "determinism": {
+                "deterministic_algorithms": True,
+                "deterministic_warn_only": False,
+                "cudnn_deterministic": True,
+                "cudnn_benchmark": False,
+                "cublas_workspace_config": ":4096:8",
+            },
+            "precision": {
+                "float32_matmul_precision": "highest",
+                "cudnn_allow_tf32": False,
+                "autocast_enabled": False,
+                "autocast_dtype": None,
+            },
+            "parallelism": {
+                "process_count": 1,
+                "torch_intraop_threads": 1,
+                "torch_interop_threads": 1,
+                "dataloader": {
+                    "workers": 0,
+                    "prefetch_factor": None,
+                    "persistent_workers": False,
+                    "in_order": True,
+                },
+            },
+            "numpy_randomness": {
+                "generators": {"training": "PCG64"},
+                "capture_legacy_global": True,
+            },
+        }
+    )
 
 
 def verification_policy(*repositories: object) -> VerificationPolicy:
