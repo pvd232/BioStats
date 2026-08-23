@@ -23,6 +23,7 @@ from viper.application import compare_runs as compare_runs_application
 from viper.authoring import RunPlanDraft, StageDraft, freeze_run_plan
 from viper.journal import DurableJournal
 from viper.local_store import LocalArtifactStore
+from viper.metric_execution import MetricWorkerResult
 from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
@@ -466,6 +467,14 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     assert len(result.resolved_run.attempts[0].measurement_files) == 1
     assert result.journal_path.is_file()
     assert (result.journal_path.parent / "preflight.json").is_file()
+    metric_runtime = root / ".viper" / "runtime"
+    production_result = MetricWorkerResult.model_validate_json(
+        next(metric_runtime.glob("*.parameter_bytes.measurement.result.json")).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert production_result.receipt is not None
+    assert production_result.receipt.purpose == "measurement"
     assert tuple(
         entry.state for entry in DurableJournal(result.journal_path).read()
     ) == (

@@ -28,7 +28,8 @@ from .artifact_loaders import (
 )
 from .http import HttpRetrievalError, validate_request_policy
 from .ids import InputName, StageId
-from .metrics import MetricContext, compare_metric_values, load_metric
+from .metric_execution import MetricExecutionError, execute_metric_process
+from .metrics import compare_metric_values
 from .parameter_models import ParameterModelError, verify_parameter_model_bytes
 from .paths import retrieval_body_path
 from .protocol import (
@@ -71,6 +72,7 @@ from .protocol import (
     ResolvedFutureInputRef,
     ResolvedGCEEnvironment,
     ResolvedInternalSpec,
+    ResolvedMetricDependency,
     ResolvedRun,
     ResolvedRunSpecRef,
     ResolvedSingleFileArtifact,
@@ -267,6 +269,7 @@ class VerifiedArtifact:
     artifact: ResolvedArtifact
     files: tuple[VerifiedSnapshotFile, ...]
     data_role: DataRole
+    references: tuple[ResolvedFileRef, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -277,6 +280,7 @@ class VerifiedInput:
     data_role: DataRole
     artifact: ResolvedArtifact
     files: tuple[VerifiedSnapshotFile, ...]
+    references: tuple[ResolvedFileRef, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -619,7 +623,33 @@ def verify_snapshot_artifact(
         )
         for reference in references
     )
-    return VerifiedArtifact(artifact=artifact, files=files, data_role=data_role)
+    resolved_references = tuple(
+        ResolvedFileRef(
+            sha256=reference.sha256,
+            bytes=reference.bytes,
+            stored_at=(
+                LocalFileRef(
+                    store=stage.snapshot.store,
+                    commit=stage.snapshot.commit,
+                    path=reference.path,
+                )
+                if isinstance(stage.snapshot, LocalStageResultSnapshotRef)
+                else HuggingFaceFileRef(
+                    repository=stage.snapshot.repository,
+                    commit=stage.snapshot.commit,
+                    path=reference.path,
+                    repo_type=stage.snapshot.repo_type,
+                )
+            ),
+        )
+        for reference in references
+    )
+    return VerifiedArtifact(
+        artifact=artifact,
+        files=files,
+        data_role=data_role,
+        references=resolved_references,
+    )
 
 
 def load_verified_artifact(
@@ -1921,15 +1951,28 @@ def verify_attempt_files(
 def verify_measurement_stage_times(
     resolved_stages: Mapping[StageId, ResolvedBaseSpec],
     measurements: tuple[Measurement, ...],
+    experiment: ExperimentSpec,
 ) -> None:
-    """Require each measurement to occur by its named stage's completion."""
+    """Place live and recomputed measurements on the correct stage boundary."""
+    metrics = {metric.metric_id: metric for metric in experiment.metrics}
     for measurement in measurements:
         resolved_stage = resolved_stages.get(measurement.stage_id)
         if resolved_stage is None:
             raise VerificationError("measurement stage has no resolved stage result")
-        if measurement.measured_at > resolved_stage.completed_at:
+        metric = metrics[measurement.metric_id]
+        if (
+            metric.mode == "live"
+            and measurement.measured_at > resolved_stage.completed_at
+        ):
             raise VerificationError(
-                "measurement timestamp follows its named stage completion"
+                "live measurement timestamp follows its named stage completion"
+            )
+        if (
+            metric.mode == "recompute"
+            and measurement.measured_at < resolved_stage.completed_at
+        ):
+            raise VerificationError(
+                "recomputed measurement timestamp precedes stage completion"
             )
 
 
@@ -2037,6 +2080,17 @@ def verify_recomputed_metrics(
                 commit=plan.run.source.commit,
                 path=metric.implementation.path,
             )
+            dependencies = tuple(
+                ResolvedMetricDependency(
+                    dependency=dependency,
+                    files=(
+                        metric_inputs[dependency.name].references
+                        if dependency.source == "input"
+                        else metric_artifacts[dependency.name].references
+                    ),
+                )
+                for dependency in metric.dependencies
+            )
             with tempfile.TemporaryDirectory(prefix="viper-metric-") as directory:
                 root = Path(directory)
                 implementation = root / metric.implementation.path
@@ -2055,29 +2109,31 @@ def verify_recomputed_metrics(
                         verified_artifact,
                     )
                 try:
-                    recomputed = load_metric(
-                        implementation,
-                        metric.implementation.symbol,
-                    )(
-                        MetricContext(
-                            inputs={
-                                name: root / value.path
-                                for name, value in metric_inputs.items()
-                            },
-                            artifacts={
-                                name: root / stage.artifacts[name].path
-                                for name in metric_artifacts
-                            },
-                            params=metric.params,
-                        )
+                    process = execute_metric_process(
+                        root,
+                        plan.run,
+                        stage_id,
+                        stage,
+                        metric,
+                        attempt_id=attempt.attempt_id,
+                        purpose="verification",
+                        input_paths={
+                            name: root / value.path
+                            for name, value in metric_inputs.items()
+                        },
+                        artifact_paths={
+                            name: root / stage.artifacts[name].path
+                            for name in metric_artifacts
+                        },
+                        dependencies=dependencies,
                     )
-                except Exception as exc:
+                except MetricExecutionError as exc:
                     raise VerificationError(
                         f"metric {metric_id!r} recomputation failed"
                     ) from exc
             if not compare_metric_values(
                 recorded[0].value,
-                recomputed,
+                process.receipt.value,
                 cast(FloatComparator, metric.comparator),
             ):
                 raise VerificationError(
@@ -2153,7 +2209,11 @@ def verify_run_result(
             plan.stages,
             fetcher=fetcher,
         )
-        verify_measurement_stage_times(verified_stages, attempt_measurements)
+        verify_measurement_stage_times(
+            verified_stages,
+            attempt_measurements,
+            plan.experiment,
+        )
         verify_recomputed_metrics(
             attempt,
             plan,
@@ -2405,6 +2465,7 @@ def verify_stored_inputs(
                 data_role=spec_input.data_role,
                 artifact=verified_artifact.artifact,
                 files=verified_artifact.files,
+                references=verified_artifact.references,
             )
 
         verify_stored_input_selections(
@@ -2548,6 +2609,7 @@ def verify_attempt_future_inputs(
                 data_role=declared_artifact.data_role,
                 artifact=verified_artifact.artifact,
                 files=verified_artifact.files,
+                references=verified_artifact.references,
             )
 
         if stage_inputs:
@@ -2683,6 +2745,7 @@ def verify_benchmark_result(
     verify_measurement_stage_times(
         confirmation_stages,
         confirmation_measurements,
+        verified_run.plan.experiment,
     )
     verify_recomputed_metrics(
         result.confirmation,

@@ -430,9 +430,9 @@ python -m pytest tests/test_artifact_loaders.py tests/test_artifact_validation.p
 - [x] Enforce every dependency's data role before invoking metric code.
 - [ ] Record live measurements through the runner-owned
   `MeasurementSink`.
-- [ ] Invoke recomputed metrics through a dedicated controlled worker for
+- [x] Invoke recomputed metrics through a dedicated controlled worker for
   measurement production.
-- [ ] Launch a second dedicated worker for independent recomputation.
+- [x] Launch a second dedicated worker for independent recomputation.
 - [ ] Persist both `MetricExecutionReceipt` values in one
   `MetricVerificationReceipt`.
 - [ ] Verify implementation identity, dependency identity, parameters,

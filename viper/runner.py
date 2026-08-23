@@ -16,7 +16,8 @@ from .http import HttpRetrievalError, invoke_transport, resolve_transport
 from .ids import InputName, StageId
 from .journal import DurableJournal
 from .local_store import LocalArtifactStore, snapshot_file
-from .metrics import MeasurementSink, MetricContext, load_metric
+from .metric_execution import MetricExecutionError, execute_metric_process
+from .metrics import MeasurementSink
 from .paths import retrieval_body_path
 from .preflight import preflight_local_plan
 from .protocol import (
@@ -29,17 +30,20 @@ from .protocol import (
     InternalSpec,
     LocalEnvironmentSpec,
     LocalStageResultSnapshotRef,
+    MetricSpec,
     RepoRelPath,
     ResolvedArtifactPointerRef,
     ResolvedBuildSpec,
     ResolvedDownloadSpec,
     ResolvedEmbedSpec,
     ResolvedEvaluateSpec,
+    ResolvedFileRef,
     ResolvedFutureInputRef,
     ResolvedGitFileRef,
     ResolvedHttpRetrieval,
     ResolvedInternalInputRef,
     ResolvedLocalEnvironment,
+    ResolvedMetricDependency,
     ResolvedRun,
     ResolvedRunSpecRef,
     ResolvedSpec,
@@ -248,6 +252,58 @@ def _artifact_paths(root: Path, stage: BaseSpec) -> dict[str, Path]:
     return {name: root / artifact.path for name, artifact in stage.artifacts.items()}
 
 
+def _publish_metric_dependency(
+    root: Path,
+    path: Path,
+    store: LocalArtifactStore,
+) -> tuple[ResolvedFileRef, ...]:
+    """Publish every regular file represented by one metric dependency path."""
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root):
+        raise RunError("metric dependency path escapes the repository root")
+    if resolved.is_symlink():
+        raise RunError("metric dependencies must not be symbolic links")
+    if resolved.is_file():
+        relative = resolved.relative_to(root).as_posix()
+        return store.resolved_files({relative: resolved.read_bytes()})
+    if not resolved.is_dir():
+        raise RunError("metric dependency path is absent")
+    files: dict[str, bytes] = {}
+    for member in sorted(resolved.rglob("*")):
+        if member.is_symlink():
+            raise RunError("metric dependency bundles must not contain symlinks")
+        if member.is_file():
+            files[member.relative_to(root).as_posix()] = member.read_bytes()
+    if not files:
+        raise RunError("metric dependency bundle contains no regular files")
+    return store.resolved_files(files)
+
+
+def _resolve_metric_dependencies(
+    root: Path,
+    stage: BaseSpec,
+    metric: MetricSpec,
+    input_paths: Mapping[str, Path],
+    store: LocalArtifactStore,
+) -> tuple[ResolvedMetricDependency, ...]:
+    """Bind each declared metric dependency to immutable file references."""
+    artifact_paths = _artifact_paths(root, stage)
+    resolved: list[ResolvedMetricDependency] = []
+    for dependency in metric.dependencies:
+        selected = (
+            input_paths[dependency.name]
+            if dependency.source == "input"
+            else artifact_paths[dependency.name]
+        )
+        resolved.append(
+            ResolvedMetricDependency(
+                dependency=dependency,
+                files=_publish_metric_dependency(root, selected, store),
+            )
+        )
+    return tuple(resolved)
+
+
 def _retrieve_download_inputs(
     root: Path,
     workspace: AttemptWorkspace,
@@ -308,52 +364,47 @@ def _run_after_stage_metrics(
     experiment: ExperimentSpec,
     input_paths: Mapping[str, Path],
     measurement_paths: list[Path],
-    fetcher: RunFetcher,
+    store: LocalArtifactStore,
+    timeout_seconds: float | None,
 ) -> None:
-    """Invoke each selected after-stage metric and append its Measurement row."""
+    """Invoke each selected recomputed metric in a controlled child process."""
     metrics = {metric.metric_id: metric for metric in experiment.metrics}
     for metric_id in stage.metric_ids:
         metric = metrics[metric_id]
         if metric.mode != "recompute":
             continue
-        implementation = root / metric.implementation.path
-        frozen_implementation = fetcher(
-            GitFileRef(
-                repository=run.source.repository,
-                commit=run.source.commit,
-                path=metric.implementation.path,
-            )
+        dependencies = _resolve_metric_dependencies(
+            root,
+            stage,
+            metric,
+            input_paths,
+            store,
         )
-        if (
-            implementation.read_bytes() != frozen_implementation
-            or len(frozen_implementation) != metric.implementation.bytes
-            or hashlib.sha256(frozen_implementation).hexdigest()
-            != metric.implementation.sha256
-        ):
-            raise RunError(
-                f"metric {metric_id!r} implementation differs from frozen source"
-            )
+        available_artifacts = _artifact_paths(root, stage)
+        metric_inputs = {
+            dependency.name: input_paths[dependency.name]
+            for dependency in metric.dependencies
+            if dependency.source == "input"
+        }
+        metric_artifacts = {
+            dependency.name: available_artifacts[dependency.name]
+            for dependency in metric.dependencies
+            if dependency.source == "artifact"
+        }
         try:
-            callable_metric = load_metric(implementation, metric.implementation.symbol)
-            available_artifacts = _artifact_paths(root, stage)
-            metric_inputs = {
-                dependency.name: input_paths[dependency.name]
-                for dependency in metric.dependencies
-                if dependency.source == "input"
-            }
-            metric_artifacts = {
-                dependency.name: available_artifacts[dependency.name]
-                for dependency in metric.dependencies
-                if dependency.source == "artifact"
-            }
-            value = callable_metric(
-                MetricContext(
-                    inputs=metric_inputs,
-                    artifacts=metric_artifacts,
-                    params=metric.params,
-                )
+            process = execute_metric_process(
+                root,
+                run,
+                stage_id,
+                stage,
+                metric,
+                purpose="measurement",
+                input_paths=metric_inputs,
+                artifact_paths=metric_artifacts,
+                dependencies=dependencies,
+                timeout_seconds=timeout_seconds,
             )
-        except Exception as exc:
+        except MetricExecutionError as exc:
             raise RunError(f"metric {metric_id!r} invocation failed") from exc
         path = (
             root
@@ -367,7 +418,7 @@ def _run_after_stage_metrics(
             attempt_id=1,
             stage_id=stage_id,
             metric_id=metric_id,
-        ).append(value)
+        ).append(process.receipt.value)
         measurement_paths.append(path)
 
 
@@ -557,16 +608,6 @@ def run(
                 stored_at=invocation_file.stored_at,
             )
             invocation_refs.append(invocation_ref)
-            _run_after_stage_metrics(
-                root,
-                run,
-                stage_reference.stage_id,
-                stage,
-                experiment,
-                input_paths,
-                measurement_paths,
-                fetcher,
-            )
             stage_completed = datetime.now(UTC)
             resolved = _resolved_stage(
                 stage,
@@ -610,6 +651,17 @@ def run(
             )
             resolved_stage_refs.append(resolved_stage_ref)
             completed[stage_reference.stage_id] = resolved_stage_ref
+            _run_after_stage_metrics(
+                root,
+                run,
+                stage_reference.stage_id,
+                stage,
+                experiment,
+                input_paths,
+                measurement_paths,
+                store,
+                timeout_seconds,
+            )
             run_root = (
                 f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
             )

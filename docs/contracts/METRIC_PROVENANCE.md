@@ -3,10 +3,11 @@
 ## Status
 
 Metric decorators, exact implementation references, dependency binding,
-restricted metric contexts, measurement writing, floating-point comparators,
-and in-process recomputation are implemented. Live metric handles, dedicated
-metric workers, and complete execution receipts are approved for VIPER 0.1.
-Each worker receipt selects the run and attempt that own its metric execution.
+restricted metric contexts, controlled metric workers, measurement writing,
+and floating-point comparators are implemented. The production and
+verification workers each return a complete `MetricExecutionReceipt`. Live
+metric handles and immutable verification-receipt publication remain approved
+for VIPER 0.1.
 
 ## Required claim
 
@@ -21,10 +22,11 @@ dependency. The runner and verifier construct
 [`MetricContext`](../../viper/metrics.py) from that dependency set and reject a
 data-role mismatch before invocation.
 
-The runner and verifier still execute recomputed metric code inside their own
-processes. The metric process's startup evidence remains absent. Live training
-metrics have decorators and a stateful base class. The stage runtime still
-omits the controlled metric handle.
+The runner and verifier launch separate metric workers under the run's startup
+controls. Each worker records its startup and observed execution context. The
+attempt still omits the immutable file that binds both worker receipts to the
+recorded measurement. Live training metrics have decorators and a stateful base
+class. The stage runtime still omits the controlled metric handle.
 
 The approved worker receipt adds the run ID and attempt ID that own the
 measurement. The production and verification workers must select those same

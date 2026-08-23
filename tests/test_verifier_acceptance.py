@@ -1391,7 +1391,7 @@ def build_complete_fixture(
         b'{"run_id":"01ARZ3NDEKTSV4RRFFQ69G5FAB",'
         b'"attempt_id":1,"stage_id":"evaluate",'
         b'"metric_id":"pearson_correlation","value":0.91,'
-        b'"measured_at":"2026-08-20T21:39:00Z"}\n'
+        b'"measured_at":"2026-08-20T21:41:00Z"}\n'
     )
     measurement_location = hf_file(
         MAIN_FILES_COMMIT,
@@ -1579,7 +1579,7 @@ def build_benchmark_fixture() -> tuple[
         b'{"run_id":"01ARZ3NDEKTSV4RRFFQ69G5FAB",'
         b'"attempt_id":2,"stage_id":"evaluate",'
         b'"metric_id":"pearson_correlation","value":0.91,'
-        b'"measured_at":"2026-08-20T21:39:00Z"}\n'
+        b'"measured_at":"2026-08-20T21:41:00Z"}\n'
     )
     measurement_location = hf_file(
         "f" * 40,
@@ -1704,15 +1704,15 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(VerificationError, "SHA-256 mismatch"):
             verify_run_result(resolved_run, policy=POLICY, fetcher=store.fetch)
 
-    def test_measurement_cannot_follow_its_named_stage(self) -> None:
-        """Verify that measurement cannot follow its named stage."""
+    def test_measurement_cannot_follow_its_attempt(self) -> None:
+        """Reject a recomputed measurement written after attempt completion."""
         resolved_run, store, _ = build_complete_fixture()
         attempt = resolved_run.attempts[0]
         measurement_raw = (
             b'{"run_id":"01ARZ3NDEKTSV4RRFFQ69G5FAB",'
             b'"attempt_id":1,"stage_id":"evaluate",'
             b'"metric_id":"pearson_correlation","value":0.91,'
-            b'"measured_at":"2026-08-20T21:44:00Z"}\n'
+            b'"measured_at":"2026-08-20T21:46:00Z"}\n'
         )
         reference = attempt.measurement_files[0].model_copy(
             update={
@@ -1724,7 +1724,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         invalid_attempt = attempt.model_copy(update={"measurement_files": (reference,)})
         invalid_run = resolved_run.model_copy(update={"attempts": (invalid_attempt,)})
 
-        with self.assertRaisesRegex(VerificationError, "stage completion"):
+        with self.assertRaisesRegex(VerificationError, "containing attempt"):
             verify_run_result(invalid_run, policy=POLICY, fetcher=store.fetch)
 
     def test_run_rejects_stage_snapshot_reused_by_a_retry(self) -> None:
