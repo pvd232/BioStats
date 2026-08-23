@@ -1150,6 +1150,7 @@ class StageContextBinding(ProtocolModel):
     inputs: dict[InputName, RepoRelPath]
     artifacts: dict[ArtifactName, RepoRelPath]
     metric_ids: tuple[MetricId, ...]
+    numpy_generator_names: tuple[HumanId, ...]
 
 
 class StageInvocationReceipt(ProtocolModel):
@@ -2044,6 +2045,16 @@ ProcessStartupReceipt.reproducibility
 
 set(receipt.seed for receipt in ProcessStartupReceipt.generators)
 == {RunSpec.seed}
+
+StageContextBinding.numpy_generator_names
+== tuple(sorted(RunSpec.reproducibility.numpy_randomness.generators))
+
+set(
+    receipt.name
+    for receipt in ProcessStartupReceipt.generators
+    if receipt.family == "numpy_generator"
+)
+== set(StageContextBinding.numpy_generator_names)
 ```
 
 Generator receipts are unique by family, name, and device index. The named
@@ -2054,6 +2065,15 @@ and `torch_cpu` receipts. `ProcessStartupReceipt.environment` equals the
 canonical allowlisted startup mapping derived for the selected stage.
 `name` is present exactly for `numpy_generator`, and `device_index` is present
 exactly for `torch_cuda`.
+
+The child retains each configured `numpy.random.Generator` created while
+applying the run controls. Immediately before stage invocation, the child
+places those objects in the read-only `StageContext.numpy_generators` mapping.
+The mapping keys equal `StageContextBinding.numpy_generator_names`. The
+corresponding `GeneratorInitializationReceipt` values contain the states hashed
+immediately after generator initialization. The child constructs the receipts
+and runtime mapping from one name-to-object mapping. A key mismatch terminates
+startup before callable invocation.
 
 The executor records `ResolvedEnvironment`, `ExecutionContext`, and
 `ProcessStartupReceipt`. The verifier establishes the requested-to-realized
@@ -2101,7 +2121,7 @@ BaseSpec.implementation
 -> exact callable
 
 StageContextBinding
--> exact run, attempt, stage, parameters, inputs, and artifacts
+-> exact run, attempt, stage, parameters, inputs, artifacts, metrics, and named generators
 
 exact callable(StageContext)
 -> one recorded invocation
@@ -2320,6 +2340,8 @@ class Measurement(ProtocolModel):
 
 class MetricExecutionReceipt(ProtocolModel):
     schema_version: Literal[1] = 1
+    run_id: RunId
+    attempt_id: int = Field(ge=1)
     metric_id: MetricId
     stage_id: StageId
     purpose: Literal["measurement", "verification"]
@@ -2381,12 +2403,34 @@ Each recomputed metric produces one `MetricVerificationReceipt`. Its
 `recomputation` receipt records the independent verification worker. Both
 receipts contain the exact implementation, parameters, resolved dependencies,
 startup evidence, observed execution context, value, and execution interval.
+The coordinator supplies the active run, attempt, stage, and metric identities
+to both workers. The worker owns every receipt identity field. Metric code
+returns the scalar value.
 
 The embedded measurement equals one row in the containing attempt's
-measurement file for the same stage and metric. The production value equals
-the measurement value. The recomputation value satisfies `comparator` against
-the measurement value. The containing attempt identifies the immutable receipt
-file through `RunAttempt.metric_verification_files`.
+measurement file. Both execution receipts contain run, attempt, stage, and
+metric identities equal to the embedded measurement. The production value
+equals the measurement value. The recomputation value satisfies `comparator`
+against the measurement value. The containing attempt identifies the immutable
+receipt file through `RunAttempt.metric_verification_files`.
+
+```text
+MetricVerificationReceipt.production.run_id
+== MetricVerificationReceipt.recomputation.run_id
+== MetricVerificationReceipt.measurement.run_id
+
+MetricVerificationReceipt.production.attempt_id
+== MetricVerificationReceipt.recomputation.attempt_id
+== MetricVerificationReceipt.measurement.attempt_id
+
+MetricVerificationReceipt.production.stage_id
+== MetricVerificationReceipt.recomputation.stage_id
+== MetricVerificationReceipt.measurement.stage_id
+
+MetricVerificationReceipt.production.metric_id
+== MetricVerificationReceipt.recomputation.metric_id
+== MetricVerificationReceipt.measurement.metric_id
+```
 
 ## 17. Concrete stage records
 
@@ -2515,6 +2559,7 @@ class StageContext(Generic[ParamsT]):
     inputs: Mapping[InputName, Path]
     artifacts: Mapping[ArtifactName, Path]
     metrics: Mapping[MetricId, MetricHandle]
+    numpy_generators: Mapping[HumanId, np.random.Generator]
 
 
 class ParameterizedSpec(BaseSpec):
@@ -2641,9 +2686,10 @@ exact callable(StageContext)
 -> StageInvocationReceipt
 ```
 
-The runtime context contains absolute attempt-workspace paths. Its persisted
-`StageContextBinding` contains their canonical repository-relative forms and
-the metric IDs bound to runner-owned handles.
+The runtime context contains absolute attempt-workspace paths and the named
+NumPy generator objects initialized by the child. Its persisted
+`StageContextBinding` contains the canonical repository-relative paths, the
+metric IDs bound to runner-owned handles, and the sorted generator names.
 
 `viper.http_transport()` decorates one project transport callable. Freezing
 resolves its repository-relative path, symbol, SHA-256, byte count, parameter
@@ -3407,8 +3453,8 @@ For each `ResolvedStageRef`, the verifier:
 7. Retrieves `ResolvedBaseSpec.invocation`, verifies its file identity, and
    parses `StageInvocationReceipt`.
 8. Reconstructs `StageContextBinding`; checks its parameter digest, input and
-   artifact paths, metric IDs, canonical context digest, callable identity,
-   and successful outcome against the receipt.
+   artifact paths, metric IDs, named NumPy generator keys, canonical context
+   digest, callable identity, and successful outcome against the receipt.
 9. Checks the recorded child-process command.
 10. Checks the resolved input names and kinds against the planned inputs.
 11. Checks that `completed_at` lies within the containing attempt and is at or
@@ -3465,7 +3511,9 @@ For a metric with `mode="recompute"`, the verifier:
    dependency paths.
 6. Records the verification worker's startup evidence and execution context.
 7. Applies `FloatComparator` to the recomputed and recorded values.
-8. Verifies both worker receipts inside `MetricVerificationReceipt`.
+8. Verifies both worker receipts inside `MetricVerificationReceipt`, including
+   equality of their run, attempt, stage, and metric identities with the
+   embedded measurement.
 
 For a metric with `mode="live"`, the verifier establishes that the active
 `StageContext` contained the frozen metric handle and that the measurement was
@@ -3613,8 +3661,9 @@ For attempt $i$:
    `ExecutionContext`.
 8. For a download stage, validate and invoke the selected HTTP transport for
    every frozen request, persist each body, and construct `DownloadContext`.
-9. Validate the stage parameter model, construct the applicable typed context,
-   and invoke the exact callable selected by `StageImplementationRef`.
+9. Validate the stage parameter model, bind the configured named NumPy
+   generators, construct the applicable typed context, and invoke the exact
+   callable selected by `StageImplementationRef`.
 10. Record and publish `StageInvocationReceipt` as snapshot $I_{i,j}$.
 11. Construct `ResolvedStageInvocationRef` from the published receipt.
 12. Resolve every declared artifact and construct the resolved stage spec.

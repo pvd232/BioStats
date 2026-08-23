@@ -24,9 +24,9 @@ Each contract uses one status:
 |---|---|---|
 | [Parameter models](PARAMETER_MODELS.md) | Implemented | Project parameter identity and validation |
 | [Stage invocation](STAGE_INVOCATION.md) | Approved | Typed delivery of validated stage parameters and paths |
-| [Process startup](PROCESS_STARTUP.md) | Draft | Run-wide controls applied before each stage callable executes |
+| [Process startup](PROCESS_STARTUP.md) | Approved | Run-wide controls applied before each stage callable executes |
 | [HTTP retrieval](HTTP_RETRIEVAL.md) | Approved | Selectable transport delivery of verified retrieved files |
-| [Metric provenance](METRIC_PROVENANCE.md) | Draft | Exact metric dependencies, execution, and recomputation |
+| [Metric provenance](METRIC_PROVENANCE.md) | Approved | Exact metric dependencies, execution, and recomputation |
 | [Artifact validation](ARTIFACT_VALIDATION.md) | Approved | File identity, loadability, and reserved semantic validation |
 | [Attempt execution](ATTEMPT_EXECUTION.md) | Approved | Failed attempts, successive attempt IDs, and retry |
 | [Benchmark execution](BENCHMARK_EXECUTION.md) | Approved | Independent confirmation produced from a frozen run plan |

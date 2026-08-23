@@ -51,6 +51,7 @@ class StageContext(Generic[ParamsT]):
     inputs: Mapping[InputName, Path]
     artifacts: Mapping[ArtifactName, Path]
     metrics: Mapping[MetricId, MetricHandle]
+    numpy_generators: Mapping[HumanId, np.random.Generator]
 ```
 
 `StageImplementationRef` identifies the callable invoked for the stage. At
@@ -75,6 +76,7 @@ StageContext[TrainParameters]
 ├── inputs: materialized input paths
 ├── artifacts: writable output paths
 ├── metrics: runner-owned metric handles
+├── numpy_generators: configured named NumPy generators
 ├── run_id
 ├── attempt_id
 └── stage_id
@@ -95,6 +97,7 @@ context = StageContext[TrainParameters](
     inputs=materialized_inputs,
     artifacts=writable_artifact_paths,
     metrics=bound_metric_handles,
+    numpy_generators=named_numpy_generators,
 )
 
 train(context)
@@ -105,11 +108,16 @@ identifies source code. VIPER creates a new `StageContext` for each run attempt
 because the invocation identity, validated values, and workspace paths belong
 to that attempt.
 
+`numpy_generators` maps every name in the frozen
+`NumPyRandomnessSpec.generators` field to the exact generator object initialized
+inside the controlled child. The mapping is read-only. The callable advances a
+generator's internal state by drawing from that generator.
+
 `StageContextBinding` is the serializable description from which the child
 constructs `StageContext`. The binding contains stable identities, digests, and
 repository-relative paths. The child resolves those paths beneath the active
-attempt workspace and attaches the live metric handles before calling the
-project function.
+attempt workspace and attaches the live metric handles and named NumPy
+generators before calling the project function.
 
 Each parameterized stage replaces `BaseSpec.script` with:
 
@@ -154,7 +162,7 @@ load the frozen stage spec
 -> validate params into the selected project class
 -> import the selected top-level callable
 -> confirm its decorator metadata
--> construct StageContext with the typed parameter object
+-> construct StageContext with the typed parameter object and named generators
 -> invoke the callable once
 -> record the completed invocation
 ```
@@ -179,6 +187,7 @@ class StageContextBinding(ProtocolModel):
     inputs: dict[InputName, RepoRelPath]
     artifacts: dict[ArtifactName, RepoRelPath]
     metric_ids: tuple[MetricId, ...]
+    numpy_generator_names: tuple[HumanId, ...]
 
 
 class StageInvocationReceipt(ProtocolModel):
@@ -198,7 +207,9 @@ The coordinator constructs `StageContextBinding` before launching the child.
 Each input value is the repository-relative materialization path declared by
 the stage. Each artifact value is the repository-relative output path declared
 by the stage. `metric_ids` identifies the runner-owned handles placed in the
-runtime context. Absolute workspace paths exist only in `StageContext`.
+runtime context. `numpy_generator_names` is the sorted tuple of configured
+generator names. Absolute workspace paths and generator objects exist only in
+`StageContext`.
 
 The canonical digests are:
 
@@ -209,8 +220,9 @@ parameter_digest = sha256(serialize_document(stage.params)).hexdigest()
 
 `serialize_document()` is VIPER's deterministic protocol encoder. The child
 receives the same binding, resolves each logical path beneath its attempt
-workspace, constructs `StageContext`, and records the binding and digest in the
-receipt. Absolute paths and live handles remain outside the serialized digest.
+workspace, attaches the initialized generator objects and metric handles,
+constructs `StageContext`, and records the binding and digest in the receipt.
+Absolute paths and live handles remain outside the serialized digest.
 
 Every invocation receipt is published at:
 
@@ -236,7 +248,7 @@ attempt later preserves the same reference.
 | `stage.decorator` | The callable's decorator kind and parameter-model class agree with the frozen stage. |
 | `parameter_model.identity` | `receipt.context.parameter_model` equals the frozen parameter model. |
 | `parameter.value` | `receipt.context.parameter_digest` equals the canonical digest of `stage.params`. |
-| `stage.context` | `receipt.context` equals the binding reconstructed from the run, attempt, stage, resolved inputs, and declared artifacts; its serialized bytes match `context_digest`. |
+| `stage.context` | `receipt.context` equals the binding reconstructed from the run, attempt, stage, resolved inputs, declared artifacts, selected metrics, and configured NumPy generator names; its serialized bytes match `context_digest`. |
 | `stage.outcome` | A successful resolved stage references one successful invocation receipt. Every started invocation appears in `RunAttempt.invocations` with the terminal outcome observed for that child. |
 
 These checks establish typed delivery to the callable. Project tests establish
@@ -249,7 +261,7 @@ how the callable uses each field while producing its scientific result.
 | Protocol | Add `StageImplementationRef`, `StageContextBinding`, `StageInvocationReceipt`, and `ResolvedStageInvocationRef`; replace `BaseSpec.script` on parameterized stages. |
 | Decorators | Add one decorator for each stage kind and expose its frozen metadata. |
 | Authoring | Resolve the top-level callable and freeze its exact identity. |
-| Runtime | Add typed contexts and invoke the callable with the validated project parameter object. |
+| Runtime | Add typed contexts and invoke the callable with the validated project parameter object and configured named NumPy generators. |
 | Persistence | Publish each invocation receipt once, reference it from the attempt, and reference successful invocations from their resolved stages. |
 | Verification | Apply the six stage-invocation checks. |
 | Tests | Replace constant fixture scripts with callables that assert typed parameters and declared paths. |

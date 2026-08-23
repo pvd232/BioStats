@@ -75,6 +75,10 @@ viper.run
 `viper.run(stage_callable)` is the ordinary Python adapter. The complete-plan
 application operation remains `viper.application.run(request)`.
 
+`viper.StageContext.numpy_generators` exposes the named NumPy generator objects
+configured by the frozen run controls. The mapping keys match the names stored
+in the stage invocation binding and process-startup receipts.
+
 The release application surface also includes:
 
 ```python

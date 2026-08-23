@@ -129,7 +129,7 @@ preflight plan
 -> acquire run lock
 -> materialize verified inputs
 -> start one controlled child for each stage
--> pass the exact callable its typed StageContext
+-> pass the exact callable its typed StageContext and named NumPy generators
 -> invoke and verify declared metrics
 -> publish immutable local snapshots
 -> publish the attempt document and evidence files
@@ -305,9 +305,9 @@ references. Verification checks the connected plan, stage results, inputs,
 artifacts, measurements, logs, runtime controls, and terminal selection.
 Metrics with `mode="recompute"` execute in a dedicated production worker and a
 second verification worker. Both receive the frozen implementation, verified
-dependencies, and frozen parameters. VIPER records each worker's startup and
-runtime evidence, then applies the metric's declared comparator to the two
-values.
+dependencies, frozen parameters, and the owning run and attempt identities.
+VIPER records each worker's startup and runtime evidence, then applies the
+metric's declared comparator to the two values.
 
 Expected errors: `invalid_document`, `not_found`, `io_failed`,
 `verification_failed`.

@@ -5,8 +5,8 @@
 Metric decorators, measurement writing, floating-point comparators, and
 in-process recomputation are implemented. Exact dependency binding, live metric
 handles, dedicated metric workers, and complete execution receipts are drafted
-for VIPER 0.1. The system audit found one open ownership binding in the worker
-receipt.
+and approved for VIPER 0.1. Each worker receipt selects the run and attempt that
+own its metric execution.
 
 ## Required claim
 
@@ -27,8 +27,9 @@ dependency set and the metric process's startup evidence remain implicit.
 Live training metrics have decorators and a stateful base class. The stage
 runtime still omits the controlled metric handle.
 
-The proposed worker receipt identifies the stage and metric. It still needs the
-run ID and attempt ID that own the measurement and both worker executions.
+The approved worker receipt adds the run ID and attempt ID that own the
+measurement. The production and verification workers must select those same
+identities.
 
 ## Contract models
 
@@ -182,6 +183,11 @@ Verification repeats that sequence in a second metric worker. The verifier
 compares the second value with the recorded measurement through the frozen
 `FloatComparator`.
 
+The coordinator supplies the active `run_id`, `attempt_id`, `stage_id`, and
+`metric_id` to each worker. The worker constructs `MetricExecutionReceipt`
+from those coordinator-owned values. The worker owns the receipt identities.
+Metric code returns the scalar value.
+
 For `mode="live"`, the controlled stage child loads the selected function or
 stateful class before invoking the stage callable. `StageContext.metrics`
 contains the bound `MetricHandle`. Every recorded value enters
@@ -194,6 +200,8 @@ Each dedicated worker writes its complete execution evidence:
 ```python
 class MetricExecutionReceipt(ProtocolModel):
     schema_version: Literal[1] = 1
+    run_id: RunId
+    attempt_id: int = Field(ge=1)
     metric_id: MetricId
     stage_id: StageId
     purpose: Literal["measurement", "verification"]
@@ -221,9 +229,31 @@ class MetricVerificationReceipt(ProtocolModel):
 ```
 
 The production receipt's value equals `measurement.value`. Both execution
-receipts identify the same metric implementation, parameters, and resolved
-dependencies. Their `purpose` values distinguish the original measurement
-from independent verification.
+receipts identify `measurement.run_id`, `measurement.attempt_id`,
+`measurement.stage_id`, and `measurement.metric_id`. They also identify the
+same metric implementation, parameters, and resolved dependencies. Their
+`purpose` values distinguish the original measurement from independent
+verification.
+
+The ownership equalities are:
+
+```text
+production.run_id
+== recomputation.run_id
+== measurement.run_id
+
+production.attempt_id
+== recomputation.attempt_id
+== measurement.attempt_id
+
+production.stage_id
+== recomputation.stage_id
+== measurement.stage_id
+
+production.metric_id
+== recomputation.metric_id
+== measurement.metric_id
+```
 
 The attempt publishes the verification receipt as an immutable file. The
 attempt-file reference supplies its SHA-256 and byte count, so the receipt
@@ -240,7 +270,7 @@ contract can add independent recomputation for selected live metrics.
 | `metric.implementation` | Both worker receipts identify the implementation frozen by `MetricSpec` and `RunSpec.source`. |
 | `metric.dependencies` | Every resolved dependency matches one declared dependency, stage value, data role, and complete verified file set. |
 | `metric.parameters` | Both worker receipts contain the parameters frozen by `MetricSpec`. |
-| `metric.measurement` | The embedded measurement equals one row in the attempt's measurement file and identifies the active run, attempt, stage, and metric. |
+| `metric.measurement` | The embedded measurement equals one row in the attempt's measurement file. Both worker receipts contain its run, attempt, stage, and metric identities. |
 | `metric.production` | The production worker's value equals the recorded measurement. |
 | `metric.environment` | Each worker's startup and execution evidence satisfies the effective environment and run-wide reproducibility controls. |
 | `metric.recompute` | The recomputation value satisfies the frozen comparator against the recorded measurement. |
@@ -266,12 +296,14 @@ launches a second worker with the same immutable files and accepts equal values.
 
 The dependency rejection case adds an undeclared `holdout_labels` path to the
 worker context. `metric.dependencies` fails before metric invocation. The
-runtime rejection case changes the recomputation worker's recorded CUDA or
-Python environment. `metric.environment` fails.
+ownership rejection case assigns the recomputation receipt to another attempt.
+`metric.measurement` fails. The runtime rejection case changes the
+recomputation worker's recorded CUDA or Python environment.
+`metric.environment` fails.
 
 ## Implementation order
 
-1. Add implementation, dependency, mode, and receipt models.
+1. Add implementation, dependency, mode, and run-owned receipt models.
 2. Freeze decorator metadata into `MetricSpec`.
 3. Restrict each `MetricContext` to the declared dependencies.
 4. Reuse the controlled worker launcher for production and recomputation.

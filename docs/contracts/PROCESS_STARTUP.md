@@ -3,9 +3,9 @@
 ## Status
 
 Runner-launched stages already receive process-start environment variables and
-run-wide library controls. The shared Python and CLI startup design is drafted
-for VIPER 0.1. The system audit found one open connector for named NumPy
-generator delivery.
+run-wide library controls. The shared Python and CLI startup design is approved
+for VIPER 0.1. Named NumPy generator initialization, delivery, and persisted
+identity form one connected contract.
 
 ## Required claim
 
@@ -78,8 +78,9 @@ load and verify RunSpec and selected stage spec
    and the stage's effective environment
 -> launch one child process with that environment
 -> apply library-level controls inside the child
+-> initialize the configured named NumPy generators
 -> observe the host CPU and selected compute backend
--> construct the typed StageContext
+-> construct the typed StageContext with those generator objects
 -> invoke the decorated callable
 -> write the invocation and runtime evidence
 -> publish and verify the stage result
@@ -195,10 +196,41 @@ The DataLoader state enters the training `resume_state` artifact at a checkpoint
 boundary. A future runner-owned DataLoader construction contract can add a
 startup receipt for a dedicated loader generator.
 
-The runtime still needs one explicit interface that delivers each configured
-named NumPy generator to the stage callable. The receipt proves creation; the
-missing interface must make the same object available through `StageContext` or
-another runner-owned runtime handle.
+`apply_reproducibility()` returns the named NumPy generator objects it creates.
+The child wraps that name-to-object mapping in a read-only mapping and assigns
+it to `StageContext.numpy_generators`. The stage callable therefore receives the
+same generator objects the child hashed for the `numpy_generator` receipts.
+
+`StageContextBinding.numpy_generator_names` stores the sorted names from
+`NumPyRandomnessSpec.generators`. The binding carries generator identity across
+the process boundary. `ProcessStartupReceipt.generators` carries each
+generator's initialized-state digest. The child constructs the runtime mapping
+with exactly those names before invoking the stage callable.
+
+The child owns the join:
+
+```python
+named_generators, generator_receipts = apply_reproducibility(run_controls)
+
+if tuple(sorted(named_generators)) != binding.numpy_generator_names:
+    fail_startup("startup.context")
+
+context = StageContext(
+    run_id=binding.run_id,
+    attempt_id=binding.attempt_id,
+    stage_id=binding.stage_id,
+    params=params,
+    inputs=resolve_paths(binding.inputs, workspace),
+    artifacts=resolve_paths(binding.artifacts, workspace),
+    metrics=metric_handles,
+    numpy_generators=MappingProxyType(named_generators),
+)
+```
+
+The worker hashes each value in `named_generators` to construct its
+`GeneratorInitializationReceipt`, then passes that same mapping to
+`StageContext`. A name mismatch ends startup before callable invocation and
+produces a failed invocation receipt.
 
 For a CUDA stage, the coordinator selects one device whose model satisfies the
 frozen `CUDAComputeSpec`. `CUDA_VISIBLE_DEVICES` exposes that device to the
@@ -256,9 +288,9 @@ versions active in the child.
 | `startup.plan` | The child context identifies the frozen run and selected stage. |
 | `startup.environment` | The values read by the child equal the canonical allowlisted mapping derived from the run controls and effective stage environment. |
 | `startup.controls` | The controls queried after application equal `RunSpec.reproducibility`. |
-| `startup.randomness` | The receipt set matches every configured generator; each receipt contains `RunSpec.seed` and its initialized state digest. |
+| `startup.randomness` | The named generator receipts and `StageContextBinding.numpy_generator_names` match `NumPyRandomnessSpec.generators`. Every generator receipt contains `RunSpec.seed` and its initialized-state digest. |
 | `startup.callable` | The child invokes the exact decorated callable frozen by the stage spec. |
-| `startup.context` | The callable receives the typed context bound to the selected stage. |
+| `startup.context` | The callable receives the typed context bound to the selected stage. Its `numpy_generators` mapping contains the exact initialized objects named by the binding. |
 | `startup.runtime` | The resolved stage contains the host CPU and numerical runtime observed inside the child. |
 | `startup.backend` | The observed backend kind equals the effective compute kind. A CUDA backend contains one device whose model equals the frozen request, plus the observed driver, PyTorch CUDA, and cuDNN versions. |
 | `startup.distributed` | A CUDA request with `count` greater than `1` fails preflight and directs the run to the future distributed-execution contract. |
@@ -273,9 +305,9 @@ versions active in the child.
 | Worker | Load the frozen callable and invoke it with the typed context. |
 | Stage execution | Use the same child-process startup path for Python and CLI callers. |
 | Runtime | Select the compute backend from the effective environment and observe the host CPU plus the selected CPU or CUDA backend. |
-| Persistence | Store the applied startup receipt, invocation reference, CPU, compute-backend, and numerical-runtime evidence on the resolved stage. |
+| Persistence | Store the applied startup receipt, generator names, invocation reference, CPU, compute-backend, and numerical-runtime evidence on the resolved stage. |
 | Verification | Apply the ten startup checks above. |
-| Tests | Exercise direct Python execution, CLI execution, start-time controls, one invocation, CPU execution on a GPU-capable host, one CUDA device, and a multi-device rejection. |
+| Tests | Exercise direct Python execution, CLI execution, named generator delivery, start-time controls, one invocation, CPU execution on a GPU-capable host, one CUDA device, and a multi-device rejection. |
 
 ## Acceptance case
 
@@ -284,6 +316,13 @@ frozen run path and stage ID. The coordinator starts a controlled child, the
 decorated function receives `TrainParameters(epochs=3)`, and the resolved stage
 records the child environment, callable identity, context digest, and successful
 outcome.
+
+The same stage configures a named `augmentation` generator. The callable
+retrieves `context.numpy_generators["augmentation"]` and draws its first value.
+The initialized-state digest in `ProcessStartupReceipt` belongs to that named
+generator. Omitting `augmentation` from the runtime context fails
+`startup.context`; changing its configured name or receipt fails
+`startup.randomness`.
 
 The rejection case changes the child context to another stage ID. The
 `startup.plan` check rejects the invocation before the project callable runs.
@@ -310,8 +349,10 @@ requires each process to operate on its assigned device:
 2. Add the direct `viper.run(stage_callable)` adapter.
 3. Generalize the application coordinator and CLI command to `run`.
 4. Invoke every callable through the controlled child-process path.
-5. Select the effective compute backend and observe the host CPU plus the CPU or
+5. Return the configured named NumPy generators from control application and
+   bind them to `StageContext`.
+6. Select the effective compute backend and observe the host CPU plus the CPU or
    CUDA backend inside the child.
-6. Persist and verify the startup evidence.
-7. Add direct-Python, CLI, CPU, and single-GPU acceptance tests for the same
+7. Persist and verify the startup evidence.
+8. Add direct-Python, CLI, CPU, and single-GPU acceptance tests for the same
    frozen run.

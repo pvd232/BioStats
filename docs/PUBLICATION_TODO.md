@@ -98,10 +98,10 @@ Every implementation contract appears once in the execution sequence.
 |---|---|---|---|
 | [Parameter models](contracts/PARAMETER_MODELS.md) | Implemented | Regression coverage in Phases 1 and 2 | The exact project class validates the frozen parameter mapping. Phase 1 owns typed delivery. |
 | [Stage invocation](contracts/STAGE_INVOCATION.md) | Approved | Phase 1 | The frozen callable receives the typed parameters and declared paths. |
-| [Process startup](contracts/PROCESS_STARTUP.md) | Draft | Phase 1 | The controlled child records its startup environment, applied controls, generator initialization, and observed runtime. Audit closure must define delivery of configured named NumPy generators. |
+| [Process startup](contracts/PROCESS_STARTUP.md) | Approved | Phase 1 | The controlled child records its startup environment, applied controls, generator initialization, generator delivery, and observed runtime. |
 | [HTTP retrieval](contracts/HTTP_RETRIEVAL.md) | Approved | Phase 2 | Each declared input binds its frozen request, expected body identity, selected transport, terminal response, external executable identity, and delivered context handle. |
 | [Artifact validation](contracts/ARTIFACT_VALIDATION.md) | Approved | Phase 3 | The verifier reports representation identity, loadability, or reserved semantic validity at its established level. |
-| [Metric provenance](contracts/METRIC_PROVENANCE.md) | Draft | Phase 4 | Recomputed metrics bind exact dependencies and two worker executions; live metrics bind a controlled metric handle and measurement sink. Audit closure must bind each worker receipt to its run and attempt. |
+| [Metric provenance](contracts/METRIC_PROVENANCE.md) | Approved | Phase 4 | Recomputed metrics bind exact dependencies and two run-owned worker executions; live metrics bind a controlled metric handle and measurement sink. |
 | [Attempt execution](contracts/ATTEMPT_EXECUTION.md) | Approved | Phase 5 | Each attempt has an immutable document and journal; retry allocates a greater ID and preserves every prior reference. |
 | [Benchmark execution](contracts/BENCHMARK_EXECUTION.md) | Approved | Phase 6 | `execute_benchmark()` produces one independent confirmation and persists the artifact and metric comparison receipts accepted by `verify_benchmark()`. |
 | [Cloud execution](contracts/CLOUD_EXECUTION.md) | Approved | Phase 7 | The installed wheel executes in place on GCE and verifies the host, backend, and exact Python environment. |
@@ -131,7 +131,7 @@ The current repository supplies the foundation consumed by Phase 1:
   and attempt status.
 - [x] Build configuration, a four-version CI matrix, and installed-wheel import
   smoke commands.
-- [x] Ruff, Pyright, 129 tests, and 13 subtests at commit `d5580ee`.
+- [x] Ruff, Pyright, 130 tests, and 13 subtests at audit baseline `6228ee6`.
 
 ### Named verifier-rule coverage
 
@@ -212,8 +212,10 @@ python -m pytest tests/test_contract_audit.py -q
 - [ ] Add generic `StageContext` with typed parameters, materialized input
   paths, writable artifact paths, a metric-handle mapping, run ID, attempt ID,
   and stage ID. Phase 1 supplies an empty mapping; Phase 4 binds the handles.
-- [ ] Define and approve the runtime delivery interface for every named NumPy
-  generator configured by `RunSpec.reproducibility`.
+- [ ] Return every configured named NumPy generator from child initialization
+  and expose it through `StageContext.numpy_generators`.
+- [ ] Store the sorted generator names in `StageContextBinding` and verify them
+  against `RunSpec.reproducibility` and `ProcessStartupReceipt`.
 - [ ] Construct the versioned logical `StageContextBinding` before resolving
   attempt-local absolute paths.
 - [ ] Add `viper.run(stage_callable)` as the ordinary Python adapter.
