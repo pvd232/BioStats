@@ -119,7 +119,7 @@ def _live_metric_handles(
         path = (
             root
             / f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
-            / "measurements"
+            / f"attempts/{binding.attempt_id}/measurements"
             / f"{binding.stage_id}.{metric_id}.jsonl"
         )
         handles[metric_id] = bind_live_metric(

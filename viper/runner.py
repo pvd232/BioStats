@@ -72,7 +72,7 @@ from .verifier import (
     verify_promoted_artifact,
     verify_run_result,
 )
-from .workspace import AttemptWorkspace
+from .workspace import AttemptWorkspace, RunWorkspaceLock, next_attempt_id
 
 
 class RunError(RuntimeError):
@@ -370,6 +370,7 @@ def _run_after_stage_metrics(
     metric_verification_paths: list[Path],
     store: LocalArtifactStore,
     timeout_seconds: float | None,
+    attempt_id: int,
 ) -> None:
     """Invoke each selected recomputed metric in a controlled child process."""
     metrics = {metric.metric_id: metric for metric in experiment.metrics}
@@ -403,6 +404,7 @@ def _run_after_stage_metrics(
                 stage,
                 metric,
                 purpose="measurement",
+                attempt_id=attempt_id,
                 input_paths=metric_inputs,
                 artifact_paths=metric_artifacts,
                 dependencies=dependencies,
@@ -413,13 +415,13 @@ def _run_after_stage_metrics(
         path = (
             root
             / f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
-            / "measurements"
+            / f"attempts/{attempt_id}/measurements"
             / f"{stage_id}.{metric_id}.jsonl"
         )
         measurement = MeasurementSink(
             path,
             run_id=run.run_id,
-            attempt_id=1,
+            attempt_id=attempt_id,
             stage_id=stage_id,
             metric_id=metric_id,
         ).append(process.receipt.value)
@@ -432,6 +434,7 @@ def _run_after_stage_metrics(
                 stage,
                 metric,
                 purpose="verification",
+                attempt_id=attempt_id,
                 input_paths=metric_inputs,
                 artifact_paths=metric_artifacts,
                 dependencies=dependencies,
@@ -458,7 +461,7 @@ def _run_after_stage_metrics(
         receipt_path = (
             root
             / f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
-            / "attempts/1/metric_verification"
+            / f"attempts/{attempt_id}/metric_verification"
             / f"{stage_id}.{metric_id}.yaml"
         )
         _write_synchronized(receipt_path, serialize_document(receipt))
@@ -560,9 +563,12 @@ def run(
         )
     )
 
-    workspace = AttemptWorkspace.create(root / ".viper" / "workspaces", run.run_id, 1)
+    workspace_root = root / ".viper" / "workspaces"
+    run_lock = RunWorkspaceLock.for_run(workspace_root, run.run_id)
+    run_lock.acquire()
+    attempt_id = next_attempt_id(workspace_root, run.run_id)
+    workspace = AttemptWorkspace.create(workspace_root, run.run_id, attempt_id)
     journal = DurableJournal(workspace.control / "journal.jsonl")
-    workspace.acquire()
     attempt_started = datetime.now(UTC)
     resolved_stage_refs: list[ResolvedStageRef] = []
     invocation_refs: list[ResolvedStageInvocationRef] = []
@@ -637,7 +643,7 @@ def run(
                 run,
                 stage_reference,
                 stage,
-                attempt_id=1,
+                attempt_id=attempt_id,
                 input_paths=input_paths,
                 retrievals=resolved_retrievals,
                 timeout_seconds=timeout_seconds,
@@ -654,14 +660,14 @@ def run(
                         f"experiments/{run.experiment_id}/runs/"
                         f"{run.variant_id}/{run.run_id}"
                     )
-                    / "measurements"
+                    / f"attempts/{attempt_id}/measurements"
                     / f"{stage_reference.stage_id}.{metric_id}.jsonl"
                 )
                 if live_path.is_file() and live_path not in measurement_paths:
                     measurement_paths.append(live_path)
             invocation_path = (
                 f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
-                f"/attempts/1/invocations/{stage_reference.stage_id}.yaml"
+                f"/attempts/{attempt_id}/invocations/{stage_reference.stage_id}.yaml"
             )
             invocation_raw = serialize_document(process.invocation)
             invocation_file = store.resolved_files({invocation_path: invocation_raw})[0]
@@ -725,16 +731,19 @@ def run(
                 metric_verification_paths,
                 store,
                 timeout_seconds,
+                attempt_id,
             )
             run_root = (
                 f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
             )
-            log_files[f"{run_root}/logs/1.{stage_reference.stage_id}.stdout.log"] = (
-                process.stdout
-            )
-            log_files[f"{run_root}/logs/1.{stage_reference.stage_id}.stderr.log"] = (
-                process.stderr
-            )
+            log_files[
+                f"{run_root}/attempts/{attempt_id}/logs/"
+                f"{stage_reference.stage_id}.stdout.log"
+            ] = process.stdout
+            log_files[
+                f"{run_root}/attempts/{attempt_id}/logs/"
+                f"{stage_reference.stage_id}.stderr.log"
+            ] = process.stderr
             journal.append(
                 "publishing_stage",
                 "stage snapshot published",
@@ -782,7 +791,7 @@ def run(
         )
         attempt_completed = datetime.now(UTC)
         attempt = RunAttempt(
-            attempt_id=1,
+            attempt_id=attempt_id,
             status="succeeded",
             started_at=attempt_started,
             completed_at=attempt_completed,
@@ -806,7 +815,7 @@ def run(
             ),
             status="succeeded",
             attempts=(attempt,),
-            successful_attempt_id=1,
+            successful_attempt_id=attempt_id,
             completed_at=datetime.now(UTC),
         )
         terminal_raw = serialize_document(resolved_run)
@@ -832,4 +841,4 @@ def run(
             journal_path=journal.path,
         )
     finally:
-        workspace.release()
+        run_lock.release()

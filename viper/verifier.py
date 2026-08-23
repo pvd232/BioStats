@@ -1862,7 +1862,8 @@ def verify_attempt_files(
             raise VerificationError(
                 "measurement files must use immutable artifact storage"
             )
-        if not str(reference.stored_at.path).startswith(f"{root}/measurements/"):
+        measurement_root = f"{root}/attempts/{attempt.attempt_id}/measurements"
+        if not str(reference.stored_at.path).startswith(f"{measurement_root}/"):
             raise VerificationError(
                 "measurement file is outside the canonical run path"
             )
@@ -1909,7 +1910,7 @@ def verify_attempt_files(
                     "measurement metric is absent from its stage spec"
                 )
             expected_path = (
-                f"{root}/measurements/{measurement.stage_id}."
+                f"{measurement_root}/{measurement.stage_id}."
                 f"{measurement.metric_id}.jsonl"
             )
             if reference.stored_at.path != expected_path:
@@ -1946,7 +1947,7 @@ def verify_attempt_files(
         if not isinstance(reference.stored_at, (HuggingFaceFileRef, LocalFileRef)):
             raise VerificationError("log files must use immutable artifact storage")
         log_pattern = re.compile(
-            rf"^{re.escape(root)}/logs/{attempt.attempt_id}\."
+            rf"^{re.escape(root)}/attempts/{attempt.attempt_id}/logs/"
             r"([a-z][a-z0-9_]*)\.(stdout|stderr)\.log$"
         )
         match = log_pattern.fullmatch(str(reference.stored_at.path))
