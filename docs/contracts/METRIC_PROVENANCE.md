@@ -3,29 +3,43 @@
 ## Status
 
 Metric decorators, measurement writing, floating-point comparators, and
-post-stage recomputation are implemented. Exact dependency binding and complete
-implementation identity are approved for VIPER 0.1.
+in-process recomputation are implemented. Exact dependency binding, live metric
+handles, dedicated metric workers, and complete execution receipts are drafted
+for VIPER 0.1. The system audit found one open ownership binding in the worker
+receipt.
 
 ## Required claim
 
-VIPER verifies that one metric value came from the frozen metric implementation,
-its declared dependencies, its frozen parameters, and its effective execution
-environment.
+VIPER verifies that one metric value came from the frozen metric
+implementation, its declared dependencies, its frozen parameters, and its
+effective execution environment.
 
 ## Current gap
 
-`MetricSpec` stores an implementation path and symbol. `RunSpec.source` supplies
-the repository and commit. During execution and recomputation,
+`MetricSpec` stores an implementation path and symbol. `RunSpec.source`
+supplies the repository and commit. During execution and recomputation,
 [`MetricContext`](../../viper/metrics.py) receives every input and artifact of
 the stage that selected the metric.
 
-The current path identifies the implementation. It leaves the metric's actual
-dependency set implicit. Determining the authorized stage values requires
-inspection of project code.
+The runner and verifier currently execute post-stage metric code inside their
+own processes. The implementation identity is checked, while the authorized
+dependency set and the metric process's startup evidence remain implicit.
+Live training metrics have decorators and a stateful base class. The stage
+runtime still omits the controlled metric handle.
+
+The proposed worker receipt identifies the stage and metric. It still needs the
+run ID and attempt ID that own the measurement and both worker executions.
 
 ## Contract models
 
+`kind` states the metric's scientific role. `mode` selects one complete
+execution and verification path.
+
 ```python
+MetricKind = Literal["training", "evaluation", "diagnostic"]
+MetricMode = Literal["recompute", "live"]
+
+
 class MetricImplementationRef(ProtocolModel):
     path: PythonRepoRelPath
     symbol: PythonSymbol
@@ -33,56 +47,103 @@ class MetricImplementationRef(ProtocolModel):
     bytes: int = Field(gt=0)
 
 
-class FileMetricDependency(ProtocolModel):
+class MetricDependency(ProtocolModel):
     source: Literal["input", "artifact"]
     name: InputName | ArtifactName
-    data_role: DataRole
+    required_data_role: DataRole
 
 
-class AfterStageMetricSpec(ProtocolModel):
+class MetricSpec(ProtocolModel):
     schema_version: Literal[1] = 1
     metric_id: MetricId
     kind: MetricKind
     implementation: MetricImplementationRef
-    dependencies: tuple[FileMetricDependency, ...] = Field(min_length=1)
     params: MetricParams
-    production: Literal["after_stage"] = "after_stage"
-    verification: Literal["recompute"] = "recompute"
-    comparator: FloatComparator
-
-
-class DuringStageMetricSpec(ProtocolModel):
-    schema_version: Literal[1] = 1
-    metric_id: MetricId
-    kind: Literal["training", "diagnostic"]
-    implementation: MetricImplementationRef
-    params: MetricParams
-    production: Literal["during_stage"] = "during_stage"
-    verification: Literal["execution"] = "execution"
-
-
-MetricSpec = Annotated[
-    AfterStageMetricSpec | DuringStageMetricSpec,
-    Field(discriminator="production"),
-]
+    mode: MetricMode
+    dependencies: tuple[MetricDependency, ...] = ()
+    comparator: FloatComparator | None = None
 ```
 
-Each stage that selects an `AfterStageMetricSpec` must contain every named
-dependency with the declared data role. Dependency pairs of `source` and `name`
-are unique.
+The model validator enforces two complete configurations:
 
-`DuringStageMetricSpec` governs values produced inside a stage callable. VIPER
-loads the frozen implementation and parameters and places a metric handle in
-`StageContext`. Project code supplies the live values consumed by
-`StatefulMetric.update()`. The 0.1 execution claim covers the selected metric
-implementation, its parameters, the active stage, and the measurements written
-through the runner-owned sink. A stronger claim about each live tensor requires
-a future tensor-capture contract.
+| Mode | Required fields | Execution rule | Verification rule |
+|---|---|---|---|
+| `recompute` | One or more dependencies and one comparator | A metric worker computes the value from persisted dependencies after the stage completes. | A second metric worker recomputes the value from the same immutable dependencies. |
+| `live` | Empty dependencies; comparator absent | The running stage supplies live values through `MetricHandle`. | The stage invocation and measurement sink establish controlled execution. |
 
-The runtime handle has one stable surface:
+An evaluation metric uses `mode="recompute"`. A live metric has kind
+`training` or `diagnostic`. Dependency pairs of `source` and `name` are unique.
+
+`required_data_role` states the role accepted by the metric. Preflight and the
+verifier compare it with the role declared by the selected stage input or
+artifact.
+
+For one execution, each authored dependency resolves to exact files:
 
 ```python
-class DuringStageMetricHandle(Protocol):
+class ResolvedMetricDependency(ProtocolModel):
+    dependency: MetricDependency
+    files: tuple[ResolvedFileRef, ...] = Field(min_length=1)
+```
+
+A single-file value produces one file reference. A bundle produces one entry
+for every regular member beneath its declared root.
+
+## Project interface
+
+A recomputed metric is an ordinary decorated function:
+
+```python
+@viper.metric(
+    metric_id="accuracy",
+    kind="evaluation",
+    mode="recompute",
+)
+def accuracy(context: MetricContext) -> float:
+    ...
+```
+
+`MetricContext` is a runtime dataclass containing the selected dependency paths
+and frozen parameters:
+
+```python
+@dataclass(frozen=True)
+class MetricContext:
+    inputs: Mapping[InputName, Path]
+    artifacts: Mapping[ArtifactName, Path]
+    params: MetricParams
+```
+
+A live metric can use a function or a stateful class:
+
+```python
+@viper.metric(
+    metric_id="training_loss",
+    kind="training",
+    mode="live",
+)
+def training_loss(value: float) -> float:
+    return value
+```
+
+```python
+@viper.metric(
+    metric_id="epoch_accuracy",
+    kind="training",
+    mode="live",
+)
+class EpochAccuracy(StatefulMetric):
+    def update(self, predictions, targets) -> None:
+        ...
+
+    def compute(self) -> float:
+        ...
+```
+
+The stage receives one runner-owned handle for each selected live metric:
+
+```python
+class MetricHandle(Protocol):
     def update(self, *args: object, **kwargs: object) -> None:
         ...
 
@@ -96,102 +157,123 @@ class DuringStageMetricHandle(Protocol):
         ...
 ```
 
-For a function metric, `record(...)` invokes the frozen function with the
-supplied values and writes its scalar result. For a stateful metric,
-`update(...)` advances the frozen class instance and `record()` calls its
-`compute()` method before writing the result. The handle supplies the active
-run, attempt, stage, and metric identities to `MeasurementSink`.
+For a function metric, `record()` invokes the frozen function and writes its
+scalar result. For a stateful metric, `update()` advances the class instance and
+`record()` calls `compute()` before writing the result. The handle supplies the
+active run, attempt, stage, and metric identities to `MeasurementSink`.
 
 ## Execution
 
-For an after-stage metric, the runner verifies the implementation bytes,
-resolves the declared file dependencies, constructs `MetricContext`, invokes
-the top-level symbol, and writes the returned scalar through `MeasurementSink`.
+For `mode="recompute"`, the runner performs the first metric execution after
+the producing stage completes:
 
-For a during-stage metric, the child loads the selected function or stateful
-class before invoking the stage callable. `StageContext.metrics[metric_id]`
-contains the bound metric handle. Every completed value enters
+```text
+resolve the declared dependencies
+-> verify their identities and data roles
+-> start the dedicated metric worker
+-> apply the effective startup and runtime controls
+-> load the frozen metric callable
+-> construct MetricContext from the declared dependencies only
+-> invoke the callable
+-> write the Measurement and production execution receipt
+```
+
+Verification repeats that sequence in a second metric worker. The verifier
+compares the second value with the recorded measurement through the frozen
+`FloatComparator`.
+
+For `mode="live"`, the controlled stage child loads the selected function or
+stateful class before invoking the stage callable. `StageContext.metrics`
+contains the bound `MetricHandle`. Every recorded value enters
 `MeasurementSink` with the active run, attempt, stage, and metric IDs.
-
-During recomputation, the verifier repeats the after-stage operation from
-immutable source and dependency bytes through the execution backend selected
-by the effective stage environment.
 
 ## Persisted evidence
 
-The frozen `MetricSpec`, resolved dependency files, `Measurement`, stage
-invocation receipt, and attempt-file snapshot form the metric evidence.
-
-Each recomputation writes:
+Each dedicated worker writes its complete execution evidence:
 
 ```python
+class MetricExecutionReceipt(ProtocolModel):
+    schema_version: Literal[1] = 1
+    metric_id: MetricId
+    stage_id: StageId
+    purpose: Literal["measurement", "verification"]
+    implementation: MetricImplementationRef
+    params: MetricParams
+    dependencies: tuple[ResolvedMetricDependency, ...] = Field(min_length=1)
+    startup: ProcessStartupReceipt
+    execution_context: ExecutionContext
+    value: float = Field(allow_inf_nan=False)
+    started_at: AwareDatetime
+    completed_at: AwareDatetime
+    outcome: Literal["succeeded"] = "succeeded"
+
+
 class MetricVerificationReceipt(ProtocolModel):
     schema_version: Literal[1] = 1
     metric_id: MetricId
     stage_id: StageId
     measurement: Measurement
-    dependency_digest: SHA256
-    environment_digest: SHA256
-    recomputed_value: float = Field(allow_inf_nan=False)
+    production: MetricExecutionReceipt
+    recomputation: MetricExecutionReceipt
     comparator: FloatComparator
     passed: bool
     completed_at: AwareDatetime
 ```
 
-`dependency_digest` hashes the canonical ordered mapping from each declared
-dependency to its resolved file identities. `environment_digest` hashes the
-effective environment and observed execution context used for recomputation.
-The attempt publishes each receipt as an immutable verification file. A
-benchmark result references the receipts used for its criteria.
+The production receipt's value equals `measurement.value`. Both execution
+receipts identify the same metric implementation, parameters, and resolved
+dependencies. Their `purpose` values distinguish the original measurement
+from independent verification.
 
-```python
-dependency_digest = sha256(
-    serialize_document(ordered_resolved_dependencies)
-).hexdigest()
-environment_digest = sha256(
-    serialize_document((effective_environment, execution_context))
-).hexdigest()
-```
+The attempt publishes the verification receipt as an immutable file. The
+attempt-file reference supplies its SHA-256 and byte count, so the receipt
+stores the complete dependency and runtime evidence directly.
 
-The receipt's embedded `measurement` equals one row in the containing
-attempt's measurement file for the same stage and metric.
+A live metric uses the frozen `MetricSpec`, its `Measurement` rows, the stage
+invocation receipt, and the attempt-file snapshot. A future tensor-capture
+contract can add independent recomputation for selected live metrics.
 
 ## Verification
 
 | Check | Rule |
 |---|---|
-| `metric.implementation` | Source commit and implementation reference identify the retrieved bytes and symbol. |
-| `metric.dependencies` | Every after-stage context entry matches one declared stage input or artifact and data role. |
-| `metric.parameters` | The invoked mapping equals `MetricSpec.params`. |
-| `metric.measurement` | The embedded measurement equals the attempt's recorded row and identifies the active run, attempt, stage, and metric. |
-| `metric.execution` | A during-stage measurement was written through the metric handle bound to the active invocation. |
-| `metric.recompute` | The recomputation receipt binds the dependencies and environment; its recomputed value satisfies the declared comparator against the recorded value. |
+| `metric.implementation` | Both worker receipts identify the implementation frozen by `MetricSpec` and `RunSpec.source`. |
+| `metric.dependencies` | Every resolved dependency matches one declared dependency, stage value, data role, and complete verified file set. |
+| `metric.parameters` | Both worker receipts contain the parameters frozen by `MetricSpec`. |
+| `metric.measurement` | The embedded measurement equals one row in the attempt's measurement file and identifies the active run, attempt, stage, and metric. |
+| `metric.production` | The production worker's value equals the recorded measurement. |
+| `metric.environment` | Each worker's startup and execution evidence satisfies the effective environment and run-wide reproducibility controls. |
+| `metric.recompute` | The recomputation value satisfies the frozen comparator against the recorded measurement. |
+| `metric.live_execution` | A live measurement was written through the handle bound to the active stage invocation. |
 
 ## Propagation
 
 | Surface | Required change |
 |---|---|
-| Protocol | Add `MetricImplementationRef`, `FileMetricDependency`, the production-specific metric models, and `MetricVerificationReceipt`. |
-| Authoring | Resolve decorator metadata, dependency names, and implementation bytes. |
-| Preflight | Validate each dependency against every selecting stage. |
-| Runtime | Construct an after-stage `MetricContext` from declared file dependencies and inject during-stage metric handles into `StageContext`. |
-| Persistence | Store measurements and immutable metric-verification receipts. |
-| Verification | Apply implementation, dependency, parameter, identity, and value checks. |
-| Tests | Exercise one evaluation metric and one during-stage metric with a rejected undeclared dependency. |
+| Protocol | Add `MetricImplementationRef`, `MetricDependency`, `ResolvedMetricDependency`, `MetricMode`, `MetricExecutionReceipt`, and `MetricVerificationReceipt`. |
+| Authoring | Resolve decorator metadata, dependency selections, parameters, mode, comparator, and implementation bytes. |
+| Preflight | Validate each dependency and required data role against every selecting stage. |
+| Runtime | Execute recomputed metrics in dedicated workers and inject live metric handles into `StageContext`. |
+| Persistence | Store measurements, complete worker receipts, and immutable metric-verification receipts. |
+| Verification | Apply implementation, dependency, parameter, runtime, measurement, and comparator checks. |
+| Tests | Exercise one recomputed evaluation metric and one live training metric, plus dependency, execution, and tampering failures. |
 
 ## Acceptance case
 
 An evaluation metric declares the `predictions` artifact and `targets` input.
-VIPER supplies those two paths, recomputes the metric through the selected
-backend, writes `MetricVerificationReceipt`, and accepts equal values.
+VIPER supplies those two paths to the production metric worker. Verification
+launches a second worker with the same immutable files and accepts equal values.
 
-The rejection case adds an undeclared `holdout_labels` path to the metric
-context. `metric.dependencies` fails before invocation.
+The dependency rejection case adds an undeclared `holdout_labels` path to the
+worker context. `metric.dependencies` fails before metric invocation. The
+runtime rejection case changes the recomputation worker's recorded CUDA or
+Python environment. `metric.environment` fails.
 
 ## Implementation order
 
-1. Add implementation, dependency, production-specific, and receipt models.
+1. Add implementation, dependency, mode, and receipt models.
 2. Freeze decorator metadata into `MetricSpec`.
-3. Restrict execution and recomputation contexts.
-4. Add recomputation evidence and verifier rules.
-5. Migrate examples and acceptance fixtures.
+3. Restrict each `MetricContext` to the declared dependencies.
+4. Reuse the controlled worker launcher for production and recomputation.
+5. Inject `MetricHandle` values for live metrics.
+6. Add persisted evidence, verifier rules, and acceptance coverage.

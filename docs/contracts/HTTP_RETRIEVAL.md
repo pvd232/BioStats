@@ -69,18 +69,25 @@ class DownloadParams(ParameterSet):
     """Parameters consumed by one project-defined download procedure."""
 ```
 
-`DownloadParams` holds extraction, pagination, archive, and parsing values.
+`DownloadParams` holds extraction, archive, and parsing values.
 The transport has its own parameter model because transfer settings belong to
 the transport implementation.
 
 ### Frozen request and policy
 
 ```python
+class HttpOrigin(ProtocolModel):
+    scheme: Literal["http", "https"]
+    host: NonEmptyStr
+    port: Annotated[int, Field(ge=1, le=65535)]
+
+
 class EnvironmentSecretRef(ProtocolModel):
     kind: Literal["environment"] = "environment"
     variable: NonEmptyStr
     header: HttpHeaderName
     prefix: str = ""
+    authorized_origins: frozenset[HttpOrigin] = Field(min_length=1)
 
 
 class HttpRequestSpec(ProtocolModel):
@@ -89,6 +96,8 @@ class HttpRequestSpec(ProtocolModel):
     url: HttpUrl
     headers: dict[HttpHeaderName, NonEmptyStr] = Field(default_factory=dict)
     version: NonEmptyStr
+    expected_body_sha256: SHA256
+    expected_body_bytes: int = Field(gt=0)
     credentials: EnvironmentSecretRef | None = None
 
 
@@ -102,7 +111,6 @@ class HttpRetrievalPolicy(ProtocolModel):
         Annotated[int, Field(ge=100, le=599)]
     ] = frozenset({200})
     max_redirects: int = Field(ge=0)
-    max_retrievals: int = Field(gt=0)
     max_body_bytes: int = Field(gt=0)
     timeout_seconds: float = Field(gt=0, allow_inf_nan=False)
 ```
@@ -119,9 +127,22 @@ that receives the secret, and `prefix` supplies public text such as `Bearer `.
 The secret value stays outside the frozen plan and resolved result.
 
 `allowed_hosts` contains normalized, lower-case host names and uses exact
-matching. `HttpRetrievalPolicy` governs each initial request, follow-up request,
-and redirect target. `max_retrievals` applies to the complete stage;
+matching. `HttpRetrievalPolicy` governs each frozen request and redirect target.
 `max_body_bytes` and `timeout_seconds` apply to each logical retrieval.
+
+`expected_body_sha256` and `expected_body_bytes` fix the response body selected
+by the experimental run plan. A discovery or scraping process may observe new
+content and publish it as an artifact. A later experimental run selects that
+artifact or freezes its observed body identity in `HttpRequestSpec`.
+
+`EnvironmentSecretRef.authorized_origins` states exactly where the credential
+may be sent. The request origin must appear in that set. A cross-origin redirect
+receives the credential only when its destination origin also appears in that
+set.
+
+Origin comparison lowercases the scheme and host, removes a trailing DNS dot,
+and assigns port `80` to an HTTP URL or `443` to an HTTPS URL whose text omits
+the port. Each `HttpOrigin` stores that effective port.
 
 HTTP defines a request through its method, target, and fields, and a response
 through its status, fields, and content. The request model follows those
@@ -145,6 +166,13 @@ class HttpTransportImplementationRef(ProtocolModel):
     bytes: int = Field(gt=0)
 
 
+class ExternalExecutableSpec(ProtocolModel):
+    executable_id: HumanId
+    command: NonEmptyStr
+    sha256: SHA256
+    bytes: int = Field(gt=0)
+
+
 class BuiltinHttpTransportSpec(ProtocolModel):
     kind: Literal["builtin"] = "builtin"
     transport_id: Literal["httpx"] = "httpx"
@@ -156,6 +184,7 @@ class ProjectHttpTransportSpec(ProtocolModel):
     implementation: HttpTransportImplementationRef
     parameter_model: ParameterModelRef
     params: HttpTransportParams
+    executables: tuple[ExternalExecutableSpec, ...] = ()
 
 
 HttpTransportSpec = Annotated[
@@ -168,6 +197,11 @@ For the built-in transport, `ProcessStartupReceipt` and the effective Python
 environment identify the installed VIPER and HTTPX versions. For a project
 transport, `RunSpec.source`, `HttpTransportImplementationRef`, and
 `ParameterModelRef` identify the exact callable and validator bytes.
+`ExternalExecutableSpec` identifies each transfer binary before invocation.
+Preflight resolves `command`, verifies its SHA-256 and byte count, and supplies
+the verified path to the transport context. Exact file identity supplies the
+enforced executable claim. Human-readable version output remains diagnostic
+text because external tools expose client-specific version commands.
 
 Requests exposes transport adapters for client-specific behavior. HTTPX
 exposes custom transports that send one request and return one response. The
@@ -221,20 +255,22 @@ The runner constructs one context for each logical retrieval:
 TransportParamsT = TypeVar("TransportParamsT", bound=HttpTransportParams)
 
 
-class RuntimeHttpCredential(ProtocolModel):
+@dataclass(frozen=True)
+class RuntimeHttpCredential:
     header: HttpHeaderName
     prefix: str
-    value: SecretStr
+    value: str
 
 
-class HttpTransportContext(ProtocolModel, Generic[TransportParamsT]):
-    schema_version: Literal[1] = 1
+@dataclass(frozen=True)
+class HttpTransportContext(Generic[TransportParamsT]):
     request: HttpRequestSpec
     credential: RuntimeHttpCredential | None
     workspace: Path
     destination: Path
     policy: HttpRetrievalPolicy
     params: TransportParamsT
+    executables: Mapping[HumanId, Path]
 
 
 class ObservedHttpResponse(ProtocolModel):
@@ -243,20 +279,14 @@ class ObservedHttpResponse(ProtocolModel):
     response_headers: dict[HttpHeaderName, str]
 
 
-class ExternalExecutableObservation(ProtocolModel):
-    name: HumanId
-    path: Path
-    version: NonEmptyStr
-
-
-class HttpTransportResult(ProtocolModel):
+@dataclass(frozen=True)
+class HttpTransportResult:
     body: Path
-    response: ObservedHttpResponse | None = None
-    external_executables: tuple[ExternalExecutableObservation, ...] = ()
+    response: ObservedHttpResponse
 ```
 
 `HttpRequestSpec.headers` contains the public headers.
-`RuntimeHttpCredential.value` contains the resolved secret as `SecretStr`. The
+`RuntimeHttpCredential.value` contains the resolved secret. The
 transport combines them only when it sends the request. VIPER redacts the
 secret from persisted output. The runner assigns a dedicated retrieval
 `workspace` inside the attempt workspace. `destination` is the exact body path
@@ -264,22 +294,18 @@ within that directory. A transport such as `aria2c` may place temporary
 transfer files beside the destination. The transport returns only after the
 completed body exists at `destination`.
 
-`ObservedHttpResponse` is present when the selected transport exposes the
-terminal HTTP response. The built-in HTTPX transport must provide it. A file
-transfer engine may return only the completed body. The transport-independent
-claim rests on the frozen request, exact transport invocation, and final file
-identity.
+Every successful transport returns the terminal HTTP response. This evidence
+lets VIPER apply `accepted_statuses` to the execution that produced the body.
 
 VIPER persists only `content-type`, `content-encoding`, `content-length`,
 `etag`, `last-modified`, `digest`, and `content-digest` from the terminal
 response. The runner rejects a returned response whose status falls outside
-`HttpRetrievalPolicy.accepted_statuses`. A transport that omits `response` must
-pass the same accepted-status behavior in the transport conformance suite.
+`HttpRetrievalPolicy.accepted_statuses`.
 
-An external executable observation names each binary used by the decorated
-adapter. The runner reads the executable at `path`, computes its SHA-256 and
-byte count, and persists the observed version. This captures an `aria2c`
-adapter's actual transfer engine in addition to the Python wrapper.
+Preflight resolves every frozen `ExternalExecutableSpec`, verifies its SHA-256
+and byte count, and passes its executable path through
+`HttpTransportContext.executables`. The transport selects binaries from that
+mapping.
 
 Aria2 supports segmented HTTP transfers, multiple connections, partial-transfer
 continuation, and explicit checksum validation:
@@ -289,11 +315,8 @@ continuation, and explicit checksum validation:
 
 ```python
 class ResolvedExternalExecutable(ProtocolModel):
-    name: HumanId
+    spec: ExternalExecutableSpec
     path: Path
-    version: NonEmptyStr
-    sha256: SHA256
-    bytes: int = Field(gt=0)
 
 
 class ResolvedHttpTransport(ProtocolModel):
@@ -303,25 +326,23 @@ class ResolvedHttpTransport(ProtocolModel):
 
 class ResolvedHttpRetrieval(ProtocolModel):
     input_name: InputName
-    retrieval_index: int = Field(ge=0)
-    cause: Literal["initial", "follow_up"]
     request: HttpRequestSpec
     transport: ResolvedHttpTransport
-    response: ObservedHttpResponse | None
+    response: ObservedHttpResponse
     body: ResolvedFileRef
     started_at: AwareDatetime
     completed_at: AwareDatetime
 
 
 class ResolvedDownloadSpec(ResolvedBaseSpec):
+    kind: Literal["download"] = "download"
     spec: DownloadSpec
-    retrievals: tuple[ResolvedHttpRetrieval, ...] = Field(min_length=1)
+    retrievals: dict[InputName, ResolvedHttpRetrieval]
 ```
 
-`retrieval_index` starts at `0` for each input and records logical retrieval
-order. Redirects and segmented range requests remain internal operations of
-one transport invocation. A pagination request or another project-requested
-URL creates a new logical retrieval with cause `follow_up`.
+`retrievals` has the same keys as `DownloadSpec.inputs`. Redirects and
+segmented range requests remain internal operations of one transport
+invocation.
 
 `body` identifies the completed file through its storage location, SHA-256,
 and byte count. `response` preserves the terminal HTTP status, effective URL,
@@ -332,12 +353,6 @@ The initial retrieval for each input satisfies:
 ```text
 ResolvedHttpRetrieval.input_name
 -> DownloadSpec.inputs[input_name]
-
-ResolvedHttpRetrieval.retrieval_index
-== 0
-
-ResolvedHttpRetrieval.cause
-== initial
 
 ResolvedHttpRetrieval.request
 == DownloadSpec.inputs[input_name]
@@ -368,7 +383,7 @@ construct HttpTransportContext
 invoke the exact transport callable
         |
         v
-verify the returned path and external executables
+verify the returned path, response, and content identity
         |
         v
 hash and store the completed body
@@ -379,67 +394,50 @@ write ResolvedHttpRetrieval
 
 The runner owns the timestamps surrounding transport invocation. It requires
 `HttpTransportResult.body` to equal the assigned destination, rejects symlinks
-and path escape, checks the terminal response when supplied, enforces the
-body-size and elapsed-time limits, and stores the completed file before
-returning a handle to project code. A successful transport invocation returns
-`HttpTransportResult`; a failed invocation raises the typed transport error
-defined by `viper.http`.
+and path escape, checks the terminal response, enforces the body-size and
+elapsed-time limits, verifies the expected SHA-256 and byte count, and stores
+the completed file before returning a handle to project code. A successful
+transport invocation returns `HttpTransportResult`; a failed invocation raises
+the typed transport error defined by `viper.http`.
 
 ### Download-stage interface
 
 The client-neutral stage interface is:
 
 ```python
-class HttpRetrievalHandle(ProtocolModel):
-    retrieval_index: int = Field(ge=0)
-    cause: Literal["initial", "follow_up"]
-    response: ObservedHttpResponse | None
+@dataclass(frozen=True)
+class HttpRetrievalHandle:
+    response: ObservedHttpResponse
     body: Path
 
 
-class ControlledHttpRetriever(Protocol):
-    def get(
-        self,
-        input_name: InputName,
-        url: HttpUrl,
-        *,
-        headers: Mapping[HttpHeaderName, str] | None = None,
-    ) -> HttpRetrievalHandle:
-        ...
-
-
+@dataclass(frozen=True)
 class DownloadContext(StageContext[DownloadParams]):
-    retrievals: dict[InputName, tuple[HttpRetrievalHandle, ...]]
-    http: ControlledHttpRetriever
+    retrievals: Mapping[InputName, HttpRetrievalHandle]
 ```
 
-Each tuple follows `retrieval_index` order. Each `body` path contains the bytes
-identified by the corresponding `ResolvedHttpRetrieval.body`.
-`ControlledHttpRetriever.get()` accepts an input already declared by the stage,
-inherits its credential reference, applies `DownloadSpec.transport` and
-`DownloadSpec.policy`, and appends the completed retrieval to that input's
-sequence.
+Each `body` path contains the bytes identified by the corresponding
+`ResolvedHttpRetrieval.body`.
 
-### Pagination and scraping
+### Discovery boundary
 
-A project download callable may request additional pages through
-`DownloadContext.http`. Each call creates one `ResolvedHttpRetrieval` with the
-same input name and the next contiguous index. Frozen `DownloadParams` define
-pagination values, selectors, and termination rules. `HttpRetrievalPolicy`
-limits permitted targets, retrieval count, body size, and elapsed time.
+Dynamic pagination and scraping discover content before an experimental run is
+frozen. The discovery process publishes the observed files with their source
+receipts. A later run selects those immutable files or freezes one request per
+input with the expected body identity.
 
 ## Persisted evidence
 
-The resolved download stage contains every logical retrieval used by the stage
-callable. Each retrieval binds the frozen request, selected transport,
-effective external executable identity, final body identity, and runner-owned
+The resolved download stage contains one retrieval for every declared input.
+Each retrieval binds the frozen request, selected transport, verified external
+executable identity, terminal response, final body identity, and runner-owned
 timestamps.
 
 Each retrieved body uses this canonical snapshot path:
 
 ```text
 experiments/<experiment_id>/runs/<variant_id>/<run_id>/
-└── stages/<stage_id>/retrievals/<input_name>/<retrieval_index>/body
+└── stages/<stage_id>/retrievals/<input_name>/body
 ```
 
 The stage invocation receipt binds the resulting `DownloadContext` to the
@@ -452,16 +450,15 @@ The verifier performs these named checks:
 
 | Check | Rule |
 |---|---|
-| `http.input` | Every retrieval names one key in `DownloadSpec.inputs`. |
-| `http.request` | Retrieval `0` for each input equals `DownloadSpec.inputs[input_name]`. |
-| `http.policy` | Every initial and follow-up request satisfies `DownloadSpec.policy`. |
-| `http.credentials` | The runner resolves the named secret, injects it into the selected header, and redacts its value from persisted evidence. |
+| `http.input` | Retrieval keys equal the keys in `DownloadSpec.inputs`. |
+| `http.request` | Each retrieval request equals `DownloadSpec.inputs[input_name]`. |
+| `http.policy` | Each frozen request and redirect target satisfies `DownloadSpec.policy`. |
+| `http.credentials` | The runner sends the resolved secret only to its authorized origins and redacts its value from persisted evidence. |
 | `http.transport.identity` | The built-in transport matches the effective installed environment, or the project transport callable and parameter model match their frozen identities. |
 | `http.transport.parameters` | Project transport parameters validate through the selected parameter class and equal the frozen mapping. |
-| `http.transport.executable` | Every declared external executable matches its observed path, version, SHA-256, and byte count. |
-| `http.response` | A recorded terminal response uses an accepted status and contains only the permitted persisted fields. |
-| `http.content` | Retrieved bytes match `body.sha256` and `body.bytes`. |
-| `http.order` | Retrieval indices are unique, contiguous, and ordered within each input. |
+| `http.transport.executable` | Every frozen executable requirement matches the path verified before transport invocation. |
+| `http.response` | The terminal response uses an accepted status and contains only the permitted persisted fields. |
+| `http.content` | Retrieved bytes match the expected request identity and the resolved body identity. |
 | `http.delivery` | Each context handle matches one resolved retrieval and its body path contains the verified bytes. |
 | `parameter_model.identity` | Download parameter-model bytes match the frozen source identity. |
 | `parameter_model.validation` | Frozen download parameters validate through the selected class. |
@@ -481,12 +478,12 @@ a complete network-input claim.
 | Surface | Required change |
 |---|---|
 | Protocol | Add the request, policy, transport, retrieval, and external-executable models. |
-| Authoring | Expand URL templates, freeze the final request and selected transport, resolve decorated transport metadata, and reject literal credentials. |
+| Authoring | Expand URL templates, freeze the final request, expected body identity, selected transport, executable requirements, and authorized credential origins. |
 | Variant binding | Include download-stage and project-transport parameter mappings. |
-| Preflight | Validate request policy, callable identities, parameter identities, secret availability, retrieval limits, and required external executables. |
-| Runner | Invoke the selected transport, constrain its destination, hash its output, and persist each logical retrieval before stage invocation. |
-| Stage interface | Expose verified retrieval handles and the controlled follow-up interface through `DownloadContext`. |
-| Resolved result | Publish the ordered retrieval sequence, transport evidence, external-tool identities, and body identities. |
+| Preflight | Validate request policy, callable identities, parameter identities, secret availability, and external executable identities. |
+| Runner | Invoke the selected transport, constrain its destination, verify its response and body, and persist each retrieval before stage invocation. |
+| Stage interface | Expose one verified retrieval handle per declared input through `DownloadContext`. |
+| Resolved result | Publish the input-keyed retrievals, transport evidence, external-tool identities, responses, and body identities. |
 | Verifier | Apply the named HTTP, transport, delivery, source, and artifact checks. |
 | Public API | Export `http_transport`, transport contexts, transport results, and transport parameter bases. |
 | Tests | Apply the transport conformance suite to the built-in transport and one decorated project transport. |
@@ -495,21 +492,22 @@ a complete network-input claim.
 
 The built-in acceptance case freezes one HTTPX retrieval from a local test
 server. The server returns one redirect followed by status `200`, content type
-`application/gzip`, and fixed bytes. The runner records one logical retrieval,
-stores the completed body, constructs `DownloadContext`, and invokes the exact
+`application/gzip`, and fixed bytes. The runner records one retrieval, verifies
+the expected body identity, constructs `DownloadContext`, and invokes the exact
 download callable. The test checks the frozen request, built-in transport
-identity, final body digest, byte count, stage invocation receipt, extracted
-artifact identity, and terminal run verification.
+identity, terminal response, body digest, byte count, stage invocation receipt,
+extracted artifact identity, and terminal run verification.
 
 The project-transport acceptance case decorates a transport with typed
 parameters, freezes its implementation identity, and retrieves the same bytes
 from a range-capable local server. The test checks transport-parameter delivery,
 external-executable identity when one is used, and the same final body digest.
 
-The conformance suite also covers a disallowed host, missing secret, timeout,
-oversized body, returned path escape, missing external executable, modified
-transport source, and same-length body tampering. Each case must fail through
-its named preflight, runtime, or verifier rule.
+The conformance suite also covers a disallowed host, unauthorized credential
+origin, missing secret, unaccepted status, timeout, oversized body, returned
+path escape, missing external executable, modified transport source, and
+same-length body tampering. Each case fails through its named preflight,
+runtime, or verifier rule.
 
 ## Implementation order
 
@@ -518,8 +516,6 @@ its named preflight, runtime, or verifier rule.
 2. Add the transport decorator, project-transport parameter validation, and
    source-identity checks.
 3. Implement the built-in HTTPX transport and runner-owned body storage.
-4. Add `DownloadContext` and route every project follow-up through the selected
-   transport.
-5. Add external-executable observation and verification for adapters such as
-   `aria2c`.
+4. Add `DownloadContext` with one verified handle per declared input.
+5. Add preflight executable verification for adapters such as `aria2c`.
 6. Add verifier rules and the transport conformance suite.

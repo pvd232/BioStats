@@ -13,17 +13,18 @@ each release claim.
 2. [Checklist rules](#checklist-rules)
 3. [Contract coverage](#contract-coverage)
 4. [Implemented baseline](#implemented-baseline)
-5. [Phase 1: stage invocation and process startup](#phase-1-implement-stage-invocation-and-process-startup)
-6. [Phase 2: controlled HTTP retrieval](#phase-2-implement-controlled-http-retrieval)
-7. [Phase 3: artifact validation](#phase-3-close-artifact-validation)
-8. [Phase 4: metric provenance](#phase-4-close-metric-provenance)
-9. [Phase 5: durable attempts and retry](#phase-5-implement-durable-attempts-and-retry)
-10. [Phase 6: benchmark execution](#phase-6-implement-benchmark-execution)
-11. [Phase 7: local and GCE execution](#phase-7-generalize-execution-across-local-and-gce-hosts)
-12. [Phase 8: public interface and project scaffold](#phase-8-freeze-the-public-interface-and-project-scaffold)
-13. [Phase 9: release candidate](#phase-9-build-and-validate-the-release-candidate)
-14. [Phase 10: publication](#phase-10-publish-viper-010a1)
-15. [Deferred work](#deferred-work)
+5. [Phase 0: specification audit](#phase-0-audit-the-contract-stack)
+6. [Phase 1: stage invocation and process startup](#phase-1-implement-stage-invocation-and-process-startup)
+7. [Phase 2: controlled HTTP retrieval](#phase-2-implement-controlled-http-retrieval)
+8. [Phase 3: artifact validation](#phase-3-close-artifact-validation)
+9. [Phase 4: metric provenance](#phase-4-close-metric-provenance)
+10. [Phase 5: durable attempts and retry](#phase-5-implement-durable-attempts-and-retry)
+11. [Phase 6: benchmark execution](#phase-6-implement-benchmark-execution)
+12. [Phase 7: local and GCE execution](#phase-7-generalize-execution-across-local-and-gce-hosts)
+13. [Phase 8: public interface and project scaffold](#phase-8-freeze-the-public-interface-and-project-scaffold)
+14. [Phase 9: release candidate](#phase-9-build-and-validate-the-release-candidate)
+15. [Phase 10: publication](#phase-10-publish-viper-010a1)
+16. [Deferred work](#deferred-work)
 
 ## Release boundary
 
@@ -97,10 +98,10 @@ Every implementation contract appears once in the execution sequence.
 |---|---|---|---|
 | [Parameter models](contracts/PARAMETER_MODELS.md) | Implemented | Regression coverage in Phases 1 and 2 | The exact project class validates the frozen parameter mapping. Phase 1 owns typed delivery. |
 | [Stage invocation](contracts/STAGE_INVOCATION.md) | Approved | Phase 1 | The frozen callable receives the typed parameters and declared paths. |
-| [Process startup](contracts/PROCESS_STARTUP.md) | Approved | Phase 1 | The controlled child records its startup environment, applied controls, generator initialization, and observed runtime. |
-| [HTTP retrieval](contracts/HTTP_RETRIEVAL.md) | Approved | Phase 2 | Each logical retrieval binds its authored request, selected transport, external executable identity, immutable body, and delivered context handle. |
+| [Process startup](contracts/PROCESS_STARTUP.md) | Draft | Phase 1 | The controlled child records its startup environment, applied controls, generator initialization, and observed runtime. Audit closure must define delivery of configured named NumPy generators. |
+| [HTTP retrieval](contracts/HTTP_RETRIEVAL.md) | Approved | Phase 2 | Each declared input binds its frozen request, expected body identity, selected transport, terminal response, external executable identity, and delivered context handle. |
 | [Artifact validation](contracts/ARTIFACT_VALIDATION.md) | Approved | Phase 3 | The verifier reports representation identity, loadability, or reserved semantic validity at its established level. |
-| [Metric provenance](contracts/METRIC_PROVENANCE.md) | Approved | Phase 4 | After-stage metrics bind file dependencies and recomputation evidence; during-stage metrics bind the controlled metric handle and measurement sink. |
+| [Metric provenance](contracts/METRIC_PROVENANCE.md) | Draft | Phase 4 | Recomputed metrics bind exact dependencies and two worker executions; live metrics bind a controlled metric handle and measurement sink. Audit closure must bind each worker receipt to its run and attempt. |
 | [Attempt execution](contracts/ATTEMPT_EXECUTION.md) | Approved | Phase 5 | Each attempt has an immutable document and journal; retry allocates a greater ID and preserves every prior reference. |
 | [Benchmark execution](contracts/BENCHMARK_EXECUTION.md) | Approved | Phase 6 | `execute_benchmark()` produces one independent confirmation and persists the artifact and metric comparison receipts accepted by `verify_benchmark()`. |
 | [Cloud execution](contracts/CLOUD_EXECUTION.md) | Approved | Phase 7 | The installed wheel executes in place on GCE and verifies the host, backend, and exact Python environment. |
@@ -132,6 +133,56 @@ The current repository supplies the foundation consumed by Phase 1:
   smoke commands.
 - [x] Ruff, Pyright, 129 tests, and 13 subtests at commit `d5580ee`.
 
+### Named verifier-rule coverage
+
+Each implementation phase must add the rules owned by its contract and the
+rejection tests named there.
+
+| Contract | Verifier rules |
+|---|---|
+| Artifact validation | `artifact.representation`, `artifact.bundle`, `artifact.loader`, `artifact.loadability`, `artifact.semantic.resume_state` |
+| Attempt execution | `attempt.order`, `attempt.terminal`, `attempt.identity`, `attempt.files`, `attempt.failure`, `attempt.invocations`, `attempt.retry`, `attempt.purpose` |
+| Benchmark execution | `benchmark.plan`, `benchmark.confirmation`, `benchmark.artifacts`, `benchmark.metrics`, `benchmark.status` |
+| Cloud execution | `environment.kind`, `gce.boot_image`, `gce.machine_type`, `gce.compute`, `gce.lockfile`, `gce.python`, `runtime.controls`, `run.result` |
+| HTTP retrieval | `http.input`, `http.request`, `http.policy`, `http.credentials`, `http.transport.identity`, `http.transport.parameters`, `http.transport.executable`, `http.response`, `http.content`, `http.delivery`, `parameter_model.identity`, `parameter_model.validation`, `stage.source`, `artifact.files` |
+| Metric provenance | `metric.implementation`, `metric.dependencies`, `metric.parameters`, `metric.measurement`, `metric.production`, `metric.environment`, `metric.recompute`, `metric.live_execution` |
+| Process startup | `startup.plan`, `startup.environment`, `startup.controls`, `startup.randomness`, `startup.callable`, `startup.context`, `startup.runtime`, `startup.backend`, `startup.distributed`, `startup.outcome` |
+| Stage invocation | `stage.implementation`, `stage.decorator`, `parameter_model.identity`, `parameter.value`, `stage.context`, `stage.outcome` |
+
+## Phase 0. Audit the contract stack
+
+**Scope:** all ten files in `docs/contracts/`, the formal protocol, the public
+API specifications, the master checklist, implementation modules, verifier
+rules, and declared acceptance tests.
+
+- [x] Parse every Python model shown in a contract.
+- [x] Compare repeated contract and protocol classes field by field.
+- [x] Construct every implemented Pydantic protocol schema.
+- [x] Trace each claim-bearing value from its producer to verifier
+  reconstruction.
+- [x] Map each release requirement to its protocol field, runtime operation,
+  persisted evidence, verifier rule, and acceptance test.
+- [x] Write one minimal counterexample for each contract's required claim and
+  name the rejecting check.
+- [x] Compare the contract, protocol, public API, checklist, implementation,
+  and tests; record every design-state discrepancy.
+- [x] Record the results and approval decision in
+  `docs/contracts/AUDIT.md`.
+- [x] Run `python tools/audit_contracts.py` and its focused tests.
+
+**Focused gate**
+
+```bash
+python tools/audit_contracts.py
+python -m pytest tests/test_contract_audit.py -q
+```
+
+**Commit boundaries**
+
+1. `Consolidate approved VIPER contracts`
+2. `Add deterministic contract auditing`
+3. `Record the full contract-system audit`
+
 ## Phase 1. Implement stage invocation and process startup
 
 **Contracts:** [Stage invocation](contracts/STAGE_INVOCATION.md) and
@@ -144,7 +195,9 @@ The current repository supplies the foundation consumed by Phase 1:
 - [ ] Replace each parameterized stage's `script` field with
   `implementation: StageImplementationRef`.
 - [ ] Add `StageContextBinding`, its canonical digest rule, and
-  `StageInvocationReceipt` to the resolved stage contract.
+  `StageInvocationReceipt` to attempt evidence.
+- [ ] Add `ResolvedStageInvocationRef`; store each successful stage's reference
+  on its resolved stage and every started invocation on `RunAttempt`.
 - [ ] Add `ProcessStartupReceipt` with the allowlisted child environment,
   applied controls, and one initialized-state digest for each configured
   generator.
@@ -159,6 +212,8 @@ The current repository supplies the foundation consumed by Phase 1:
 - [ ] Add generic `StageContext` with typed parameters, materialized input
   paths, writable artifact paths, a metric-handle mapping, run ID, attempt ID,
   and stage ID. Phase 1 supplies an empty mapping; Phase 4 binds the handles.
+- [ ] Define and approve the runtime delivery interface for every named NumPy
+  generator configured by `RunSpec.reproducibility`.
 - [ ] Construct the versioned logical `StageContextBinding` before resolving
   attempt-local absolute paths.
 - [ ] Add `viper.run(stage_callable)` as the ordinary Python adapter.
@@ -183,7 +238,8 @@ The current repository supplies the foundation consumed by Phase 1:
   `StageContext.params`.
 - [ ] Construct `StageContext.inputs` from the stage's declared,
   role-permitted inputs.
-- [ ] Invoke the frozen callable once and persist its invocation receipt.
+- [ ] Invoke the frozen callable once and persist its invocation receipt at the
+  attempt-level canonical path.
 
 ### Verification and acceptance
 
@@ -223,19 +279,23 @@ python -m pytest tests/test_stage_invocation.py tests/test_process_startup.py \
 
 - [ ] Add `HttpRequestSpec`, `EnvironmentSecretRef`, and
   `HttpRetrievalPolicy`.
+- [ ] Require an expected SHA-256 and byte count for every experimental HTTP
+  request.
+- [ ] Add `HttpOrigin`; scope each credential reference to one or more
+  authorized origins.
 - [ ] Replace `RemoteFileRef` inputs on `DownloadSpec` with frozen HTTP request
   specifications.
 - [ ] Add the built-in and project `HttpTransportSpec` variants and require one
   selected transport on each `DownloadSpec`.
 - [ ] Add `HttpTransportImplementationRef`, `HttpTransportParams`, and the
   `http_transport()` decorator.
+- [ ] Add frozen external executable requirements to each project transport.
 - [ ] Resolve decorated project transports to an exact callable, parameter
   class, and frozen parameter mapping.
-- [ ] Store the complete ordered logical-retrieval sequence on
+- [ ] Store one resolved retrieval per declared input on
   `ResolvedDownloadSpec`.
-- [ ] Bind every retrieval to `input_name`, use contiguous input-scoped
-  `retrieval_index` values, record its initial or follow-up cause, and store
-  each completed body through `ResolvedFileRef`.
+- [ ] Bind each retrieval to its input name, frozen request, terminal response,
+  selected transport, and completed body.
 - [ ] Add `ResolvedHttpTransport` and `ResolvedExternalExecutable` so a project
   adapter identifies its Python wrapper and every external transfer binary.
 - [ ] Expand URL templates during authoring and freeze the canonical request.
@@ -247,40 +307,44 @@ python -m pytest tests/test_stage_invocation.py tests/test_process_startup.py \
   effective Python-environment contracts.
 - [ ] Construct `HttpTransportContext` and invoke either the built-in transport
   or the exact decorated project transport selected by the stage.
-- [ ] Enforce scheme, host, port, accepted-status, redirect-count,
-  retrieval-count, body-size, and timeout limits through
+- [ ] Enforce scheme, host, port, accepted-status, redirect-count, body-size,
+  and timeout limits through
   `HttpRetrievalPolicy`.
 - [ ] Resolve credentials at execution time through `EnvironmentSecretRef`.
 - [ ] Inject each secret into its declared HTTP header and redact its value
   from requests, receipts, logs, errors, and JSON results.
+- [ ] Strip a credential on a cross-origin redirect unless the destination
+  appears in its frozen authorized-origin set.
 - [ ] Assign each transport a dedicated retrieval workspace and exact body
   destination; reject returned path escape and symlinks.
 - [ ] Hash and store each completed body before project download code runs.
-- [ ] Resolve, hash, and version every external executable returned by a project
-  transport.
+- [ ] Resolve and verify every frozen external executable before transport
+  invocation; supply only verified executable paths to the transport context.
+- [ ] Require every successful transport to return its terminal HTTP response.
+- [ ] Verify the expected body identity before project download code runs.
 - [ ] Add `DownloadContext` as the `StageContext` extension that exposes typed
-  `DownloadParams`, input-scoped ordered retrieval handles, and the controlled
-  follow-up retrieval interface.
+  `DownloadParams` and one verified retrieval handle per input.
 - [ ] Treat redirects and segmented range requests as internal operations of
-  one transport invocation; record project-requested pagination calls as new
-  logical retrievals.
+  one transport invocation.
+- [ ] Keep dynamic pagination and scraping in discovery processes that publish
+  immutable inputs for later experimental plans.
 - [ ] Deliver only verified retrieval handles through the download context.
 - [ ] State the 0.1 trusted-project-source boundary in public documentation;
   complete network confinement remains deferred.
 
 ### Verification and acceptance
 
-- [ ] Verify the frozen first request, every follow-up target, selected transport,
-  transport parameters, external executable identity, retrieval order, body
-  digest, body byte count, stage implementation identity, and published
-  artifacts.
+- [ ] Verify every frozen request, credential origin, selected transport,
+  transport parameters, preflight executable identity, terminal response,
+  expected body identity, resolved body identity, stage implementation, and
+  published artifact.
 - [ ] Add one reusable transport conformance suite for the built-in HTTPX
   transport and decorated project transports.
-- [ ] Require each transport to reject an unaccepted terminal HTTP status,
-  including transports that omit structured response metadata.
-- [ ] Exercise one static request, redirect, range-capable source, paginated
-  source, secret reference, request-policy failure, returned path escape,
-  missing executable, modified transport source, and same-length body tampering.
+- [ ] Require each transport to reject an unaccepted terminal HTTP status.
+- [ ] Exercise one static request, redirect, range-capable source, secret
+  reference, unauthorized credential origin, request-policy failure, returned
+  path escape, missing executable, modified transport source, and same-length
+  body tampering.
 - [ ] Prove that the acceptance download callable consumes the response selected
   by its frozen request.
 
@@ -340,34 +404,37 @@ python -m pytest tests/test_artifact_loaders.py tests/test_artifact_validation.p
 
 ### Protocol and authoring
 
-- [ ] Add `MetricImplementationRef`, `FileMetricDependency`,
-  `AfterStageMetricSpec`, `DuringStageMetricSpec`, and
+- [ ] Add `MetricImplementationRef`, `MetricDependency`,
+  `ResolvedMetricDependency`, `MetricMode`, `MetricExecutionReceipt`, and
   `MetricVerificationReceipt`.
-- [ ] Freeze `MetricKind`, `MetricProduction`, and `MetricVerification`.
+- [ ] Add run ID and attempt ID to `MetricExecutionReceipt`; require both
+  worker receipts to select the measurement's run and attempt.
+- [ ] Use one `MetricSpec`; its `mode` selects `recompute` or `live` execution.
 - [ ] Require one comparator for every recomputed floating-point metric.
 - [ ] Freeze decorator metadata, dependencies, parameters, and implementation
   identity into `MetricSpec`.
-- [ ] Require benchmark criteria to select evaluation metrics produced after a
-  stage and verified by recomputation.
+- [ ] Require benchmark criteria to select evaluation metrics with
+  `mode="recompute"`.
 
 ### Runtime and verification
 
-- [ ] Construct each after-stage `MetricContext` from its declared file
+- [ ] Construct each recomputed `MetricContext` from its declared file
   dependencies.
-- [ ] Inject during-stage metric handles into `StageContext` and bind their
+- [ ] Inject live metric handles into `StageContext` and bind their
   output to the active `MeasurementSink`.
-- [ ] Implement `DuringStageMetricHandle.update()` and `record()` for function
+- [ ] Implement `MetricHandle.update()` and `record()` for function
   and stateful metric implementations.
 - [ ] Enforce every dependency's data role before invoking metric code.
-- [ ] Record during-stage measurements through the runner-owned
+- [ ] Record live measurements through the runner-owned
   `MeasurementSink`.
-- [ ] Invoke after-stage metrics through the trusted worker boundary.
-- [ ] Recompute eligible metrics from immutable dependencies and the frozen
-  implementation.
-- [ ] Persist the dependency digest, effective-environment digest, recomputed
-  value, comparator, and result in `MetricVerificationReceipt`.
+- [ ] Invoke recomputed metrics through a dedicated controlled worker for
+  measurement production.
+- [ ] Launch a second dedicated worker for independent recomputation.
+- [ ] Persist both `MetricExecutionReceipt` values in one
+  `MetricVerificationReceipt`.
 - [ ] Verify implementation identity, dependency identity, parameters,
-  measurement ownership, and comparator outcome.
+  startup evidence, runtime context, measurement ownership, and comparator
+  outcome.
 - [ ] Exercise stateless evaluation, stateful training, diagnostic,
   recomputation, tolerance, undeclared dependency, ordering, and tampering
   cases.
@@ -397,6 +464,8 @@ python -m pytest tests/test_metric_interface.py tests/test_metric_provenance.py 
 - [ ] Write one standard-output file and one standard-error file for each stage
   invocation.
 - [ ] Preserve every verified stage snapshot completed before an attempt ends.
+- [ ] Persist one `StageInvocationReceipt` for every started stage and include
+  its `ResolvedStageInvocationRef` in `RunAttempt.invocations`.
 - [ ] Close and publish attempts with `succeeded`, `failed`, `cancelled`, or
   `preempted` status.
 - [ ] Replace `failure_reason` with typed `AttemptFailure`.

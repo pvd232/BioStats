@@ -1158,7 +1158,11 @@ class StageInvocationReceipt(ProtocolModel):
     context_digest: SHA256
     started_at: AwareDatetime
     completed_at: AwareDatetime
-    outcome: Literal["succeeded", "failed"]
+    outcome: Literal["succeeded", "failed", "cancelled", "preempted"]
+
+
+class ResolvedStageInvocationRef(ResolvedFileRef):
+    kind: Literal["stage_invocation"] = "stage_invocation"
 
 
 class SingleFileArtifactSpec(ProtocolModel):
@@ -1252,7 +1256,7 @@ class ResolvedBaseSpec(ProtocolModel):
     environment: ResolvedEnvironment
     execution_context: ExecutionContext
     startup: ProcessStartupReceipt
-    invocation: StageInvocationReceipt
+    invocation: ResolvedStageInvocationRef
     command: tuple[str, ...] = Field(min_length=1)
     artifacts: dict[ArtifactName, ResolvedArtifact] = Field(min_length=1)
     completed_at: AwareDatetime
@@ -1634,6 +1638,7 @@ class RunAttempt(ProtocolModel):
     completed_at: AwareDatetime
 
     resolved_stages: tuple[ResolvedStageRef, ...]
+    invocations: tuple[ResolvedStageInvocationRef, ...]
     journal: AttemptJournalRef
     measurement_files: tuple[ResolvedFileRef, ...]
     metric_verification_files: tuple[ResolvedFileRef, ...]
@@ -1670,6 +1675,10 @@ experiments/<experiment_id>/runs/<variant_id>/<run_id>/
 
 Measurements, metric-verification receipts, and logs occupy subdirectories of
 the same `attempts/<attempt_id>/` directory.
+
+Invocation receipts occupy `attempts/<attempt_id>/invocations/`. Every started
+stage produces one receipt, including a stage that fails before producing a
+resolved stage snapshot.
 
 Attempt IDs are unique and strictly increasing across the run workspace. Each
 attempt has an ordered `resolved_stages` prefix of `RunSpec.stages`. Its stage
@@ -1708,6 +1717,9 @@ A successful `ResolvedRun` identifies exactly one successful attempt through
 `successful_attempt_id` to null. A terminal preempted attempt yields a failed
 run result. `ResolvedRun.spec` identifies the exact `RunSpec` file whose stages
 govern every attempt.
+
+Explicit retry accepts a failed or cancelled `ResolvedRun` and rejects a
+successful one. Benchmark confirmation uses its separate operation.
 
 Every attempt referenced by `ResolvedRun.attempts` has `purpose="run"`. A
 `BenchmarkResult` identifies its separate attempt through
@@ -2080,13 +2092,15 @@ ResolvedBaseSpec.source.bytes
 
 The process-startup layer records the actual child-process command in
 `ResolvedBaseSpec.command`. The stage worker imports the selected symbol and
-passes it the typed context reconstructed from `StageInvocationReceipt.context`.
+passes it the typed context reconstructed from the coordinator-supplied
+`StageContextBinding`. After the child terminates, the coordinator places that
+same binding in `StageInvocationReceipt.context`.
 
 ```text
 BaseSpec.implementation
 -> exact callable
 
-StageInvocationReceipt.context
+StageContextBinding
 -> exact run, attempt, stage, parameters, inputs, and artifacts
 
 exact callable(StageContext)
@@ -2109,6 +2123,7 @@ class ReplicateSpec(ProtocolModel):
 
 
 MetricKind = Literal["training", "evaluation", "diagnostic"]
+MetricMode = Literal["recompute", "live"]
 
 
 class MetricParams(ParameterSet):
@@ -2127,41 +2142,29 @@ class MetricImplementationRef(ProtocolModel):
     bytes: int = Field(gt=0)
 
 
-class FileMetricDependency(ProtocolModel):
+class MetricDependency(ProtocolModel):
     source: Literal["input", "artifact"]
     name: InputName | ArtifactName
-    data_role: DataRole
+    required_data_role: DataRole
 
 
-class AfterStageMetricSpec(ProtocolModel):
+class MetricSpec(ProtocolModel):
     schema_version: Literal[1] = 1
     metric_id: MetricId
     kind: MetricKind
     implementation: MetricImplementationRef
-    dependencies: tuple[FileMetricDependency, ...] = Field(min_length=1)
     params: MetricParams
-    production: Literal["after_stage"] = "after_stage"
-    verification: Literal["recompute"] = "recompute"
-    comparator: FloatComparator
+    mode: MetricMode
+    dependencies: tuple[MetricDependency, ...] = ()
+    comparator: FloatComparator | None = None
 
 
-class DuringStageMetricSpec(ProtocolModel):
-    schema_version: Literal[1] = 1
-    metric_id: MetricId
-    kind: Literal["training", "diagnostic"]
-    implementation: MetricImplementationRef
-    params: MetricParams
-    production: Literal["during_stage"] = "during_stage"
-    verification: Literal["execution"] = "execution"
+class ResolvedMetricDependency(ProtocolModel):
+    dependency: MetricDependency
+    files: tuple[ResolvedFileRef, ...] = Field(min_length=1)
 
 
-MetricSpec = Annotated[
-    AfterStageMetricSpec | DuringStageMetricSpec,
-    Field(discriminator="production"),
-]
-
-
-class DuringStageMetricHandle(Protocol):
+class MetricHandle(Protocol):
     def update(self, *args: object, **kwargs: object) -> None:
         ...
 
@@ -2187,11 +2190,14 @@ class ExperimentSpec(ProtocolModel):
 Factor IDs are unique. Level IDs are unique within each factor. Variant IDs,
 replicate IDs, replicate seeds, and `MetricSpec.metric_id` values are unique
 within the experiment. Each implementation reference identifies the exact
-metric file and top-level symbol within `RunSpec.source`. An after-stage metric
-names every stage input or artifact it receives. VIPER recomputes its value
-from those verified files and applies its `FloatComparator`. A during-stage
-metric enters the stage through a runner-owned metric handle and writes
-measurements through the active attempt's measurement sink.
+metric file and top-level symbol within `RunSpec.source`.
+
+A metric with `mode="recompute"` names every stage input or artifact it
+receives, supplies a comparator, and executes in a dedicated worker after the
+stage completes. Verification launches a second worker with the same immutable
+dependencies. A metric with `mode="live"` has kind `training` or `diagnostic`,
+has no file dependencies or comparator, and enters the stage through a
+runner-owned `MetricHandle`. An evaluation metric uses `mode="recompute"`.
 
 An exact comparator has zero tolerance. An absolute or relative comparator has
 a positive tolerance.
@@ -2312,14 +2318,29 @@ class Measurement(ProtocolModel):
     step: int | None = Field(default=None, ge=0)
 
 
+class MetricExecutionReceipt(ProtocolModel):
+    schema_version: Literal[1] = 1
+    metric_id: MetricId
+    stage_id: StageId
+    purpose: Literal["measurement", "verification"]
+    implementation: MetricImplementationRef
+    params: MetricParams
+    dependencies: tuple[ResolvedMetricDependency, ...] = Field(min_length=1)
+    startup: ProcessStartupReceipt
+    execution_context: ExecutionContext
+    value: float = Field(allow_inf_nan=False)
+    started_at: AwareDatetime
+    completed_at: AwareDatetime
+    outcome: Literal["succeeded"] = "succeeded"
+
+
 class MetricVerificationReceipt(ProtocolModel):
     schema_version: Literal[1] = 1
     metric_id: MetricId
     stage_id: StageId
     measurement: Measurement
-    dependency_digest: SHA256
-    environment_digest: SHA256
-    recomputed_value: float = Field(allow_inf_nan=False)
+    production: MetricExecutionReceipt
+    recomputation: MetricExecutionReceipt
     comparator: FloatComparator
     passed: bool
     completed_at: AwareDatetime
@@ -2355,35 +2376,35 @@ Measurement.measured_at
 Measurement JSON objects have unique field names. A successful evaluation stage
 records exactly one row for each metric in `EvaluateSpec.metric_ids`.
 
-Each after-stage metric produces one `MetricVerificationReceipt`. Its
-dependency digest binds the canonical ordered mapping from the declared
-dependencies to their resolved file identities. Its environment digest binds
-the effective environment and observed execution context used for
-recomputation. The containing attempt identifies the immutable receipt file
-through `RunAttempt.metric_verification_files`.
-
-```python
-dependency_digest = sha256(
-    serialize_document(ordered_resolved_dependencies)
-).hexdigest()
-environment_digest = sha256(
-    serialize_document((effective_environment, execution_context))
-).hexdigest()
-```
+Each recomputed metric produces one `MetricVerificationReceipt`. Its
+`production` receipt records the worker that created the measurement. Its
+`recomputation` receipt records the independent verification worker. Both
+receipts contain the exact implementation, parameters, resolved dependencies,
+startup evidence, observed execution context, value, and execution interval.
 
 The embedded measurement equals one row in the containing attempt's
-measurement file for the same stage and metric.
+measurement file for the same stage and metric. The production value equals
+the measurement value. The recomputation value satisfies `comparator` against
+the measurement value. The containing attempt identifies the immutable receipt
+file through `RunAttempt.metric_verification_files`.
 
 ## 17. Concrete stage records
 
 ### Planned stage inputs
 
 ```python
+class HttpOrigin(ProtocolModel):
+    scheme: Literal["http", "https"]
+    host: NonEmptyStr
+    port: Annotated[int, Field(ge=1, le=65535)]
+
+
 class EnvironmentSecretRef(ProtocolModel):
     kind: Literal["environment"] = "environment"
     variable: NonEmptyStr
     header: HttpHeaderName
     prefix: str = ""
+    authorized_origins: frozenset[HttpOrigin] = Field(min_length=1)
 
 
 class HttpRequestSpec(ProtocolModel):
@@ -2392,6 +2413,8 @@ class HttpRequestSpec(ProtocolModel):
     url: HttpUrl
     headers: dict[HttpHeaderName, NonEmptyStr] = Field(default_factory=dict)
     version: NonEmptyStr
+    expected_body_sha256: SHA256
+    expected_body_bytes: int = Field(gt=0)
     credentials: EnvironmentSecretRef | None = None
 
 
@@ -2405,7 +2428,6 @@ class HttpRetrievalPolicy(ProtocolModel):
         Annotated[int, Field(ge=100, le=599)]
     ] = frozenset({200})
     max_redirects: int = Field(ge=0)
-    max_retrievals: int = Field(gt=0)
     max_body_bytes: int = Field(gt=0)
     timeout_seconds: float = Field(gt=0, allow_inf_nan=False)
 
@@ -2421,6 +2443,13 @@ class HttpTransportImplementationRef(ProtocolModel):
     bytes: int = Field(gt=0)
 
 
+class ExternalExecutableSpec(ProtocolModel):
+    executable_id: HumanId
+    command: NonEmptyStr
+    sha256: SHA256
+    bytes: int = Field(gt=0)
+
+
 class BuiltinHttpTransportSpec(ProtocolModel):
     kind: Literal["builtin"] = "builtin"
     transport_id: Literal["httpx"] = "httpx"
@@ -2432,6 +2461,7 @@ class ProjectHttpTransportSpec(ProtocolModel):
     implementation: HttpTransportImplementationRef
     parameter_model: ParameterModelRef
     params: HttpTransportParams
+    executables: tuple[ExternalExecutableSpec, ...] = ()
 
 
 HttpTransportSpec = Annotated[
@@ -2452,15 +2482,23 @@ train stages consume stored or same-run artifacts.
 `EnvironmentSecretRef` places the value of its named environment variable in
 the selected request header after applying the public prefix. The persisted
 request retains the reference and redacts the value. `HttpRequestSpec.headers`
-excludes the selected secret header. `HttpRetrievalPolicy` constrains every
-initial request, follow-up request, and redirect target issued by one download
-stage. Host matching uses normalized, lower-case names and exact equality.
-Retrieval count applies to the complete stage. Body size and timeout apply to
-each logical retrieval.
+excludes the selected secret header. The credential can reach only the origins
+listed in `authorized_origins`. `HttpRetrievalPolicy` constrains each frozen
+request and redirect target. Host matching uses normalized, lower-case names
+and exact equality. Body size and timeout apply to each retrieval.
+
+Origin comparison lowercases the scheme and host, removes a trailing DNS dot,
+and uses the scheme's default port when a URL omits it. Each `HttpOrigin`
+stores the resulting effective port.
+
+`expected_body_sha256` and `expected_body_bytes` fix the bytes selected by the
+experimental run plan. Dynamic discovery and scraping publish observed content
+before a later experimental run selects it.
 
 `BuiltinHttpTransportSpec` selects the HTTPX implementation shipped with
 VIPER. `ProjectHttpTransportSpec` selects one decorated callable from the
-project source and binds its project-defined parameter class and values.
+project source and binds its project-defined parameter class, parameter values,
+and external executable requirements.
 
 ### Stage specifications
 
@@ -2468,16 +2506,15 @@ project source and binds its project-defined parameter class and values.
 ParamsT = TypeVar("ParamsT", bound=ParameterSet)
 
 
-class StageContext(ProtocolModel, Generic[ParamsT]):
-    schema_version: Literal[1] = 1
+@dataclass(frozen=True)
+class StageContext(Generic[ParamsT]):
     run_id: RunId
-    attempt_id: int = Field(ge=1)
+    attempt_id: int
     stage_id: StageId
-    parameter_model: ParameterModelRef
     params: ParamsT
-    inputs: dict[InputName, Path]
-    artifacts: dict[ArtifactName, Path]
-    metrics: dict[MetricId, DuringStageMetricHandle]
+    inputs: Mapping[InputName, Path]
+    artifacts: Mapping[ArtifactName, Path]
+    metrics: Mapping[MetricId, MetricHandle]
 
 
 class ParameterizedSpec(BaseSpec):
@@ -2502,58 +2539,42 @@ class ObservedHttpResponse(ProtocolModel):
     response_headers: dict[HttpHeaderName, str]
 
 
-class ExternalExecutableObservation(ProtocolModel):
-    name: HumanId
-    path: Path
-    version: NonEmptyStr
-
-
 TransportParamsT = TypeVar("TransportParamsT", bound=HttpTransportParams)
 
 
-class RuntimeHttpCredential(ProtocolModel):
+@dataclass(frozen=True)
+class RuntimeHttpCredential:
     header: HttpHeaderName
     prefix: str
-    value: SecretStr
+    value: str
 
 
-class HttpTransportContext(ProtocolModel, Generic[TransportParamsT]):
-    schema_version: Literal[1] = 1
+@dataclass(frozen=True)
+class HttpTransportContext(Generic[TransportParamsT]):
     request: HttpRequestSpec
     credential: RuntimeHttpCredential | None
     workspace: Path
     destination: Path
     policy: HttpRetrievalPolicy
     params: TransportParamsT
+    executables: Mapping[HumanId, Path]
 
 
-class HttpTransportResult(ProtocolModel):
+@dataclass(frozen=True)
+class HttpTransportResult:
     body: Path
-    response: ObservedHttpResponse | None = None
-    external_executables: tuple[ExternalExecutableObservation, ...] = ()
+    response: ObservedHttpResponse
 
 
-class HttpRetrievalHandle(ProtocolModel):
-    retrieval_index: int = Field(ge=0)
-    cause: Literal["initial", "follow_up"]
-    response: ObservedHttpResponse | None
+@dataclass(frozen=True)
+class HttpRetrievalHandle:
+    response: ObservedHttpResponse
     body: Path
 
 
-class ControlledHttpRetriever(Protocol):
-    def get(
-        self,
-        input_name: InputName,
-        url: HttpUrl,
-        *,
-        headers: Mapping[HttpHeaderName, str] | None = None,
-    ) -> HttpRetrievalHandle:
-        ...
-
-
+@dataclass(frozen=True)
 class DownloadContext(StageContext[DownloadParams]):
-    retrievals: dict[InputName, tuple[HttpRetrievalHandle, ...]]
-    http: ControlledHttpRetriever
+    retrievals: Mapping[InputName, HttpRetrievalHandle]
 
 
 class InternalSpec(ParameterizedSpec):
@@ -2636,10 +2657,9 @@ for temporary transfer files and returns only after the completed body exists
 at the destination.
 
 `DownloadContext.retrievals` exposes the verified bodies already retrieved for
-each frozen input. `DownloadContext.http.get()` performs a follow-up retrieval
-under the same input identity, credential reference, transport, and policy.
-The runner appends the result to that input's ordered retrieval sequence before
-returning the handle.
+each frozen input. The experimental plan fixes one expected body identity for
+each request. Dynamic acquisition publishes observed content before a later
+experimental run selects it.
 
 Each core parameter class preserves a versioned JSON mapping. Every stage
 selects a project-owned Pydantic subclass through `parameter_model`.
@@ -2694,11 +2714,8 @@ inputs.
 
 ```python
 class ResolvedExternalExecutable(ProtocolModel):
-    name: HumanId
+    spec: ExternalExecutableSpec
     path: Path
-    version: NonEmptyStr
-    sha256: SHA256
-    bytes: int = Field(gt=0)
 
 
 class ResolvedHttpTransport(ProtocolModel):
@@ -2708,11 +2725,9 @@ class ResolvedHttpTransport(ProtocolModel):
 
 class ResolvedHttpRetrieval(ProtocolModel):
     input_name: InputName
-    retrieval_index: int = Field(ge=0)
-    cause: Literal["initial", "follow_up"]
     request: HttpRequestSpec
     transport: ResolvedHttpTransport
-    response: ObservedHttpResponse | None
+    response: ObservedHttpResponse
     body: ResolvedFileRef
     started_at: AwareDatetime
     completed_at: AwareDatetime
@@ -2721,7 +2736,7 @@ class ResolvedHttpRetrieval(ProtocolModel):
 class ResolvedDownloadSpec(ResolvedBaseSpec):
     kind: Literal["download"] = "download"
     spec: DownloadSpec
-    retrievals: tuple[ResolvedHttpRetrieval, ...] = Field(min_length=1)
+    retrievals: dict[InputName, ResolvedHttpRetrieval]
 
 
 class ResolvedInternalSpec(ResolvedBaseSpec):
@@ -2759,17 +2774,11 @@ ResolvedSpec = Annotated[
 ]
 ```
 
-For the first retrieval associated with each download input:
+For each download input:
 
 ```text
-ResolvedHttpRetrieval.input_name
-in keys(ResolvedDownloadSpec.spec.inputs)
-
-ResolvedHttpRetrieval.retrieval_index
-== 0
-
-ResolvedHttpRetrieval.cause
-== initial
+keys(ResolvedDownloadSpec.retrievals)
+== keys(ResolvedDownloadSpec.spec.inputs)
 
 ResolvedHttpRetrieval.request
 == ResolvedDownloadSpec.spec.inputs[ResolvedHttpRetrieval.input_name]
@@ -2778,21 +2787,19 @@ ResolvedHttpRetrieval.transport.spec
 == ResolvedDownloadSpec.spec.transport
 ```
 
-Retrieval indices begin at zero and remain contiguous within each input. Each
-retrieval interval lies within the containing attempt and precedes stage
+Each retrieval interval lies within the containing attempt and precedes stage
 completion. `ResolvedHttpRetrieval.body` identifies the completed file.
-`DownloadContext.retrievals` supplies those verified bodies to the stage
-callable in the same input-scoped order. A promoted download artifact can then
-serve as a stored input selected by a later run.
+`DownloadContext.retrievals` supplies one verified body per input to the stage
+callable. A promoted download artifact can then serve as a stored input
+selected by a later run.
 
 Redirects and segmented range requests remain internal to one transport
-invocation. A follow-up retrieval records one call made through
-`DownloadContext.http`.
+invocation. Dynamic pagination and scraping belong to discovery work that
+publishes immutable files before an experimental plan selects them.
 
 VIPER 0.1 trusts the project source identified by `RunSpec.source` to use the
-delivered handles for network input. The controlled retriever records every
-logical retrieval made through `DownloadContext.http`. A future confinement
-contract will restrict direct outbound network access by project code.
+delivered handles for network input. A future confinement contract will
+restrict direct outbound network access by project code.
 
 For every resolved stage:
 
@@ -3397,17 +3404,19 @@ For each `ResolvedStageRef`, the verifier:
    `BaseSpec.implementation`.
 6. Resolves the selected stage environment and checks `ResolvedEnvironment`,
    `ExecutionContext`, and `ProcessStartupReceipt` under Section 15.
-7. Reconstructs `StageContextBinding`; checks its parameter digest, input and
+7. Retrieves `ResolvedBaseSpec.invocation`, verifies its file identity, and
+   parses `StageInvocationReceipt`.
+8. Reconstructs `StageContextBinding`; checks its parameter digest, input and
    artifact paths, metric IDs, canonical context digest, callable identity,
-   and successful outcome against `StageInvocationReceipt`.
-8. Checks the recorded child-process command.
-9. Checks the resolved input names and kinds against the planned inputs.
-10. Checks that `completed_at` lies within the containing attempt and is at or
+   and successful outcome against the receipt.
+9. Checks the recorded child-process command.
+10. Checks the resolved input names and kinds against the planned inputs.
+11. Checks that `completed_at` lies within the containing attempt and is at or
     after the prior completed stage.
-11. For a download stage, verifies each input-scoped logical retrieval, frozen
-    request, transport identity, transport parameters, external executable,
-    accepted terminal response when supplied, body identity, retrieval index,
-    completion interval, and delivered handle.
+12. For a download stage, verifies each input-keyed retrieval, frozen request,
+    transport identity, transport parameters, executable identity, terminal
+    response, expected body identity, resolved body identity, completion
+    interval, and delivered handle.
 
 These checks establish that the recorded runtime state satisfies:
 
@@ -3445,18 +3454,20 @@ $$
 
 ### Metric verification
 
-For an after-stage metric, the verifier:
+For a metric with `mode="recompute"`, the verifier:
 
 1. Retrieves and verifies its `MetricImplementationRef`.
 2. Resolves exactly the file dependencies declared by the metric.
 3. Checks each dependency name, source, and data-use role against the selected
    stage.
-4. Reconstructs the canonical dependency and environment digests.
-5. Invokes the metric with the frozen parameters and verified dependency paths.
-6. Applies `FloatComparator` to the recomputed and recorded values.
-7. Reconstructs and verifies the immutable `MetricVerificationReceipt`.
+4. Verifies the production worker's startup evidence and execution context.
+5. Launches a second controlled worker with the frozen parameters and verified
+   dependency paths.
+6. Records the verification worker's startup evidence and execution context.
+7. Applies `FloatComparator` to the recomputed and recorded values.
+8. Verifies both worker receipts inside `MetricVerificationReceipt`.
 
-For a during-stage metric, the verifier establishes that the active
+For a metric with `mode="live"`, the verifier establishes that the active
 `StageContext` contained the frozen metric handle and that the measurement was
 written through the attempt's measurement sink. A numerical recomputation
 claim requires a future contract that captures the live values supplied to the
@@ -3526,21 +3537,23 @@ For a `ResolvedRun`, the verifier:
    path, attempt ID, order, timestamps, status, and typed failure.
 2. Checks each attempt journal against the attempt's terminal state and
    failure.
-3. Requires each attempt's resolved stages to form an ordered prefix of
+3. Retrieves every invocation reference and requires one terminal receipt for
+   each started stage.
+4. Requires each attempt's resolved stages to form an ordered prefix of
    `RunSpec.stages`.
-4. Requires the successful attempt to contain every stage exactly once and in
+5. Requires the successful attempt to contain every stage exactly once and in
    order.
-5. Requires stage-result and attempt-file snapshots to satisfy the
+6. Requires stage-result and attempt-file snapshots to satisfy the
    disjointness rules above.
-6. Verifies every stored and same-run input consumed by every completed stage
+7. Verifies every stored and same-run input consumed by every completed stage
    in every attempt.
-7. Verifies every journal, measurement, metric-verification, and log file.
-8. Requires their canonical attempt-scoped paths.
-9. Checks every measurement against the run, attempt, stage, experiment, and
+8. Verifies every journal, measurement, metric-verification, and log file.
+9. Requires their canonical attempt-scoped paths.
+10. Checks every measurement against the run, attempt, stage, experiment, and
    stage-specific metric identities and requires its timestamp to be at or
    before the named stage's completion.
-10. Applies the metric-verification rules to every after-stage measurement.
-11. Loads the estimator artifact selected by `RunSpec.estimator`.
+11. Applies the metric-verification rules to every recomputed measurement.
+12. Loads the estimator artifact selected by `RunSpec.estimator`.
 
 For a `BenchmarkResult`, the verifier retrieves the confirmation through its
 `ResolvedAttemptRef`, reconstructs every `ArtifactComparisonReceipt`, and
@@ -3549,6 +3562,10 @@ retrieves both `MetricVerificationReceipt` files named by each
 receipts. The confirmation attempt ID exceeds every candidate run attempt ID,
 its purpose is `benchmark_confirmation`, and it uses new snapshots. Its inputs
 pass the same lineage verification applied to the selected run.
+
+These operations implement `benchmark.plan`, `benchmark.confirmation`,
+`benchmark.artifacts`, `benchmark.metrics`, and `benchmark.status` as defined
+by the benchmark-execution contract.
 Artifact-pointer verification separately establishes the promotion
 relationships in Sections 14 and 20.
 
@@ -3560,8 +3577,9 @@ The protocol publishes immutable snapshots in dependency order:
 |---|---|---|
 | A | Git | Source, experiment records, benchmark specs, loaders, lockfile, and existing promotion pointers. |
 | B | Git | One `RunSpec` and every stage-spec file identified by it. |
+| $I_{i,j}$ | Artifact repository | The invocation receipt for stage $j$ of attempt $i$. |
 | $C_{i,j}$ | Artifact repository | The resolved spec, every retrieved body, and every artifact file for stage $j$ of attempt $i$. |
-| $D_i$ | Artifact repository | Attempt document, journal, metric-verification receipts, measurements, and logs for attempt $i$. |
+| $D_i$ | Artifact repository | Attempt document, journal, invocation references, metric-verification receipts, measurements, and logs for attempt $i$. |
 | E | Artifact repository | The terminal `ResolvedRun`. |
 | F | Artifact repository | The optional `BenchmarkResult`. |
 | G | Git | Optional promotion pointers. |
@@ -3594,34 +3612,44 @@ For attempt $i$:
 7. Launch the controlled child and record `ProcessStartupReceipt` and
    `ExecutionContext`.
 8. For a download stage, validate and invoke the selected HTTP transport for
-   every initial request, persist each body, and construct `DownloadContext`.
+   every frozen request, persist each body, and construct `DownloadContext`.
 9. Validate the stage parameter model, construct the applicable typed context,
    and invoke the exact callable selected by `StageImplementationRef`.
-10. Record `StageInvocationReceipt`.
-11. Resolve every declared artifact and construct the resolved stage spec.
-12. Publish the resolved stage spec, every retrieved body, and every artifact
+10. Record and publish `StageInvocationReceipt` as snapshot $I_{i,j}$.
+11. Construct `ResolvedStageInvocationRef` from the published receipt.
+12. Resolve every declared artifact and construct the resolved stage spec.
+13. Publish the resolved stage spec, every retrieved body, and every artifact
     file together as snapshot $C_{i,j}$.
-13. Retrieve and verify the complete snapshot.
-14. Construct `ResolvedStageRef` from the returned snapshot commit and resolved
+14. Retrieve and verify the complete snapshot, including its invocation
+    reference.
+15. Construct `ResolvedStageRef` from the returned snapshot commit and resolved
     stage-spec file identity.
-15. Append the verified stage result to the current attempt.
+16. Append the verified stage result and invocation reference to the current
+    attempt.
 
 After the attempt reaches a terminal status:
 
 1. Record `completed_at`, terminal status, and the typed failure when the
    status is unsuccessful.
-2. Close the journal, metric-verification receipts, measurements, and logs.
-3. Construct the complete `RunAttempt`.
-4. Publish the attempt document and its files as revision $D_i$.
-5. Retrieve and verify the complete revision.
-6. Construct `ResolvedAttemptRef` from the published attempt document.
+2. Publish the active stage's terminal invocation receipt when execution ended
+   before a successful stage snapshot.
+3. Close the journal, metric-verification receipts, measurements, and logs.
+4. Construct the complete `RunAttempt`.
+5. Publish the attempt document and its files as revision $D_i$.
+6. Retrieve and verify the complete revision.
+7. Construct `ResolvedAttemptRef` from the published attempt document.
 
 ```text
 stage execution
         │
         ▼
+snapshot I_i,j
+└── invocation receipt
+        │
+        ▼
 snapshot C_i,j
 ├── resolved stage spec
+├── invocation reference → snapshot I_i,j
 ├── every retrieved body for a download stage
 └── every file in every named artifact
         │
@@ -3714,6 +3742,8 @@ repository/
                     │       │   └── <stage_id>.<metric_id>.jsonl
                     │       ├── metric_verification/
                     │       │   └── <stage_id>.<metric_id>.yaml
+                    │       ├── invocations/
+                    │       │   └── <stage_id>.yaml
                     │       └── logs/
                     │           ├── <stage_id>.stdout.log
                     │           └── <stage_id>.stderr.log
@@ -3723,8 +3753,7 @@ repository/
                     │       ├── resolved.yaml
                     │       └── retrievals/
                     │           └── <input_name>/
-                    │               └── <retrieval_index>/
-                    │                   └── body
+                    │               └── body
                     ├── artifacts/
                     │   ├── datasets/
                     │   │   └── <dataset_id>/

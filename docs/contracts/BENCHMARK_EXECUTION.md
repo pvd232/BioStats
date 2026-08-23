@@ -35,11 +35,23 @@ class ExecuteBenchmarkSuccess(ProtocolModel):
     result_path: Path
 ```
 
-The selected `BenchmarkSpec` fixes the evaluation identity, input
-selection, metric criteria, and required execution count. VIPER 0.1 fixes:
+The selected `BenchmarkSpec` fixes the evaluation identity, input selection,
+metric criteria, and required execution count:
 
 ```python
+class MetricCriterion(ProtocolModel):
+    metric_id: MetricId
+    comparison: Literal["ge", "le"]
+    threshold: float = Field(allow_inf_nan=False)
+
+
 class BenchmarkSpec(ProtocolModel):
+    schema_version: Literal[1] = 1
+    benchmark_id: BenchmarkId
+    evaluation_id: EvaluationId
+    evaluation_dataset: ArtifactPointerRef
+    splits: dict[InputName, ArtifactPointerRef] = Field(min_length=1)
+    metrics: tuple[MetricCriterion, ...] = Field(min_length=1)
     execution_count: Literal[2] = 2
 ```
 
@@ -119,6 +131,14 @@ loads every metric-verification receipt, applies every threshold, and derives
 the expected final status. It also requires the confirmation attempt ID to
 exceed every candidate run attempt ID and its purpose to equal
 `benchmark_confirmation`.
+
+| Check | Rule |
+|---|---|
+| `benchmark.plan` | The candidate and confirmation use the same frozen run plan, source, stage specifications, inputs, seed, controls, and effective environments. |
+| `benchmark.confirmation` | The confirmation is a distinct successful attempt with purpose `benchmark_confirmation` and a greater attempt ID. |
+| `benchmark.artifacts` | The `parameters` and `predictions` receipts identify complete candidate and confirmation artifacts with equal canonical content descriptions. |
+| `benchmark.metrics` | Both executions contain passed metric-verification receipts, and both recomputed values satisfy each frozen criterion. |
+| `benchmark.status` | The recorded status equals the result derived from artifact parity and metric criteria. |
 
 ## Propagation
 

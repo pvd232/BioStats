@@ -54,6 +54,7 @@ class RunAttempt(ProtocolModel):
     started_at: AwareDatetime
     completed_at: AwareDatetime
     resolved_stages: tuple[ResolvedStageRef, ...]
+    invocations: tuple[ResolvedStageInvocationRef, ...]
     journal: AttemptJournalRef
     measurement_files: tuple[ResolvedFileRef, ...]
     metric_verification_files: tuple[ResolvedFileRef, ...]
@@ -89,6 +90,8 @@ experiments/<experiment_id>/runs/<variant_id>/<run_id>/
     │   └── <stage_id>.<metric_id>.jsonl
     ├── metric_verification/
     │   └── <stage_id>.<metric_id>.yaml
+    ├── invocations/
+    │   └── <stage_id>.yaml
     └── logs/
         ├── <stage_id>.stdout.log
         └── <stage_id>.stderr.log
@@ -133,6 +136,8 @@ An attempt closes with exactly one terminal status:
 
 VIPER publishes the attempt journal and available logs for every outcome. A
 failed attempt retains every verified stage snapshot completed before failure.
+Every started stage also leaves one invocation receipt, including the active
+stage that fails, is cancelled, or is preempted.
 
 The coordinator assigns terminal outcomes through these operations:
 
@@ -153,8 +158,10 @@ reconciliation.
 ## Retry
 
 Retry receives the same frozen `RunSpec` and allocates the next attempt ID.
-Every earlier attempt remains immutable. A retry policy may limit the number of
-attempts and select the terminal statuses eligible for retry.
+Every earlier attempt remains immutable. VIPER 0.1 accepts a terminal
+`ResolvedRun` whose status is `failed` or `cancelled`. It rejects a successful
+run because benchmark confirmation has its own operation and a changed
+experiment requires a new frozen plan.
 
 Benchmark confirmation uses the same allocator and frozen plan with
 `purpose="benchmark_confirmation"`. It can follow a successful run attempt and
@@ -169,7 +176,8 @@ contains the ordinary run and retry history.
 | `attempt.terminal` | Every published attempt has exactly one terminal status. |
 | `attempt.identity` | Each `ResolvedAttemptRef` retrieves bytes whose digest and byte count match the reference and whose attempt ID matches its canonical path. |
 | `attempt.files` | The attempt references the published journal, metric-verification files, measurements, and logs from the same attempt. |
-| `attempt.failure` | A failed attempt has one failure value consistent with its journal. |
+| `attempt.failure` | A failed, preempted, or cancelled attempt has one failure value consistent with its journal; a successful attempt has none. |
+| `attempt.invocations` | Every started stage has one immutable invocation receipt owned by the attempt. |
 | `attempt.retry` | A retry uses the same frozen run plan and a greater attempt ID. |
 | `attempt.purpose` | `ResolvedRun.attempts` contain only run attempts; `BenchmarkResult.confirmation` identifies one benchmark-confirmation attempt. |
 

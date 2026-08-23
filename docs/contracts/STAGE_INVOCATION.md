@@ -35,22 +35,22 @@ class StageImplementationRef(ProtocolModel):
     bytes: int = Field(gt=0)
 ```
 
-`StageContext` carries one validated stage invocation:
+`StageContext` carries one validated stage invocation. It is a runtime
+dataclass because it contains attempt-local paths and live metric handles:
 
 ```python
 ParamsT = TypeVar("ParamsT", bound=ParameterSet)
 
 
-class StageContext(ProtocolModel, Generic[ParamsT]):
-    schema_version: Literal[1] = 1
+@dataclass(frozen=True)
+class StageContext(Generic[ParamsT]):
     run_id: RunId
     attempt_id: int
     stage_id: StageId
-    parameter_model: ParameterModelRef
     params: ParamsT
-    inputs: dict[InputName, Path]
-    artifacts: dict[ArtifactName, Path]
-    metrics: dict[MetricId, DuringStageMetricHandle]
+    inputs: Mapping[InputName, Path]
+    artifacts: Mapping[ArtifactName, Path]
+    metrics: Mapping[MetricId, MetricHandle]
 ```
 
 `StageImplementationRef` identifies the callable invoked for the stage. At
@@ -91,7 +91,6 @@ context = StageContext[TrainParameters](
     run_id=run.run_id,
     attempt_id=attempt.attempt_id,
     stage_id=stage.stage_id,
-    parameter_model=stage.parameter_model,
     params=params,
     inputs=materialized_inputs,
     artifacts=writable_artifact_paths,
@@ -105,6 +104,12 @@ train(context)
 identifies source code. VIPER creates a new `StageContext` for each run attempt
 because the invocation identity, validated values, and workspace paths belong
 to that attempt.
+
+`StageContextBinding` is the serializable description from which the child
+constructs `StageContext`. The binding contains stable identities, digests, and
+repository-relative paths. The child resolves those paths beneath the active
+attempt workspace and attaches the live metric handles before calling the
+project function.
 
 Each parameterized stage replaces `BaseSpec.script` with:
 
@@ -160,7 +165,8 @@ attempt.
 
 ## Persisted evidence
 
-`ResolvedBaseSpec` stores a `StageInvocationReceipt` containing:
+VIPER persists one `StageInvocationReceipt` for each started invocation and
+identifies that file through `ResolvedStageInvocationRef`:
 
 ```python
 class StageContextBinding(ProtocolModel):
@@ -181,7 +187,11 @@ class StageInvocationReceipt(ProtocolModel):
     context_digest: SHA256
     started_at: AwareDatetime
     completed_at: AwareDatetime
-    outcome: Literal["succeeded", "failed"]
+    outcome: Literal["succeeded", "failed", "cancelled", "preempted"]
+
+
+class ResolvedStageInvocationRef(ResolvedFileRef):
+    kind: Literal["stage_invocation"] = "stage_invocation"
 ```
 
 The coordinator constructs `StageContextBinding` before launching the child.
@@ -190,17 +200,33 @@ the stage. Each artifact value is the repository-relative output path declared
 by the stage. `metric_ids` identifies the runner-owned handles placed in the
 runtime context. Absolute workspace paths exist only in `StageContext`.
 
-The canonical digest is:
+The canonical digests are:
 
 ```python
-context_digest = sha256(serialize_document(context)).hexdigest()
+context_digest = sha256(serialize_document(binding)).hexdigest()
 parameter_digest = sha256(serialize_document(stage.params)).hexdigest()
 ```
 
 `serialize_document()` is VIPER's deterministic protocol encoder. The child
 receives the same binding, resolves each logical path beneath its attempt
 workspace, constructs `StageContext`, and records the binding and digest in the
-receipt.
+receipt. Absolute paths and live handles remain outside the serialized digest.
+
+Every invocation receipt is published at:
+
+```text
+experiments/<experiment_id>/runs/<variant_id>/<run_id>/
+└── attempts/<attempt_id>/invocations/<stage_id>.yaml
+```
+
+`RunAttempt.invocations` references every started stage invocation. A completed
+resolved stage references the same receipt. This gives failed invocations a
+durable location when execution ends before a resolved stage exists.
+
+The coordinator publishes the receipt as an immutable file before constructing
+a successful resolved stage. The resulting `ResolvedStageInvocationRef` can
+therefore be retrieved while that stage snapshot is verified. The terminal
+attempt later preserves the same reference.
 
 ## Verification
 
@@ -211,7 +237,7 @@ receipt.
 | `parameter_model.identity` | `receipt.context.parameter_model` equals the frozen parameter model. |
 | `parameter.value` | `receipt.context.parameter_digest` equals the canonical digest of `stage.params`. |
 | `stage.context` | `receipt.context` equals the binding reconstructed from the run, attempt, stage, resolved inputs, and declared artifacts; its serialized bytes match `context_digest`. |
-| `stage.outcome` | A successful resolved stage has one successful invocation receipt. |
+| `stage.outcome` | A successful resolved stage references one successful invocation receipt. Every started invocation appears in `RunAttempt.invocations` with the terminal outcome observed for that child. |
 
 These checks establish typed delivery to the callable. Project tests establish
 how the callable uses each field while producing its scientific result.
@@ -220,11 +246,11 @@ how the callable uses each field while producing its scientific result.
 
 | Surface | Required change |
 |---|---|
-| Protocol | Add `StageImplementationRef`, `StageContextBinding`, and `StageInvocationReceipt`; replace `BaseSpec.script` on parameterized stages. |
+| Protocol | Add `StageImplementationRef`, `StageContextBinding`, `StageInvocationReceipt`, and `ResolvedStageInvocationRef`; replace `BaseSpec.script` on parameterized stages. |
 | Decorators | Add one decorator for each stage kind and expose its frozen metadata. |
 | Authoring | Resolve the top-level callable and freeze its exact identity. |
 | Runtime | Add typed contexts and invoke the callable with the validated project parameter object. |
-| Persistence | Store the canonical parameter and context digests in the resolved stage. |
+| Persistence | Publish each invocation receipt once, reference it from the attempt, and reference successful invocations from their resolved stages. |
 | Verification | Apply the six stage-invocation checks. |
 | Tests | Replace constant fixture scripts with callables that assert typed parameters and declared paths. |
 | Documentation | Show direct Python execution and the whole-plan CLI adapter. |

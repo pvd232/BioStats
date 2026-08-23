@@ -163,9 +163,9 @@ retry(request: RetryRequest) -> RetrySuccess
 | `timeout_seconds` | positive `float` or `None` | Per-stage process deadline |
 
 The coordinator verifies the terminal result, retrieves its frozen `RunSpec`,
-requires a retry-eligible terminal status, allocates the next attempt ID, and
-executes the same plan. The result contains the new attempt reference, the new
-terminal run path, and the new journal path.
+requires `status="failed"` or `status="cancelled"`, allocates the next attempt
+ID, and executes the same plan. The result contains the new attempt reference,
+the new terminal run path, and the new journal path.
 
 Expected errors: `execution_failed`, `verification_failed`, `invalid_document`,
 `not_found`, `write_conflict`, `io_failed`.
@@ -303,9 +303,11 @@ Each request supplies `path` and `trusted_source_repositories`. A supplied
 `fetcher` retrieves exact bytes for Git, Hugging Face, or local storage
 references. Verification checks the connected plan, stage results, inputs,
 artifacts, measurements, logs, runtime controls, and terminal selection.
-Metrics with `verification="recompute"` run again from frozen implementation
-code, verified dependencies, and frozen parameters. VIPER applies the metric's
-declared comparator to the recorded and recomputed values.
+Metrics with `mode="recompute"` execute in a dedicated production worker and a
+second verification worker. Both receive the frozen implementation, verified
+dependencies, and frozen parameters. VIPER records each worker's startup and
+runtime evidence, then applies the metric's declared comparator to the two
+values.
 
 Expected errors: `invalid_document`, `not_found`, `io_failed`,
 `verification_failed`.

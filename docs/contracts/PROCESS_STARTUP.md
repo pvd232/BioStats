@@ -3,8 +3,9 @@
 ## Status
 
 Runner-launched stages already receive process-start environment variables and
-run-wide library controls. A shared startup contract for the Python and CLI
-interfaces is approved for VIPER 0.1.
+run-wide library controls. The shared Python and CLI startup design is drafted
+for VIPER 0.1. The system audit found one open connector for named NumPy
+generator delivery.
 
 ## Required claim
 
@@ -194,6 +195,11 @@ The DataLoader state enters the training `resume_state` artifact at a checkpoint
 boundary. A future runner-owned DataLoader construction contract can add a
 startup receipt for a dedicated loader generator.
 
+The runtime still needs one explicit interface that delivers each configured
+named NumPy generator to the stage callable. The receipt proves creation; the
+missing interface must make the same object available through `StageContext` or
+another runner-owned runtime handle.
+
 For a CUDA stage, the coordinator selects one device whose model satisfies the
 frozen `CUDAComputeSpec`. `CUDA_VISIBLE_DEVICES` exposes that device to the
 child before process startup. The child constructs `CUDABackendContext` from
@@ -233,7 +239,7 @@ project stage module.
 ## Persisted evidence
 
 `ResolvedBaseSpec` stores `ProcessStartupReceipt` and the stage invocation
-receipt defined by
+reference defined by
 [Stage invocation](STAGE_INVOCATION.md). The resolved stage also stores the
 `ExecutionContext` observed inside the child process.
 
@@ -267,7 +273,7 @@ versions active in the child.
 | Worker | Load the frozen callable and invoke it with the typed context. |
 | Stage execution | Use the same child-process startup path for Python and CLI callers. |
 | Runtime | Select the compute backend from the effective environment and observe the host CPU plus the selected CPU or CUDA backend. |
-| Persistence | Store the applied startup receipt, invocation receipt, CPU, compute-backend, and numerical-runtime evidence on the resolved stage. |
+| Persistence | Store the applied startup receipt, invocation reference, CPU, compute-backend, and numerical-runtime evidence on the resolved stage. |
 | Verification | Apply the ten startup checks above. |
 | Tests | Exercise direct Python execution, CLI execution, start-time controls, one invocation, CPU execution on a GPU-capable host, one CUDA device, and a multi-device rejection. |
 

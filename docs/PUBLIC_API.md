@@ -117,14 +117,15 @@ contract.
 | Name | Responsibility |
 | --- | --- |
 | `http_transport()` | Decorate one project transport callable and bind its transport ID and parameter class. |
-| `HttpTransportContext` | Deliver one frozen request, a runtime credential, a dedicated retrieval workspace, the assigned destination, the retrieval policy, and validated transport parameters. |
-| `HttpTransportResult` | Return the completed body path, optional terminal HTTP response, and any external executable observations. |
+| `HttpTransportContext` | Deliver one frozen request, a runtime credential, a dedicated retrieval workspace, the assigned destination, the retrieval policy, validated transport parameters, and preflight-verified executable paths. |
+| `HttpTransportResult` | Return the completed body path and terminal HTTP response. |
 | `HttpTransportParams` | Base class for project-defined transport parameters. |
 | `run_transport_conformance()` | Exercise a selected transport against the VIPER retrieval contract. |
 
 The built-in transport ID is `httpx`. A `ProjectHttpTransportSpec` freezes a
 decorated callable through its repository-relative path, symbol, SHA-256, byte
-count, parameter model, and complete parameter mapping.
+count, parameter model, complete parameter mapping, and external executable
+requirements.
 
 ## Serialization compatibility
 
