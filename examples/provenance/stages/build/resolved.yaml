@@ -42,12 +42,6 @@ execution_context:
     architecture: x86_64
     instruction_features: [avx2]
     model: Intel Cascade Lake
-  determinism:
-    cublas_workspace_config: ":4096:8"
-    cudnn_benchmark: false
-    cudnn_deterministic: true
-    deterministic_algorithms: true
-    deterministic_warn_only: false
   host:
     guest_os_name: debian
     guest_os_version: "12"
@@ -63,25 +57,49 @@ execution_context:
     numpy_version: 2.3.0
     python_version: 3.14.0
     pytorch_version: 2.8.0
-  parallelism:
-    dataloader:
-      workers: 0
-      prefetch_factor: null
-      persistent_workers: false
-      in_order: true
-    process_count: 1
-    torch_interop_threads: 1
-    torch_intraop_threads: 1
-  precision:
-    autocast_dtype: null
-    autocast_enabled: false
-    cudnn_allow_tf32: false
-    float32_matmul_precision: highest
-  randomness:
-    dataloader_seed: 42
-    numpy_seed: 42
-    python_seed: 42
-    torch_seed: 42
+invocation:
+  bytes: 1
+  kind: stage_invocation
+  sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  stored_at:
+    commit: "6666666666666666666666666666666666666666"
+    kind: huggingface
+    path: experiments/model_eval/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAB/attempts/1/invocations/build.yaml
+    repo_type: dataset
+    repository: example/viper-runs
+startup:
+  environment:
+    CUBLAS_WORKSPACE_CONFIG: ":4096:8"
+    CUDA_VISIBLE_DEVICES: ""
+    MKL_NUM_THREADS: "1"
+    OMP_NUM_THREADS: "1"
+    PYTHONHASHSEED: "42"
+  generators: []
+  reproducibility:
+    determinism:
+      cublas_workspace_config: ":4096:8"
+      cudnn_benchmark: false
+      cudnn_deterministic: true
+      deterministic_algorithms: true
+      deterministic_warn_only: false
+    numpy_randomness:
+      capture_legacy_global: true
+      generators:
+        training: PCG64
+    parallelism:
+      dataloader:
+        in_order: true
+        persistent_workers: false
+        prefetch_factor: null
+        workers: 0
+      process_count: 1
+      torch_interop_threads: 1
+      torch_intraop_threads: 1
+    precision:
+      autocast_dtype: null
+      autocast_enabled: false
+      cudnn_allow_tf32: false
+      float32_matmul_precision: highest
 inputs:
   dataset:
     kind: stored
@@ -123,6 +141,11 @@ spec:
         path: inputs/datasets/toy/current.pointer.yaml
         repository: https://github.com/example/mantra
   kind: build
+  implementation:
+    bytes: 8
+    path: features/build_prior.py
+    sha256: e2824b547eab952da1f090d78a01e5354c309b1e0141c2a4c98ec49265492cef
+    symbol: build_prior
   parameter_model:
     bytes: 138
     path: project/parameters/build.py
@@ -130,4 +153,3 @@ spec:
     symbol: BuildParameters
   params: {}
   schema_version: 1
-  script: features/build_prior.py

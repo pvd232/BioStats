@@ -9,10 +9,12 @@ import os
 import re
 import subprocess
 import tempfile
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
+from typing import cast
 
 import yaml
 from huggingface_hub import hf_hub_download
@@ -48,6 +50,7 @@ from .protocol import (
     LocalStageResultSnapshotRef,
     Measurement,
     ParameterizedSpec,
+    ParameterizedStageSpec,
     RepoRelPath,
     ResolvedArtifact,
     ResolvedBaseSpec,
@@ -61,6 +64,7 @@ from .protocol import (
     ResolvedRunSpecRef,
     ResolvedSingleFileArtifact,
     ResolvedSpec,
+    ResolvedStageInvocationRef,
     ResolvedStageRef,
     ResolvedStoredInputRef,
     ResumeState,
@@ -68,6 +72,8 @@ from .protocol import (
     RunSpec,
     SnapshotFileRef,
     Spec,
+    StageContextBinding,
+    StageInvocationReceipt,
     StageResultSnapshotRef,
     StorageModel,
     StoredInputRef,
@@ -75,7 +81,9 @@ from .protocol import (
     VariantSpec,
     repo_file_paths_overlap,
 )
-from .serialization import parse_yaml_bytes
+from .runtime import process_environment
+from .serialization import document_digest, parse_yaml_bytes
+from .stages import StageDefinitionError, verify_stage_implementation_bytes
 
 StorageFetcher = Callable[[StorageModel], bytes]
 SPEC_ADAPTER = TypeAdapter(Spec)
@@ -96,6 +104,15 @@ def run_root(run: RunSpec) -> RepoRelPath:
 def stage_spec_path(run: RunSpec, stage_id: StageId) -> RepoRelPath:
     """Return the canonical stage-spec path for a run stage."""
     return f"{run_root(run)}/stages/{stage_id}/spec.yaml"
+
+
+def stage_invocation_path(
+    run: RunSpec,
+    attempt_id: int,
+    stage_id: StageId,
+) -> RepoRelPath:
+    """Return the canonical receipt path for one attempted stage invocation."""
+    return f"{run_root(run)}/attempts/{attempt_id}/invocations/{stage_id}.yaml"
 
 
 def _verify_stage_data_roles(
@@ -933,8 +950,7 @@ def verify_parameter_model_references(
             for node in tree.body
         ):
             raise VerificationError(
-                f"parameter model of stage {stage_id!r} must define "
-                f"{reference.symbol}"
+                f"parameter model of stage {stage_id!r} must define {reference.symbol}"
             )
 
 
@@ -974,6 +990,33 @@ def verify_stage_plan(
             raise VerificationError(
                 f"stage {stage.stage_id!r} file is not a valid stage spec"
             ) from exc
+
+        implementation = spec.implementation
+        implementation_location = GitFileRef(
+            repository=run.source.repository,
+            commit=run.source.commit,
+            path=implementation.path,
+        )
+        try:
+            implementation_raw = retrieve(implementation_location)
+            verify_stage_implementation_bytes(implementation, implementation_raw)
+            implementation_tree = ast.parse(
+                implementation_raw,
+                filename=implementation.path,
+            )
+        except (KeyError, OSError, SyntaxError, StageDefinitionError) as exc:
+            raise VerificationError(
+                f"implementation of stage {stage.stage_id!r} failed source verification"
+            ) from exc
+        if not any(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == implementation.symbol
+            for node in implementation_tree.body
+        ):
+            raise VerificationError(
+                f"implementation of stage {stage.stage_id!r} must define "
+                f"top-level callable {implementation.symbol!r}"
+            )
 
         artifact_root = f"{run_root(run)}/artifacts/"
         for artifact_name, artifact in spec.artifacts.items():
@@ -1036,10 +1079,10 @@ def verify_stage_plan(
                         )
                 future_materialization_paths[producer_path] = input_name
 
-                if repo_file_paths_overlap(producer_path, spec.script):
+                if repo_file_paths_overlap(producer_path, spec.implementation.path):
                     raise VerificationError(
                         f"future input {input_name!r} path collides with the "
-                        f"script of stage {stage.stage_id!r}"
+                        f"implementation of stage {stage.stage_id!r}"
                     )
 
                 for artifact_name, artifact in spec.artifacts.items():
@@ -1091,6 +1134,161 @@ def verify_run_plan(
     )
 
 
+def _logical_input_paths(
+    stage: BaseSpec,
+    stage_specs: Mapping[StageId, BaseSpec],
+) -> dict[InputName, RepoRelPath]:
+    """Reconstruct the repository-relative input paths delivered to one stage."""
+    if not isinstance(stage, InternalSpec):
+        return {}
+    paths: dict[InputName, RepoRelPath] = {}
+    for name, reference in stage.inputs.items():
+        if isinstance(reference, StoredInputRef):
+            paths[name] = reference.path
+            continue
+        producer = stage_specs[reference.producer_stage_id]
+        paths[name] = producer.artifacts[reference.producer_artifact].path
+    return paths
+
+
+def _verify_stage_invocation(
+    reference: ResolvedStageInvocationRef,
+    *,
+    attempt: RunAttempt,
+    run: RunSpec,
+    stage_id: StageId,
+    stage: ParameterizedStageSpec,
+    stage_specs: Mapping[StageId, BaseSpec],
+    resolved_stage: ResolvedBaseSpec,
+    fetcher: StorageFetcher | None,
+) -> StageInvocationReceipt:
+    """Verify one invocation receipt against its plan, context, and startup facts."""
+    if reference.stored_at.path != stage_invocation_path(
+        run, attempt.attempt_id, stage_id
+    ):
+        raise VerificationError(
+            f"stage {stage_id!r} invocation receipt is outside its canonical path"
+        )
+    raw = read_resolved_file(reference, fetcher=fetcher)
+    try:
+        receipt = StageInvocationReceipt.model_validate(parse_yaml_bytes(raw))
+    except (yaml.YAMLError, ValueError) as exc:
+        raise VerificationError(
+            f"stage {stage_id!r} invocation receipt is invalid"
+        ) from exc
+    expected_binding = StageContextBinding(
+        run_id=run.run_id,
+        attempt_id=attempt.attempt_id,
+        stage_id=stage_id,
+        parameter_model=stage.parameter_model,
+        parameter_digest=document_digest(stage.params),
+        inputs=_logical_input_paths(stage, stage_specs),
+        artifacts={name: value.path for name, value in stage.artifacts.items()},
+        metric_ids=stage.metric_ids,
+        numpy_generator_names=tuple(
+            sorted(run.reproducibility.numpy_randomness.generators)
+        ),
+    )
+    if receipt.implementation != stage.implementation:
+        raise VerificationError(
+            f"stage {stage_id!r} invocation used a different implementation"
+        )
+    if receipt.context != expected_binding:
+        raise VerificationError(
+            f"stage {stage_id!r} invocation context differs from the plan"
+        )
+    expected_digest = document_digest(expected_binding)
+    if receipt.context_digest != expected_digest:
+        raise VerificationError(f"stage {stage_id!r} invocation context digest differs")
+    if receipt.outcome != "succeeded":
+        raise VerificationError(
+            f"resolved stage {stage_id!r} requires a successful invocation"
+        )
+    if not (
+        attempt.started_at
+        <= receipt.started_at
+        < receipt.completed_at
+        <= resolved_stage.completed_at
+    ):
+        raise VerificationError(
+            f"stage {stage_id!r} invocation timing falls outside its stage"
+        )
+
+    startup = resolved_stage.startup
+    if startup.reproducibility != run.reproducibility:
+        raise VerificationError(
+            f"stage {stage_id!r} startup controls differ from the run plan"
+        )
+    compute = (stage.environment or run.environment).compute
+    recorded_cuda = startup.environment.get("CUDA_VISIBLE_DEVICES")
+    if compute.kind == "cuda":
+        if recorded_cuda is None or not recorded_cuda.isdigit():
+            raise VerificationError(
+                f"stage {stage_id!r} startup omitted its selected CUDA device"
+            )
+        expected_environment = process_environment(
+            run.seed,
+            run.reproducibility,
+            compute,
+            cuda_ordinal=int(recorded_cuda),
+        )
+    else:
+        expected_environment = process_environment(
+            run.seed,
+            run.reproducibility,
+            compute,
+        )
+    if startup.environment != expected_environment:
+        raise VerificationError(
+            f"stage {stage_id!r} startup environment differs from the plan"
+        )
+
+    generators = startup.generators
+    if any(generator.seed != run.seed for generator in generators):
+        raise VerificationError(
+            f"stage {stage_id!r} generator receipt uses a different seed"
+        )
+    family_counts = Counter(generator.family for generator in generators)
+    if family_counts["python"] != 1 or family_counts["torch_cpu"] != 1:
+        raise VerificationError(
+            f"stage {stage_id!r} startup requires one Python and one CPU Torch "
+            "generator receipt"
+        )
+    configured_names = set(expected_binding.numpy_generator_names)
+    received_names = {
+        generator.name
+        for generator in generators
+        if generator.family == "numpy_generator"
+    }
+    if received_names != configured_names:
+        raise VerificationError(
+            f"stage {stage_id!r} named NumPy generator receipts differ"
+        )
+    if family_counts["numpy_generator"] != len(configured_names):
+        raise VerificationError(
+            f"stage {stage_id!r} named NumPy generator receipts are duplicated"
+        )
+    legacy_count = sum(generator.family == "numpy_legacy" for generator in generators)
+    if legacy_count != int(run.reproducibility.numpy_randomness.capture_legacy_global):
+        raise VerificationError(
+            f"stage {stage_id!r} legacy NumPy generator receipt differs"
+        )
+    cuda_receipts = tuple(
+        generator for generator in generators if generator.family == "torch_cuda"
+    )
+    if compute.kind == "cpu" and cuda_receipts:
+        raise VerificationError(
+            f"stage {stage_id!r} CPU startup includes a CUDA generator receipt"
+        )
+    if compute.kind == "cuda" and (
+        len(cuda_receipts) != 1 or cuda_receipts[0].device_index != 0
+    ):
+        raise VerificationError(
+            f"stage {stage_id!r} CUDA startup requires one visible-device receipt"
+        )
+    return receipt
+
+
 def verify_attempt_stages(
     attempt: RunAttempt,
     run: RunSpec,
@@ -1112,11 +1310,26 @@ def verify_attempt_stages(
 
     if set(stage_specs) != set(expected_stage_ids):
         raise VerificationError("loaded stage specs do not match the run stage plan")
+    if len(attempt.invocations) < len(attempt.resolved_stages):
+        raise VerificationError(
+            "attempt must retain an invocation receipt for every resolved stage"
+        )
+    if len(attempt.invocations) > len(expected_stage_ids):
+        raise VerificationError("attempt contains more invocations than planned stages")
+    for index, invocation in enumerate(attempt.invocations):
+        expected_path = stage_invocation_path(
+            run,
+            attempt.attempt_id,
+            expected_stage_ids[index],
+        )
+        if invocation.stored_at.path != expected_path:
+            raise VerificationError(
+                "attempt invocation receipts must follow planned stage order"
+            )
 
     verified_stages: dict[StageId, ResolvedBaseSpec] = {}
-    run_stage_refs = {stage.stage_id: stage for stage in run.stages}
 
-    for stage_reference in attempt.resolved_stages:
+    for stage_index, stage_reference in enumerate(attempt.resolved_stages):
         expected_resolved_path = resolved_stage_spec_path(
             run,
             stage_reference.stage_id,
@@ -1156,6 +1369,25 @@ def verify_attempt_stages(
             raise VerificationError(
                 f"stage {stage_reference.stage_id!r} does not embed its stage spec"
             )
+
+        invocation_reference = attempt.invocations[stage_index]
+        if resolved_spec.invocation != invocation_reference:
+            raise VerificationError(
+                f"stage {stage_reference.stage_id!r} invocation reference differs "
+                "from its attempt"
+            )
+        if not isinstance(stage_spec, ParameterizedSpec):
+            raise VerificationError("resolved stage is not parameterized")
+        _verify_stage_invocation(
+            invocation_reference,
+            attempt=attempt,
+            run=run,
+            stage_id=stage_reference.stage_id,
+            stage=cast(ParameterizedStageSpec, stage_spec),
+            stage_specs=stage_specs,
+            resolved_stage=resolved_spec,
+            fetcher=fetcher,
+        )
 
         source_location = resolved_spec.source.stored_at
         if (
@@ -1223,41 +1455,10 @@ def verify_attempt_stages(
                 "environment than requested"
             )
 
-        context = resolved_spec.execution_context
-        if context.determinism != run.reproducibility.determinism:
-            raise VerificationError(
-                f"stage {stage_reference.stage_id!r} determinism controls do "
-                "not match the run plan"
-            )
-        if context.precision != run.reproducibility.precision:
-            raise VerificationError(
-                f"stage {stage_reference.stage_id!r} precision controls do not "
-                "match the run plan"
-            )
-        if context.parallelism != run.reproducibility.parallelism:
-            raise VerificationError(
-                f"stage {stage_reference.stage_id!r} parallelism controls do "
-                "not match the run plan"
-            )
-
-        recorded_seeds = {
-            context.randomness.python_seed,
-            context.randomness.numpy_seed,
-            context.randomness.torch_seed,
-            context.randomness.dataloader_seed,
-        }
-        if recorded_seeds != {run.seed}:
-            raise VerificationError(
-                f"stage {stage_reference.stage_id!r} did not apply the run seed"
-            )
-
-        run_stage_ref = run_stage_refs[stage_reference.stage_id]
         expected_command = (
             "python",
             "-m",
             "viper.stage_worker",
-            str(run_stage_ref.spec),
-            f"{run_root(run)}/spec.yaml",
         )
         if resolved_spec.command != expected_command:
             raise VerificationError(

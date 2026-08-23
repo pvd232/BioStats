@@ -40,6 +40,7 @@ from .protocol import (
     ResolvedRun,
     ResolvedRunSpecRef,
     ResolvedSpec,
+    ResolvedStageInvocationRef,
     ResolvedStageRef,
     ResolvedStoredInputRef,
     ResolvedTrainSpec,
@@ -62,11 +63,11 @@ from .verifier import (
 from .workspace import AttemptWorkspace
 
 
-class LocalRunError(RuntimeError):
+class RunError(RuntimeError):
     """Report a local plan, source, materialization, or execution failure."""
 
 
-class LocalRunResult(BaseModel):
+class RunResult(BaseModel):
     """Return one verified terminal run and its local output path."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -85,10 +86,10 @@ def _git(repository_root: Path, *arguments: str) -> bytes:
             capture_output=True,
         ).stdout
     except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-        raise LocalRunError("local Git evidence could not be read") from exc
+        raise RunError("local Git evidence could not be read") from exc
 
 
-class LocalRunFetcher:
+class RunFetcher:
     """Retrieve frozen Git source and repository-local immutable outputs."""
 
     def __init__(
@@ -122,7 +123,7 @@ def _write_synchronized(path: Path, raw: bytes) -> None:
     if path.exists():
         if path.read_bytes() == raw:
             return
-        raise LocalRunError(f"refusing to replace different bytes at {path}")
+        raise RunError(f"refusing to replace different bytes at {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent,
@@ -141,7 +142,7 @@ def _write_synchronized(path: Path, raw: bytes) -> None:
 
 
 def _resolved_git_file(
-    fetcher: LocalRunFetcher,
+    fetcher: RunFetcher,
     location: GitFileRef,
 ) -> ResolvedGitFileRef:
     """Retrieve and identify one exact file in the local Git checkout."""
@@ -157,9 +158,9 @@ def _write_materialized_file(root: Path, relative_path: str, raw: bytes) -> None
     """Write verified input bytes at one safe repository-relative path."""
     target = (root / relative_path).resolve()
     if not target.is_relative_to(root):
-        raise LocalRunError("materialized input escapes the repository root")
+        raise RunError("materialized input escapes the repository root")
     if target.exists() and (not target.is_file() or target.read_bytes() != raw):
-        raise LocalRunError("materialized input path contains different bytes")
+        raise RunError("materialized input path contains different bytes")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(raw)
 
@@ -190,7 +191,7 @@ def _resolve_inputs(
     stage: InternalSpec,
     completed: Mapping[StageId, ResolvedStageRef],
     stage_specs: Mapping[StageId, BaseSpec],
-    fetcher: LocalRunFetcher,
+    fetcher: RunFetcher,
     policy: VerificationPolicy,
 ) -> tuple[dict[InputName, ResolvedInternalInputRef], dict[str, Path]]:
     """Materialize stage inputs and bind each one to its verified producer."""
@@ -200,7 +201,7 @@ def _resolve_inputs(
         if input_ref.kind == "future":
             producer = completed.get(input_ref.producer_stage_id)
             if producer is None:
-                raise LocalRunError("future input producer has not completed")
+                raise RunError("future input producer has not completed")
             resolved[name] = ResolvedFutureInputRef(producer=producer)
             producer_spec = stage_specs[input_ref.producer_stage_id]
             artifact = producer_spec.artifacts[input_ref.producer_artifact]
@@ -241,7 +242,7 @@ def _run_after_stage_metrics(
     experiment: ExperimentSpec,
     input_paths: Mapping[str, Path],
     measurement_paths: list[Path],
-    fetcher: LocalRunFetcher,
+    fetcher: RunFetcher,
 ) -> None:
     """Invoke each selected after-stage metric and append its Measurement row."""
     metrics = {metric.metric_id: metric for metric in experiment.metrics}
@@ -258,7 +259,7 @@ def _run_after_stage_metrics(
             )
         )
         if implementation.read_bytes() != frozen_implementation:
-            raise LocalRunError(
+            raise RunError(
                 f"metric {metric_id!r} implementation differs from frozen source"
             )
         try:
@@ -271,7 +272,7 @@ def _run_after_stage_metrics(
                 )
             )
         except Exception as exc:
-            raise LocalRunError(f"metric {metric_id!r} invocation failed") from exc
+            raise RunError(f"metric {metric_id!r} invocation failed") from exc
         path = (
             root
             / f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
@@ -289,7 +290,7 @@ def _run_after_stage_metrics(
 
 
 def _resolved_environment(
-    fetcher: LocalRunFetcher,
+    fetcher: RunFetcher,
     environment: LocalEnvironmentSpec,
 ) -> ResolvedLocalEnvironment:
     """Resolve one local environment's exact lockfile identity."""
@@ -305,6 +306,7 @@ def _resolved_stage(
     source: ResolvedGitFileRef,
     environment: ResolvedLocalEnvironment,
     process: StageProcessResult,
+    invocation: ResolvedStageInvocationRef,
     inputs: dict[InputName, ResolvedInternalInputRef] | None,
     completed_at: datetime,
 ) -> ResolvedSpec:
@@ -315,6 +317,8 @@ def _resolved_stage(
         "source": source,
         "environment": environment,
         "execution_context": result.execution_context,
+        "startup": result.startup,
+        "invocation": invocation,
         "command": result.command,
         "artifacts": result.artifacts,
         "completed_at": completed_at,
@@ -335,36 +339,36 @@ def _resolved_stage(
     return ResolvedEvaluateSpec(**common, inputs=inputs)
 
 
-def run_local(
+def run(
     repository_root: Path,
     run_spec_path: Path,
     *,
     timeout_seconds: float | None = None,
-) -> LocalRunResult:
+) -> RunResult:
     """Execute one frozen plan locally and verify its terminal resolved run."""
     root = repository_root.resolve()
     run_path = run_spec_path.resolve()
     run_raw = run_path.read_bytes()
     run = RunSpec.model_validate(parse_yaml_bytes(run_raw))
     if not isinstance(run.environment, LocalEnvironmentSpec):
-        raise LocalRunError("trusted local execution requires a local environment")
+        raise RunError("trusted execution requires a local environment")
     origin = _git(root, "remote", "get-url", "origin").decode().strip()
     if origin != str(run.source.repository):
-        raise LocalRunError("local Git origin differs from RunSpec.source.repository")
+        raise RunError("Git origin differs from RunSpec.source.repository")
     preflight = preflight_local_plan(root, run_path)
     if not preflight.ready:
         failed_codes = ", ".join(
             check.code for check in preflight.checks if check.status == "failure"
         )
-        raise LocalRunError(f"plan preflight failed: {failed_codes}")
+        raise RunError(f"plan preflight failed: {failed_codes}")
 
     plan_commit = _git(root, "rev-parse", "HEAD").decode("ascii").strip()
     relative_run_path = run_path.relative_to(root).as_posix()
     if _git(root, "show", f"{plan_commit}:{relative_run_path}") != run_raw:
-        raise LocalRunError("RunSpec bytes are absent from the current Git commit")
+        raise RunError("RunSpec bytes are absent from the current Git commit")
 
     store = LocalArtifactStore(root)
-    fetcher = LocalRunFetcher(root, store, str(run.source.repository))
+    fetcher = RunFetcher(root, store, str(run.source.repository))
     policy = VerificationPolicy(
         trusted_loader_repositories=frozenset({str(run.source.repository)})
     )
@@ -385,6 +389,7 @@ def run_local(
     workspace.acquire()
     attempt_started = datetime.now(UTC)
     resolved_stage_refs: list[ResolvedStageRef] = []
+    invocation_refs: list[ResolvedStageInvocationRef] = []
     completed: dict[StageId, ResolvedStageRef] = {}
     loaded_stages: dict[StageId, BaseSpec] = {}
     measurement_paths: list[Path] = []
@@ -410,15 +415,17 @@ def run_local(
             loaded_stages[stage_reference.stage_id] = stage
             effective_environment = stage.environment or run.environment
             if not isinstance(effective_environment, LocalEnvironmentSpec):
-                raise LocalRunError("local runner cannot apply a remote environment")
+                raise RunError("runner cannot apply a remote environment")
             source_location = GitFileRef(
                 repository=run.source.repository,
                 commit=run.source.commit,
-                path=stage.script,
+                path=stage.implementation.path,
             )
             source = _resolved_git_file(fetcher, source_location)
-            if (root / stage.script).read_bytes() != fetcher(source_location):
-                raise LocalRunError("local stage source differs from the frozen source")
+            if (root / stage.implementation.path).read_bytes() != fetcher(
+                source_location
+            ):
+                raise RunError("stage source differs from the frozen source")
 
             resolved_inputs: dict[InputName, ResolvedInternalInputRef] | None = None
             input_paths: dict[str, Path] = {}
@@ -443,8 +450,22 @@ def run_local(
                 run,
                 stage_reference,
                 stage,
+                attempt_id=1,
+                input_paths=input_paths,
                 timeout_seconds=timeout_seconds,
             )
+            invocation_path = (
+                f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
+                f"/attempts/1/invocations/{stage_reference.stage_id}.yaml"
+            )
+            invocation_raw = serialize_document(process.invocation)
+            invocation_file = store.resolved_files({invocation_path: invocation_raw})[0]
+            invocation_ref = ResolvedStageInvocationRef(
+                sha256=invocation_file.sha256,
+                bytes=invocation_file.bytes,
+                stored_at=invocation_file.stored_at,
+            )
+            invocation_refs.append(invocation_ref)
             _run_after_stage_metrics(
                 root,
                 run,
@@ -461,6 +482,7 @@ def run_local(
                 source=source,
                 environment=_resolved_environment(fetcher, effective_environment),
                 process=process,
+                invocation=invocation_ref,
                 inputs=resolved_inputs,
                 completed_at=stage_completed,
             )
@@ -544,6 +566,7 @@ def run_local(
             started_at=attempt_started,
             completed_at=attempt_completed,
             resolved_stages=tuple(resolved_stage_refs),
+            invocations=tuple(invocation_refs),
             measurement_files=measurement_references,
             log_files=log_references,
             failure_reason=None,
@@ -581,7 +604,7 @@ def run_local(
             recorded_at=datetime.now(UTC),
             details={"resolved_run": terminal_path.relative_to(root).as_posix()},
         )
-        return LocalRunResult(
+        return RunResult(
             resolved_run=resolved_run,
             resolved_run_path=terminal_path,
             journal_path=journal.path,

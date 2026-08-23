@@ -17,7 +17,7 @@ that each realized stage environment satisfies the effective
 [`GCEEnvironmentSpec`](../../viper/protocol.py),
 [`ResolvedGCEEnvironment`](../../viper/protocol.py), and
 [`GCEHostContext`](../../viper/protocol.py) define the requested and realized GCE
-state. [`run_local()`](../../viper/runner.py) accepts only
+state. [`run()`](../../viper/runner.py) accepts only
 `LocalEnvironmentSpec`. [`observe_local_execution()`](../../viper/runtime.py)
 always records `LocalHostContext` with a CPU backend.
 
@@ -209,7 +209,7 @@ separate contracts when their first implementations enter scope.
 ## Implementation order
 
 1. Replace the GCE machine-image fields with immutable boot-image identity.
-2. Rename the complete-run operation from `run_local` to `run`.
+2. Use the host-neutral `run` operation for complete-run coordination.
 3. Generalize preflight and the coordinator across local and GCE environments.
 4. Reuse the process-startup compute observer and implement GCE host and
    boot-image observation.

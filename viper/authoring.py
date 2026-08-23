@@ -33,6 +33,7 @@ from .protocol import (
     VariantSpec,
 )
 from .serialization import parse_yaml_bytes, serialize_document
+from .stages import StageDefinitionError, validate_stage_definition
 
 SPEC_ADAPTER = TypeAdapter(Spec)
 
@@ -189,6 +190,30 @@ def freeze_run_plan(
                     "parameter model differs from the frozen source commit"
                 )
             validate_stage_parameters(root, source, spec)
+            implementation = spec.implementation
+            implementation_path = root / implementation.path
+            implementation_raw = implementation_path.read_bytes()
+            try:
+                committed_implementation_raw = subprocess.run(
+                    (
+                        "git",
+                        "-C",
+                        str(root),
+                        "show",
+                        f"{draft.source.commit}:{implementation.path}",
+                    ),
+                    check=True,
+                    capture_output=True,
+                ).stdout
+            except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+                raise StageDefinitionError(
+                    "stage implementation is absent from the frozen source commit"
+                ) from exc
+            if implementation_raw != committed_implementation_raw:
+                raise StageDefinitionError(
+                    "stage implementation differs from the frozen source commit"
+                )
+            validate_stage_definition(root, spec)
         raw = serialize_document(spec)
         relative_path = f"{run_root}/stages/{stage.stage_id}/spec.yaml"
         target = _target_path(root, relative_path)

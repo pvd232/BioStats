@@ -3,7 +3,7 @@
 import hashlib
 from pathlib import Path
 
-from tests.fixtures import parameter_model_ref
+from tests.fixtures import parameter_model_ref, stage_implementation_ref
 from viper.materialization import future_input_paths
 from viper.preflight import preflight_local_plan
 from viper.protocol import (
@@ -37,7 +37,7 @@ def test_preflight_reports_all_plan_failures(tmp_path: Path) -> None:
     """Return every independent plan, source, environment, and stage failure."""
     run_root = "experiments/example/runs/baseline/01JABCDEFGHJKMNPQRSTVWXYZ0"
     stage = TrainSpec(
-        script="project/build.py",
+        implementation=stage_implementation_ref("project/build.py"),
         parameter_model=parameter_model_ref("train"),
         inputs={
             "dataset": FutureInputRef(
@@ -143,7 +143,8 @@ def test_preflight_reports_all_plan_failures(tmp_path: Path) -> None:
         "plan.records",
         "plan.relationships",
         "source.repository",
-        "stage.script",
+        "stage.callable",
+        "stage.implementation",
     }
     assert not report.ready
 
@@ -151,7 +152,7 @@ def test_preflight_reports_all_plan_failures(tmp_path: Path) -> None:
 def test_future_input_uses_canonical_producer_path(tmp_path: Path) -> None:
     """Resolve one consumer input to the materialized producer artifact."""
     producer = DownloadSpec(
-        script="project/download.py",
+        implementation=stage_implementation_ref("project/download.py"),
         parameter_model=parameter_model_ref("download"),
         inputs={
             "remote": RemoteFileRef.model_validate(
@@ -170,7 +171,7 @@ def test_future_input_uses_canonical_producer_path(tmp_path: Path) -> None:
         params=DownloadParams(),
     )
     consumer = BuildSpec(
-        script="project/build.py",
+        implementation=stage_implementation_ref("project/build.py"),
         parameter_model=parameter_model_ref("build"),
         inputs={
             "dataset": FutureInputRef(

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal, cast
+
+from pydantic import BaseModel, ConfigDict
 
 from .parameter_models import ParameterModelError, validate_stage_parameters
 from .protocol import (
@@ -16,6 +20,8 @@ from .protocol import (
     BundleArtifactSpec,
     ExecutionContext,
     ParameterizedSpec,
+    ParameterizedStageSpec,
+    ProcessStartupReceipt,
     ResolvedArtifact,
     ResolvedBundleArtifact,
     ResolvedBundleMember,
@@ -24,12 +30,49 @@ from .protocol import (
     RunStageRef,
     SingleFileArtifactSpec,
     SnapshotFileRef,
+    StageContextBinding,
+    StageInvocationReceipt,
 )
-from .runtime import process_environment
+from .runtime import process_environment, select_cuda_device
+from .serialization import document_digest
 
 
 class StageExecutionError(RuntimeError):
     """A frozen stage command failed or did not produce its declared files."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        invocation: StageInvocationReceipt | None = None,
+    ) -> None:
+        """Preserve failed-invocation evidence when the child produced it."""
+        super().__init__(message)
+        self.invocation = invocation
+
+
+class StageWorkerContext(BaseModel):
+    """Supply one versioned logical invocation to the controlled child."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    repository_root: Path
+    run_spec_path: Path
+    stage_spec_path: Path
+    binding: StageContextBinding
+    result_path: Path
+
+
+class StageWorkerResult(BaseModel):
+    """Return the evidence produced by one controlled stage child."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    execution_context: ExecutionContext | None
+    startup: ProcessStartupReceipt | None
+    invocation: StageInvocationReceipt
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +84,8 @@ class StageProcessResult:
     completed_at: datetime
     artifacts: dict[ArtifactName, ResolvedArtifact]
     execution_context: ExecutionContext
+    startup: ProcessStartupReceipt
+    invocation: StageInvocationReceipt
     stdout: bytes
     stderr: bytes
 
@@ -114,9 +159,11 @@ def execute_stage_process(
     stage_reference: RunStageRef,
     stage_spec: BaseSpec,
     *,
+    attempt_id: int = 1,
+    input_paths: dict[str, Path] | None = None,
     timeout_seconds: float | None = None,
 ) -> StageProcessResult:
-    """Run the canonical stage command and hash every declared output file."""
+    """Invoke one frozen callable and hash every declared output file."""
     root = repository_root.resolve()
     spec_path = _workspace_path(root, stage_reference.spec)
     spec_raw = spec_path.read_bytes()
@@ -125,33 +172,69 @@ def execute_stage_process(
     if len(spec_raw) != stage_reference.bytes:
         raise StageExecutionError("stage spec byte count does not match RunStageRef")
 
-    script_path = _workspace_path(root, stage_spec.script)
-    if not script_path.is_file():
-        raise StageExecutionError(f"stage entrypoint is missing: {stage_spec.script}")
+    implementation_path = _workspace_path(root, stage_spec.implementation.path)
+    if not implementation_path.is_file():
+        raise StageExecutionError(
+            f"stage implementation is missing: {stage_spec.implementation.path}"
+        )
+    implementation_raw = implementation_path.read_bytes()
+    if len(implementation_raw) != stage_spec.implementation.bytes:
+        raise StageExecutionError("stage implementation byte count differs")
+    if hashlib.sha256(implementation_raw).hexdigest() != (
+        stage_spec.implementation.sha256
+    ):
+        raise StageExecutionError("stage implementation SHA-256 differs")
 
-    if isinstance(stage_spec, ParameterizedSpec):
-        try:
-            validate_stage_parameters(
-                root,
-                spec_path,
-                stage_spec,
-                timeout_seconds=timeout_seconds,
-            )
-        except ParameterModelError as exc:
-            raise StageExecutionError("stage parameter validation failed") from exc
+    if not isinstance(stage_spec, ParameterizedSpec):
+        raise StageExecutionError("stage invocation requires a parameterized spec")
+    parameterized_stage = cast(ParameterizedStageSpec, stage_spec)
+    try:
+        validate_stage_parameters(
+            root,
+            spec_path,
+            parameterized_stage,
+            timeout_seconds=timeout_seconds,
+        )
+    except ParameterModelError as exc:
+        raise StageExecutionError("stage parameter validation failed") from exc
 
     run_spec_path = (
         f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}/spec.yaml"
     )
-    command = (
-        "python",
-        "-m",
-        "viper.stage_worker",
-        str(stage_reference.spec),
-        run_spec_path,
+    supplied_inputs = {} if input_paths is None else input_paths
+    logical_inputs: dict[str, str] = {}
+    for name, path in supplied_inputs.items():
+        resolved_path = path.resolve()
+        if not resolved_path.is_relative_to(root):
+            raise StageExecutionError("stage input path escapes the repository root")
+        logical_inputs[name] = resolved_path.relative_to(root).as_posix()
+    binding = StageContextBinding(
+        run_id=run.run_id,
+        attempt_id=attempt_id,
+        stage_id=stage_reference.stage_id,
+        parameter_model=parameterized_stage.parameter_model,
+        parameter_digest=document_digest(parameterized_stage.params),
+        inputs=logical_inputs,
+        artifacts={
+            name: artifact.path for name, artifact in stage_spec.artifacts.items()
+        },
+        metric_ids=stage_spec.metric_ids,
+        numpy_generator_names=tuple(
+            sorted(run.reproducibility.numpy_randomness.generators)
+        ),
     )
+    command = ("python", "-m", "viper.stage_worker")
     environment = os.environ.copy()
-    environment.update(process_environment(run.seed, run.reproducibility))
+    effective_environment = stage_spec.environment or run.environment
+    compute = effective_environment.compute
+    cuda_ordinal = select_cuda_device(compute.model) if compute.kind == "cuda" else None
+    startup_environment = process_environment(
+        run.seed,
+        run.reproducibility,
+        compute,
+        cuda_ordinal=cuda_ordinal,
+    )
+    environment.update({str(key): value for key, value in startup_environment.items()})
     package_root = str(Path(__file__).resolve().parents[1])
     existing_python_path = environment.get("PYTHONPATH")
     environment["PYTHONPATH"] = (
@@ -159,12 +242,26 @@ def execute_stage_process(
         if existing_python_path is None
         else f"{package_root}{os.pathsep}{existing_python_path}"
     )
-    runtime_context_path = (
-        root / ".viper" / "runtime" / (f"{run.run_id}.{stage_reference.stage_id}.json")
+    runtime_root = root / ".viper" / "runtime"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    context_path = runtime_root / (
+        f"{run.run_id}.{attempt_id}.{stage_reference.stage_id}.context.json"
     )
-    runtime_context_path.parent.mkdir(parents=True, exist_ok=True)
-    runtime_context_path.unlink(missing_ok=True)
-    environment["VIPER_RUNTIME_CONTEXT_PATH"] = str(runtime_context_path)
+    result_path = runtime_root / (
+        f"{run.run_id}.{attempt_id}.{stage_reference.stage_id}.result.json"
+    )
+    result_path.unlink(missing_ok=True)
+    context_path.write_text(
+        StageWorkerContext(
+            repository_root=root,
+            run_spec_path=root / run_spec_path,
+            stage_spec_path=spec_path,
+            binding=binding,
+            result_path=result_path,
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    environment["VIPER_CONTEXT_PATH"] = str(context_path)
     started_at = datetime.now(UTC)
     completed = subprocess.run(
         command,
@@ -175,16 +272,27 @@ def execute_stage_process(
         timeout=timeout_seconds,
     )
     completed_at = datetime.now(UTC)
-    if completed.returncode != 0:
+    if not result_path.is_file():
         raise StageExecutionError(
-            f"stage command exited with status {completed.returncode}: "
-            f"{completed.stderr.decode(errors='replace').strip()}"
+            f"stage command exited with status {completed.returncode} without "
+            "writing invocation evidence"
         )
-    if not runtime_context_path.is_file():
-        raise StageExecutionError("stage worker did not record its runtime context")
-    execution_context = ExecutionContext.model_validate_json(
-        runtime_context_path.read_text(encoding="utf-8")
-    )
+    try:
+        worker_result = StageWorkerResult.model_validate_json(
+            result_path.read_text(encoding="utf-8")
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise StageExecutionError("stage worker wrote an invalid result") from exc
+    if completed.returncode != 0 or worker_result.error is not None:
+        message = (
+            worker_result.error or completed.stderr.decode(errors="replace").strip()
+        )
+        raise StageExecutionError(
+            f"stage command exited with status {completed.returncode}: {message}",
+            invocation=worker_result.invocation,
+        )
+    if worker_result.execution_context is None or worker_result.startup is None:
+        raise StageExecutionError("successful stage omitted runtime evidence")
 
     artifacts = {
         name: _resolve_artifact(root, declaration)
@@ -195,7 +303,9 @@ def execute_stage_process(
         started_at=started_at,
         completed_at=completed_at,
         artifacts=artifacts,
-        execution_context=execution_context,
+        execution_context=worker_result.execution_context,
+        startup=worker_result.startup,
+        invocation=worker_result.invocation,
         stdout=completed.stdout,
         stderr=completed.stderr,
     )

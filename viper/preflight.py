@@ -25,7 +25,13 @@ from .protocol import (
     RunSpec,
     StorageModel,
 )
+from .runtime import select_cuda_device
 from .serialization import load_stage_spec, parse_yaml_bytes
+from .stages import (
+    StageDefinitionError,
+    validate_stage_definition,
+    verify_stage_implementation_bytes,
+)
 from .verifier import (
     VerificationError,
     fetch_storage_bytes,
@@ -193,21 +199,70 @@ def preflight_local_plan(repository_root: Path, run_spec_path: Path) -> Prefligh
         checks.append(_check("stage.document", reference.stage_id, True, ""))
         loaded[reference.stage_id] = stage
 
-        script_path = root / stage.script
+        implementation_path = root / stage.implementation.path
         try:
-            script_exists = (
-                script_path.is_file()
-                and script_path.read_bytes()
-                == _git_bytes(root, run.source.commit, stage.script)
+            implementation_raw = implementation_path.read_bytes()
+            verify_stage_implementation_bytes(
+                stage.implementation,
+                implementation_raw,
             )
-        except (OSError, subprocess.CalledProcessError):
-            script_exists = False
+            implementation_exists = (
+                implementation_path.is_file()
+                and implementation_raw
+                == _git_bytes(root, run.source.commit, stage.implementation.path)
+            )
+        except (OSError, subprocess.CalledProcessError, StageDefinitionError):
+            implementation_exists = False
         checks.append(
             _check(
-                "stage.script",
+                "stage.implementation",
                 reference.stage_id,
-                script_exists,
-                "stage entrypoint differs from the frozen source commit",
+                implementation_exists,
+                "stage implementation differs from the frozen source commit",
+            )
+        )
+        callable_valid = False
+        if implementation_exists:
+            try:
+                validate_stage_definition(root, stage)
+                callable_valid = True
+            except (OSError, StageDefinitionError):
+                pass
+        checks.append(
+            _check(
+                "stage.callable",
+                reference.stage_id,
+                callable_valid,
+                "stage callable decorator differs from the frozen stage contract",
+            )
+        )
+        effective_environment = stage.environment or run.environment
+        checks.append(
+            _check(
+                "startup.distributed",
+                reference.stage_id,
+                not (
+                    effective_environment.compute.kind == "cuda"
+                    and effective_environment.compute.count > 1
+                ),
+                "VIPER 0.1 supports one CUDA device per stage",
+            )
+        )
+        compute_available = True
+        if (
+            effective_environment.compute.kind == "cuda"
+            and effective_environment.compute.count == 1
+        ):
+            try:
+                select_cuda_device(effective_environment.compute.model)
+            except RuntimeError:
+                compute_available = False
+        checks.append(
+            _check(
+                "startup.compute",
+                reference.stage_id,
+                compute_available,
+                "requested CUDA device model is unavailable on this host",
             )
         )
         loaders_exist = True

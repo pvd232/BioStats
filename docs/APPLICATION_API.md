@@ -11,9 +11,7 @@ installed command both delegate complete-run coordination to
 module to one frozen stage. The application operation executes the complete
 ordered run plan.
 
-The execution names in this document are the approved 0.1 surface. The current
-package still exposes `run_local()` and `viper run-local`; the execution-contract
-increment replaces those pre-release names.
+The execution names in this document are the active 0.1 surface.
 
 ## Operations
 

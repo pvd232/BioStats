@@ -190,65 +190,65 @@ python -m pytest tests/test_contract_audit.py -q
 
 ### Protocol and authoring
 
-- [ ] Add `StageImplementationRef` with repository-relative path, top-level
+- [x] Add `StageImplementationRef` with repository-relative path, top-level
   symbol, SHA-256, and byte count.
-- [ ] Replace each parameterized stage's `script` field with
+- [x] Replace each parameterized stage's `script` field with
   `implementation: StageImplementationRef`.
-- [ ] Add `StageContextBinding`, its canonical digest rule, and
+- [x] Add `StageContextBinding`, its canonical digest rule, and
   `StageInvocationReceipt` to attempt evidence.
 - [ ] Add `ResolvedStageInvocationRef`; store each successful stage's reference
   on its resolved stage and every started invocation on `RunAttempt`.
-- [ ] Add `ProcessStartupReceipt` with the allowlisted child environment,
+- [x] Add `ProcessStartupReceipt` with the allowlisted child environment,
   applied controls, and one initialized-state digest for each configured
   generator.
-- [ ] Update `ProvenanceS1_v3.md` with the callable, context, receipt, and
+- [x] Update `ProvenanceS1_v3.md` with the callable, context, receipt, and
   process-startup relationships.
-- [ ] Add one public decorator for each stage kind.
-- [ ] Resolve decorator metadata into the frozen implementation and parameter
+- [x] Add one public decorator for each stage kind.
+- [x] Resolve decorator metadata into the frozen implementation and parameter
   model references.
 
 ### Runtime
 
-- [ ] Add generic `StageContext` with typed parameters, materialized input
+- [x] Add generic `StageContext` with typed parameters, materialized input
   paths, writable artifact paths, a metric-handle mapping, run ID, attempt ID,
   and stage ID. Phase 1 supplies an empty mapping; Phase 4 binds the handles.
-- [ ] Return every configured named NumPy generator from child initialization
+- [x] Return every configured named NumPy generator from child initialization
   and expose it through `StageContext.numpy_generators`.
-- [ ] Store the sorted generator names in `StageContextBinding` and verify them
+- [x] Store the sorted generator names in `StageContextBinding` and verify them
   against `RunSpec.reproducibility` and `ProcessStartupReceipt`.
-- [ ] Construct the versioned logical `StageContextBinding` before resolving
+- [x] Construct the versioned logical `StageContextBinding` before resolving
   attempt-local absolute paths.
-- [ ] Add `viper.run(stage_callable)` as the ordinary Python adapter.
-- [ ] Bind `--stage` to the callable launched by the project module and execute
+- [x] Add `viper.run(stage_callable)` as the ordinary Python adapter.
+- [x] Bind `--stage` to the callable launched by the project module and execute
   every stage in `RunSpec.stages` order.
-- [ ] Rename `run_local()` and its request/result models to the host-neutral
+- [x] Rename `run_local()` and its request/result models to the host-neutral
   `run()` operation.
-- [ ] Rename `viper run-local` to `viper run`.
-- [ ] Derive the canonical child-process environment from
+- [x] Rename `viper run-local` to `viper run`.
+- [x] Derive the canonical child-process environment from
   `RunSpec.reproducibility` and the stage's effective environment.
-- [ ] Permit `CPUComputeSpec` and single-device `CUDAComputeSpec` on local
+- [x] Permit `CPUComputeSpec` and single-device `CUDAComputeSpec` on local
   environments; reject `CUDAComputeSpec.count > 1` with
   `startup.distributed`.
-- [ ] Launch each stage in one controlled child carrying
+- [x] Launch each stage in one controlled child carrying
   `VIPER_CONTEXT_PATH`.
-- [ ] Apply library controls before importing the frozen callable.
-- [ ] Select the CPU or CUDA backend from the effective compute request and
+- [x] Apply library controls before importing the frozen callable.
+- [x] Select the CPU or CUDA backend from the effective compute request and
   expose one matching CUDA device to a CUDA child process.
-- [ ] Observe the host `CPUContext` and the selected
+- [x] Observe the host `CPUContext` and the selected
   `ComputeBackendContext` inside the child process.
-- [ ] Validate parameters into the exact project class and place that object in
+- [x] Validate parameters into the exact project class and place that object in
   `StageContext.params`.
-- [ ] Construct `StageContext.inputs` from the stage's declared,
+- [x] Construct `StageContext.inputs` from the stage's declared,
   role-permitted inputs.
-- [ ] Invoke the frozen callable once and persist its invocation receipt at the
+- [x] Invoke the frozen callable once and persist its invocation receipt at the
   attempt-level canonical path.
 
 ### Verification and acceptance
 
-- [ ] Verify implementation identity, decorator metadata, parameter identity,
+- [x] Verify implementation identity, decorator metadata, parameter identity,
   parameter digest, canonical context binding, startup environment, applied
   controls, initialized-generator receipts, and invocation outcome.
-- [ ] Replace constant fixture scripts with decorated functions that consume
+- [x] Replace constant fixture scripts with decorated functions that consume
   their typed parameters and declared paths.
 - [ ] Prove that `python train.py --run RUN --stage train` and `viper run RUN`
   produce terminal results accepted by the same verifier.

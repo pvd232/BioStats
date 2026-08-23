@@ -22,8 +22,20 @@ ROOT_MODULES = (
     "runner",
     "resume",
     "stage_execution",
+    "stages",
     "worker",
     "workspace",
+)
+
+ROOT_EXPORTS = (
+    *ROOT_MODULES,
+    "StageContext",
+    "build_stage",
+    "download_stage",
+    "embed_stage",
+    "evaluate_stage",
+    "train_stage",
+    "run",
 )
 
 PUBLIC_MODULES = (
@@ -37,7 +49,7 @@ PUBLIC_MODULES = (
 
 def test_root_package_exports_documented_modules() -> None:
     """Keep the root module inventory equal to the documented public surface."""
-    assert tuple(viper.__all__) == ROOT_MODULES
+    assert tuple(viper.__all__) == ROOT_EXPORTS
     for name in ROOT_MODULES:
         assert getattr(viper, name).__name__ == f"viper.{name}"
 

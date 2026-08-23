@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 from warnings import warn
@@ -56,6 +58,18 @@ def serialize_document(document: BaseModel) -> bytes:
     )
     assert isinstance(rendered, str)
     return rendered.encode("utf-8")
+
+
+def document_digest(document: BaseModel) -> str:
+    """Hash one model through a key-order-independent canonical JSON mapping."""
+    value = document.model_dump(mode="json")
+    raw = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def serialize_record(record: BaseModel) -> bytes:

@@ -118,7 +118,7 @@ checklist. This is expected implementation lag:
 | Planned surface | Current implementation |
 |---|---|
 | Stage callables and typed contexts | Script path and stage-spec argument |
-| Host-neutral run and retry | `run_local()` and attempt `1` |
+| Host-neutral run and retry | `run()` and attempt `1` |
 | Frozen HTTP retrieval | `RemoteFileRef` plus project download script |
 | Dedicated metric workers | In-process post-stage invocation and recomputation |
 | Durable failed attempts | Success-only terminal construction |

@@ -89,6 +89,26 @@ def validate_parameters(
     return effective
 
 
+def instantiate_parameters(
+    path: Path,
+    reference: ParameterModelRef,
+    params: ParameterSet,
+    expected_base: type[ParameterSet],
+) -> ParameterSet:
+    """Construct the exact project parameter class from one frozen mapping."""
+    raw = path.read_bytes()
+    verify_parameter_model_bytes(reference, raw)
+    model = load_parameter_model(path, reference.symbol, expected_base)
+    frozen = cast(dict[str, JsonValue], params.model_dump(mode="json"))
+    validated = model.model_validate(frozen, strict=True)
+    effective = cast(dict[str, JsonValue], validated.model_dump(mode="json"))
+    if effective != frozen:
+        raise ParameterModelError(
+            "frozen parameters must contain every effective project-model value"
+        )
+    return validated
+
+
 def validate_stage_parameters(
     repository_root: Path,
     stage_spec_path: Path,

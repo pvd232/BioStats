@@ -68,8 +68,7 @@ class DurableJournal:
         for previous, current in zip(entries, entries[1:], strict=False):
             if current.state not in ATTEMPT_STATE_TRANSITIONS[previous.state]:
                 raise ValueError(
-                    f"invalid journal transition: {previous.state} -> "
-                    f"{current.state}"
+                    f"invalid journal transition: {previous.state} -> {current.state}"
                 )
         return entries
 

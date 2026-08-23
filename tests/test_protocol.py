@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 import yaml
 from pydantic import ValidationError
 
-from tests.fixtures import parameter_model_ref
+from tests.fixtures import parameter_model_ref, stage_implementation_ref
 from viper.protocol import (
     PARAMETERS,
     PREDICTIONS,
@@ -127,7 +127,9 @@ def train_payload() -> dict:
     """Build a valid training-stage request payload."""
     return {
         "kind": "train",
-        "script": "project/training/fit.py",
+        "implementation": stage_implementation_ref(
+            "project/training/fit.py", symbol="fit"
+        ).model_dump(mode="json"),
         "parameter_model": parameter_model_ref("train").model_dump(mode="json"),
         "inputs": {
             "training_dataset": stored_input(
@@ -235,6 +237,7 @@ class RunPlanTests(unittest.TestCase):
                     "started_at": "2026-08-20T20:00:00Z",
                     "completed_at": "2026-08-20T20:01:00Z",
                     "resolved_stages": [],
+                    "invocations": [],
                     "measurement_files": [],
                     "log_files": [],
                     "failure_reason": None,
@@ -256,6 +259,7 @@ class RunPlanTests(unittest.TestCase):
             "started_at": "2026-08-20T20:00:00Z",
             "completed_at": "2026-08-20T20:01:00Z",
             "resolved_stages": [],
+            "invocations": [],
             "measurement_files": [],
             "log_files": [
                 {"sha256": SHA_A, "bytes": 1, "stored_at": location},
@@ -353,7 +357,7 @@ class TrainingCheckpointTests(unittest.TestCase):
     def test_repository_paths_reject_control_characters(self) -> None:
         """Verify that repository paths reject control characters."""
         payload = train_payload()
-        payload["script"] = "project/training/fit.py\nother"
+        payload["implementation"]["path"] = "project/training/fit.py\nother"
 
         with self.assertRaisesRegex(ValidationError, "control character"):
             TrainSpec.model_validate(payload)
@@ -361,16 +365,18 @@ class TrainingCheckpointTests(unittest.TestCase):
     def test_stage_source_path_is_repository_agnostic(self) -> None:
         """Accept any repository-relative Python entrypoint selected by the author."""
         payload = train_payload()
-        payload["script"] = "unconventional/layout/run_training.py"
+        payload["implementation"]["path"] = "unconventional/layout/run_training.py"
 
         spec = TrainSpec.model_validate(payload)
 
-        self.assertEqual(spec.script, "unconventional/layout/run_training.py")
+        self.assertEqual(
+            spec.implementation.path, "unconventional/layout/run_training.py"
+        )
 
     def test_protocol_managed_paths_use_protocol_roots(self) -> None:
         """Keep inputs and outputs under their protocol-managed roots."""
         invalid_script = train_payload()
-        invalid_script["script"] = "project/training/spec.yaml"
+        invalid_script["implementation"]["path"] = "project/training/spec.yaml"
         with self.assertRaisesRegex(ValidationError, "Python file"):
             TrainSpec.model_validate(invalid_script)
 
@@ -531,7 +537,9 @@ class EvaluationTests(unittest.TestCase):
         spec = EvaluateSpec.model_validate(
             {
                 "kind": "evaluate",
-                "script": "project/evaluation/predict.py",
+                "implementation": stage_implementation_ref(
+                    "project/evaluation/predict.py", symbol="predict"
+                ).model_dump(mode="json"),
                 "parameter_model": parameter_model_ref("evaluate").model_dump(
                     mode="json"
                 ),
@@ -572,10 +580,10 @@ class EvaluationTests(unittest.TestCase):
         """Accept a prediction bundle with an exact project-owned loader path."""
         payload = {
             "kind": "evaluate",
-            "script": "evaluation/predict.py",
-            "parameter_model": parameter_model_ref("evaluate").model_dump(
-                mode="json"
-            ),
+            "implementation": stage_implementation_ref(
+                "evaluation/predict.py", symbol="predict"
+            ).model_dump(mode="json"),
+            "parameter_model": parameter_model_ref("evaluate").model_dump(mode="json"),
             "evaluation_id": "structured_predictions",
             "metric_ids": ["accuracy"],
             "split_inputs": ["test_split"],
@@ -617,10 +625,10 @@ class EvaluationTests(unittest.TestCase):
         """Verify that evaluation inputs use role specific paths."""
         payload = {
             "kind": "evaluate",
-            "script": "project/evaluation/predict.py",
-            "parameter_model": parameter_model_ref("evaluate").model_dump(
-                mode="json"
-            ),
+            "implementation": stage_implementation_ref(
+                "project/evaluation/predict.py", symbol="predict"
+            ).model_dump(mode="json"),
+            "parameter_model": parameter_model_ref("evaluate").model_dump(mode="json"),
             "evaluation_id": "strand_predictions",
             "metric_ids": ["pearson_correlation"],
             "split_inputs": ["split"],
@@ -682,10 +690,10 @@ class EvaluationTests(unittest.TestCase):
         """Verify that evaluation rejects training checkpoint outputs."""
         payload = {
             "kind": "evaluate",
-            "script": "project/evaluation/predict.py",
-            "parameter_model": parameter_model_ref("evaluate").model_dump(
-                mode="json"
-            ),
+            "implementation": stage_implementation_ref(
+                "project/evaluation/predict.py", symbol="predict"
+            ).model_dump(mode="json"),
+            "parameter_model": parameter_model_ref("evaluate").model_dump(mode="json"),
             "evaluation_id": "strand_predictions",
             "metric_ids": ["pearson_correlation"],
             "split_inputs": ["split"],

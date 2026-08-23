@@ -34,8 +34,8 @@ from .protocol import (
     RunSpec,
     Spec,
 )
-from .runner import LocalRunError
-from .runner import run_local as execute_local_run
+from .runner import RunError
+from .runner import run as execute_run
 from .serialization import load_resolved_stage, load_stage_spec, parse_yaml_bytes
 from .stage_execution import StageExecutionError, execute_stage_process
 from .verifier import (
@@ -54,7 +54,7 @@ OperationName = Literal[
     "freeze_run",
     "preflight",
     "execute_stage",
-    "run_local",
+    "run",
     "plan_diff",
     "lineage",
     "status",
@@ -209,18 +209,18 @@ class ExecuteStageSuccess(SuccessModel):
     stderr: bytes
 
 
-class RunLocalRequest(ApplicationModel):
-    """Select one frozen plan for complete trusted-local execution."""
+class RunRequest(ApplicationModel):
+    """Select one frozen plan for complete execution on the active host."""
 
     run_spec: Path
     repository_root: Path
     timeout_seconds: float | None = Field(default=None, gt=0)
 
 
-class RunLocalSuccess(SuccessModel):
-    """Report the terminal document written by one verified local run."""
+class RunSuccess(SuccessModel):
+    """Report the terminal document written by one verified run."""
 
-    operation: Literal["run_local"] = "run_local"  # pyright: ignore[reportIncompatibleVariableOverride]
+    operation: Literal["run"] = "run"  # pyright: ignore[reportIncompatibleVariableOverride]
     run_id: RunId
     resolved_run: Path
     journal: Path
@@ -388,8 +388,8 @@ SCHEMA_REGISTRY: dict[str, Any] = {
     "PreflightRequest": PreflightRequest,
     "PreflightSuccess": PreflightSuccess,
     "ResolvedRun": ResolvedRun,
-    "RunLocalRequest": RunLocalRequest,
-    "RunLocalSuccess": RunLocalSuccess,
+    "RunRequest": RunRequest,
+    "RunSuccess": RunSuccess,
     "RunSpec": RunSpec,
     "SchemaRequest": SchemaRequest,
     "SchemaSuccess": SchemaSuccess,
@@ -416,7 +416,7 @@ OPERATIONS: tuple[OperationName, ...] = (
     "freeze_run",
     "preflight",
     "execute_stage",
-    "run_local",
+    "run",
     "plan_diff",
     "lineage",
     "status",
@@ -554,36 +554,36 @@ def execute_stage(request: ExecuteStageRequest) -> ExecuteStageSuccess:
     )
 
 
-def run_local(request: RunLocalRequest) -> RunLocalSuccess:
-    """Execute, publish, and verify one complete run on the local host."""
+def run(request: RunRequest) -> RunSuccess:
+    """Execute, publish, and verify one complete run on the active host."""
     try:
-        result = execute_local_run(
+        result = execute_run(
             request.repository_root,
             request.run_spec,
             timeout_seconds=request.timeout_seconds,
         )
-    except (LocalRunError, StageExecutionError) as exc:
+    except (RunError, StageExecutionError) as exc:
         raise ViperError(
             ViperFailure(
-                operation="run_local",
+                operation="run",
                 origin="application",
                 code="execution_failed",
-                message="local run failed",
+                message="run failed",
             )
         ) from exc
     except VerificationError as exc:
         raise ViperError(
             ViperFailure(
-                operation="run_local",
+                operation="run",
                 origin="application",
                 code="verification_failed",
-                message="local run verification failed",
+                message="run verification failed",
             )
         ) from exc
     except (OSError, ValueError, yaml.YAMLError) as exc:
-        raise _document_error("run_local", request.run_spec, exc) from exc
+        raise _document_error("run", request.run_spec, exc) from exc
     run = RunSpec.model_validate(parse_yaml_bytes(request.run_spec.read_bytes()))
-    return RunLocalSuccess(
+    return RunSuccess(
         run_id=run.run_id,
         resolved_run=result.resolved_run_path,
         journal=result.journal_path,
@@ -871,7 +871,7 @@ REQUEST_REGISTRY: dict[OperationName, RequestType] = {
     "freeze_run": FreezeRunRequest,
     "preflight": PreflightRequest,
     "execute_stage": ExecuteStageRequest,
-    "run_local": RunLocalRequest,
+    "run": RunRequest,
     "plan_diff": PlanDiffRequest,
     "lineage": LineageRequest,
     "status": StatusRequest,
@@ -890,7 +890,7 @@ HANDLER_REGISTRY: dict[OperationName, Handler] = {
     "freeze_run": freeze_run,
     "preflight": preflight,
     "execute_stage": execute_stage,
-    "run_local": run_local,
+    "run": run,
     "plan_diff": plan_diff,
     "lineage": lineage,
     "status": status,
@@ -960,8 +960,8 @@ __all__ = [
     "PlanDiffSuccess",
     "PreflightRequest",
     "PreflightSuccess",
-    "RunLocalRequest",
-    "RunLocalSuccess",
+    "RunRequest",
+    "RunSuccess",
     "SchemaRequest",
     "SchemaSuccess",
     "StatusRequest",
@@ -990,7 +990,7 @@ __all__ = [
     "plan_diff",
     "preflight",
     "result_json_bytes",
-    "run_local",
+    "run",
     "status",
     "validate_resolved_stage",
     "validate_run_spec",

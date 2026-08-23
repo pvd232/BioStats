@@ -71,13 +71,13 @@ def build_parser() -> argparse.ArgumentParser:
     execute.add_argument("--repository-root", type=Path, default=Path.cwd())
     execute.add_argument("--timeout-seconds", type=float)
 
-    run_local = commands.add_parser(
-        "run-local",
+    run_command = commands.add_parser(
+        "run",
         help="execute and verify one complete run on this host",
     )
-    run_local.add_argument("run_spec", type=Path)
-    run_local.add_argument("--repository-root", type=Path, default=Path.cwd())
-    run_local.add_argument("--timeout-seconds", type=float)
+    run_command.add_argument("run_spec", type=Path)
+    run_command.add_argument("--repository-root", type=Path, default=Path.cwd())
+    run_command.add_argument("--timeout-seconds", type=float)
 
     plan_diff = commands.add_parser(
         "plan-diff",
@@ -142,7 +142,7 @@ def _operation_and_payload(
         "freeze-run": "freeze_run",
         "preflight": "preflight",
         "execute-stage": "execute_stage",
-        "run-local": "run_local",
+        "run": "run",
         "plan-diff": "plan_diff",
         "lineage": "lineage",
         "status": "status",
@@ -188,7 +188,7 @@ def _human_success(result: SuccessModel) -> str:
         return (
             f"executed stage {getattr(result, 'stage_id')} and identified {count} files"
         )
-    if result.operation == "run_local":
+    if result.operation == "run":
         return f"completed and verified run {getattr(result, 'run_id')}"
     if result.operation == "plan_diff":
         changes = getattr(result, "changes")

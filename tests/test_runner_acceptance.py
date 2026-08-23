@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures import resume_state
-from viper.application import CompareRunsRequest
+from viper import run as run_stage
+from viper.application import CompareRunsRequest, RunSuccess
 from viper.application import compare_runs as compare_runs_application
 from viper.authoring import RunPlanDraft, StageDraft, freeze_run_plan
 from viper.journal import DurableJournal
@@ -34,13 +35,16 @@ from viper.protocol import (
     ReproducibilitySpec,
     SingleFileArtifactSpec,
     StageArtifactRef,
+    StageImplementationRef,
     TrainParams,
     TrainSpec,
     TrainVariantStageParams,
     VariantSpec,
 )
-from viper.runner import LocalRunFetcher, run_local
+from viper.runner import RunFetcher
+from viper.runner import run as execute_run
 from viper.serialization import serialize_document
+from viper.stages import load_stage_callable
 from viper.verifier import VerificationError, VerificationPolicy, verify_run_result
 
 REPOSITORY = "https://github.com/example/viper-local-project"
@@ -109,7 +113,7 @@ def test_local_fetcher_dispatches_hugging_face_inputs(
         "viper.runner.fetch_huggingface_file_bytes",
         lambda location: b"remote bytes",
     )
-    fetcher = LocalRunFetcher(
+    fetcher = RunFetcher(
         tmp_path,
         LocalArtifactStore(tmp_path),
         REPOSITORY,
@@ -120,6 +124,7 @@ def test_local_fetcher_dispatches_hugging_face_inputs(
 
 def test_two_stage_local_run_writes_and_verifies_terminal_result(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Execute source-frozen stages through immutable local publication."""
     root = tmp_path / "project"
@@ -186,21 +191,29 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             b'    """Validate the download parameters used by this project."""\n'
         ),
         "jobs/download.py": (
-            "from pathlib import Path\n"
-            f"path = Path({f'{RUN_ROOT}/artifacts/datasets/tiny/prior.bin'!r})\n"
-            "path.parent.mkdir(parents=True, exist_ok=True)\n"
-            "path.write_bytes(b'prior')\n"
-        ).encode(),
+            b"from project.parameters.download import TinyDownloadParameters\n"
+            b"from viper import download_stage\n\n"
+            b"@download_stage(parameter_model=TinyDownloadParameters)\n"
+            b"def download(context):\n"
+            b"    path = context.artifacts['prior']\n"
+            b"    path.parent.mkdir(parents=True, exist_ok=True)\n"
+            b"    path.write_bytes(b'prior')\n"
+        ),
         "jobs/train.py": (
-            "from pathlib import Path\n"
-            f"root = Path({f'{RUN_ROOT}/artifacts/models/tiny'!r})\n"
-            "root.mkdir(parents=True, exist_ok=True)\n"
-            "assert Path("
-            f"{f'{RUN_ROOT}/artifacts/datasets/tiny/prior.bin'!r}"
-            ").read_bytes() == b'prior'\n"
-            "(root / 'parameters.bin').write_bytes(b'parameters')\n"
-            "(root / 'resume_state.bin').write_bytes(b'resume')\n"
-        ).encode(),
+            b"from project.parameters.train import TinyTrainParameters\n"
+            b"from viper import train_stage\n\n"
+            b"@train_stage(parameter_model=TinyTrainParameters)\n"
+            b"def train(context):\n"
+            b"    assert context.params.epochs == 1\n"
+            b"    assert context.params.batch_size == 1\n"
+            b"    assert context.params.learning_rate == 0.1\n"
+            b"    assert context.inputs['prior'].read_bytes() == b'prior'\n"
+            b"    context.artifacts['parameters'].parent.mkdir(\n"
+            b"        parents=True, exist_ok=True\n"
+            b"    )\n"
+            b"    context.artifacts['parameters'].write_bytes(b'parameters')\n"
+            b"    context.artifacts['resume_state'].write_bytes(b'resume')\n"
+        ),
         "experiments/example/spec.yaml": serialize_document(experiment),
         "experiments/example/variants/baseline.spec.yaml": serialize_document(variant),
     }
@@ -225,7 +238,12 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         )
     )
     download = DownloadSpec(
-        script="jobs/download.py",
+        implementation=StageImplementationRef(
+            path="jobs/download.py",
+            symbol="download",
+            sha256=hashlib.sha256(source_files["jobs/download.py"]).hexdigest(),
+            bytes=len(source_files["jobs/download.py"]),
+        ),
         parameter_model=ParameterModelRef(
             path="project/parameters/download.py",
             symbol="TinyDownloadParameters",
@@ -249,7 +267,12 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         params=DownloadParams(),
     )
     train = TrainSpec(
-        script="jobs/train.py",
+        implementation=StageImplementationRef(
+            path="jobs/train.py",
+            symbol="train",
+            sha256=hashlib.sha256(source_files["jobs/train.py"]).hexdigest(),
+            bytes=len(source_files["jobs/train.py"]),
+        ),
         parameter_model=ParameterModelRef(
             path="project/parameters/train.py",
             symbol="TinyTrainParameters",
@@ -309,7 +332,38 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     _git(root, "add", "experiments/example/runs")
     _git(root, "commit", "--quiet", "-m", "plan")
 
-    result = run_local(root, frozen.files[-1])
+    requests = []
+    monkeypatch.setattr(
+        "viper.api.application_run",
+        lambda request: (
+            requests.append(request)
+            or RunSuccess(
+                run_id=RUN_ID,
+                resolved_run=root / RUN_ROOT / "resolved.yaml",
+                journal=root / ".viper" / "attempt.jsonl",
+            )
+        ),
+    )
+    train_callable = load_stage_callable(
+        root / train.implementation.path,
+        train.implementation,
+        import_root=root,
+    )
+    run_stage(
+        train_callable,
+        argv=(
+            "--run",
+            str(frozen.files[-1]),
+            "--stage",
+            "train",
+            "--repository-root",
+            str(root),
+        ),
+    )
+    assert len(requests) == 1
+    assert requests[0].run_spec == frozen.files[-1].resolve()
+
+    result = execute_run(root, frozen.files[-1])
 
     assert result.resolved_run.status == "succeeded"
     assert result.resolved_run_path.is_file()
@@ -333,7 +387,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     )
 
     store = LocalArtifactStore(root)
-    fetcher = LocalRunFetcher(root, store, REPOSITORY)
+    fetcher = RunFetcher(root, store, REPOSITORY)
     comparison = compare_runs_application(
         CompareRunsRequest(
             left_path=result.resolved_run_path,
@@ -361,5 +415,5 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             policy=VerificationPolicy(
                 trusted_loader_repositories=frozenset({REPOSITORY})
             ),
-            fetcher=LocalRunFetcher(root, store, REPOSITORY),
+            fetcher=RunFetcher(root, store, REPOSITORY),
         )

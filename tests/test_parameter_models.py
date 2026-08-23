@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from tests.fixtures import stage_implementation_ref
 from viper.parameter_models import (
     ParameterModelError,
     load_parameter_model,
@@ -112,9 +113,7 @@ def test_parameter_model_rejects_type_coercion(tmp_path: Path) -> None:
         validate_parameters(
             path,
             _reference(raw),
-            TrainParams.model_validate(
-                {"epochs": "2", "learning_rate": 0.1}
-            ),
+            TrainParams.model_validate({"epochs": "2", "learning_rate": 0.1}),
             TrainParams,
         )
 
@@ -160,7 +159,7 @@ def test_stage_parameter_validation_runs_in_a_worker(tmp_path: Path) -> None:
     model_path.parent.mkdir(parents=True)
     model_path.write_bytes(raw)
     stage = TrainSpec(
-        script="project/train.py",
+        implementation=stage_implementation_ref("project/train.py"),
         parameter_model=reference,
         inputs={
             "dataset": StoredInputRef(
@@ -175,9 +174,7 @@ def test_stage_parameter_validation_runs_in_a_worker(tmp_path: Path) -> None:
                 data_role="training",
             )
         },
-        params=TrainParams.model_validate(
-            {"epochs": 2, "learning_rate": 0.1}
-        ),
+        params=TrainParams.model_validate({"epochs": 2, "learning_rate": 0.1}),
         artifacts={
             PARAMETERS: SingleFileArtifactSpec(
                 path="experiments/example/runs/baseline/"
@@ -204,9 +201,7 @@ def test_stage_parameter_validation_runs_in_a_worker(tmp_path: Path) -> None:
 
     invalid_stage = stage.model_copy(
         update={
-            "params": TrainParams.model_validate(
-                {"epochs": 0, "learning_rate": 0.1}
-            )
+            "params": TrainParams.model_validate({"epochs": 0, "learning_rate": 0.1})
         }
     )
     stage_path.write_bytes(serialize_document(invalid_stage))

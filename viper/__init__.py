@@ -15,6 +15,7 @@ from . import (
     resume,
     runner,
     stage_execution,
+    stages,
     worker,
     workspace,
 )
@@ -34,6 +35,27 @@ __all__ = [
     "runner",
     "resume",
     "stage_execution",
+    "stages",
     "worker",
     "workspace",
+]
+
+from .api import run
+from .stages import (
+    StageContext,
+    build_stage,
+    download_stage,
+    embed_stage,
+    evaluate_stage,
+    train_stage,
+)
+
+__all__ += [
+    "StageContext",
+    "build_stage",
+    "download_stage",
+    "embed_stage",
+    "evaluate_stage",
+    "train_stage",
+    "run",
 ]

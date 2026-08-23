@@ -16,6 +16,11 @@ inputs:
     url: https://example.com/toy-v1.tar.gz
     version: v1
 kind: download
+implementation:
+  bytes: 11
+  path: pipelines/download.py
+  sha256: 1d1f584e9b70775f170b219746c0a4e1c076f56603afd3f9882a14940e78e592
+  symbol: download
 parameter_model:
   bytes: 220
   path: examples/provenance/project/parameters/download.py
@@ -23,4 +28,3 @@ parameter_model:
   symbol: DownloadParameters
 params: {}
 schema_version: 1
-script: pipelines/download.py

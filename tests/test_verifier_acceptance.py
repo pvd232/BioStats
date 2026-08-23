@@ -22,6 +22,7 @@ from tests.fixtures import (
     parameter_model_ref,
     parameter_model_source,
     resume_state,
+    stage_implementation_ref,
     verification_policy,
 )
 from viper.protocol import (
@@ -53,6 +54,7 @@ from viper.protocol import (
     GCEEnvironmentSpec,
     GCEHostContext,
     GCEMachineImageRef,
+    GeneratorInitializationReceipt,
     GitFileRef,
     GitSource,
     HuggingFaceFileRef,
@@ -63,7 +65,8 @@ from viper.protocol import (
     NumericalRuntimeContext,
     NumPyRandomnessSpec,
     ParallelismSpec,
-    RandomnessContext,
+    ParameterizedStageSpec,
+    ProcessStartupReceipt,
     RemoteFileRef,
     ReplicateSpec,
     ReproducibilitySpec,
@@ -83,6 +86,7 @@ from viper.protocol import (
     ResolvedRunRef,
     ResolvedRunSpecRef,
     ResolvedSingleFileArtifact,
+    ResolvedStageInvocationRef,
     ResolvedStageRef,
     ResolvedStoredInputRef,
     ResolvedTrainSpec,
@@ -92,6 +96,8 @@ from viper.protocol import (
     SingleFileArtifactSpec,
     SnapshotFileRef,
     StageArtifactRef,
+    StageContextBinding,
+    StageInvocationReceipt,
     StageResultSnapshotRef,
     StorageModel,
     StoredInputRef,
@@ -102,6 +108,8 @@ from viper.protocol import (
     TrainVariantStageParams,
     VariantSpec,
 )
+from viper.runtime import process_environment
+from viper.serialization import document_digest
 from viper.verifier import (
     VerificationError,
     verify_benchmark_result,
@@ -119,6 +127,10 @@ MAIN_PLAN_COMMIT = "5" * 40
 MAIN_FILES_COMMIT = "6" * 40
 YAML_ADAPTER = TypeAdapter(Any)
 POLICY = verification_policy(SOURCE_REPOSITORY)
+DOWNLOAD_SOURCE = b"def download(context):\n    pass\n"
+BUILD_SOURCE = b"def build_prior(context):\n    pass\n"
+TRAIN_SOURCE = b"def fit(context):\n    pass\n"
+EVALUATE_SOURCE = b"def predict(context):\n    pass\n"
 
 
 def loader_path(name: str) -> str:
@@ -259,7 +271,6 @@ def reproducibility() -> ReproducibilitySpec:
 
 def execution_context() -> ExecutionContext:
     """Build the runtime context observed by one stage."""
-    controls = reproducibility()
     return ExecutionContext(
         host=GCEHostContext(
             provider="gce",
@@ -289,15 +300,96 @@ def execution_context() -> ExecutionContext:
                 ),
             ),
         ),
-        randomness=RandomnessContext(
-            python_seed=42,
-            numpy_seed=42,
-            torch_seed=42,
-            dataloader_seed=42,
+    )
+
+
+def startup_receipt(run: RunSpec) -> ProcessStartupReceipt:
+    """Build valid CPU startup evidence for one acceptance-stage execution."""
+    generators = [
+        GeneratorInitializationReceipt(
+            family="python",
+            seed=run.seed,
+            state_sha256="1" * 64,
         ),
-        determinism=controls.determinism,
-        precision=controls.precision,
-        parallelism=controls.parallelism,
+        GeneratorInitializationReceipt(
+            family="torch_cpu",
+            seed=run.seed,
+            state_sha256="2" * 64,
+        ),
+    ]
+    generators.extend(
+        GeneratorInitializationReceipt(
+            family="numpy_generator",
+            seed=run.seed,
+            name=name,
+            state_sha256="3" * 64,
+        )
+        for name in sorted(run.reproducibility.numpy_randomness.generators)
+    )
+    if run.reproducibility.numpy_randomness.capture_legacy_global:
+        generators.append(
+            GeneratorInitializationReceipt(
+                family="numpy_legacy",
+                seed=run.seed,
+                state_sha256="4" * 64,
+            )
+        )
+    return ProcessStartupReceipt(
+        environment=process_environment(
+            run.seed,
+            run.reproducibility,
+            CPUComputeSpec(),
+        ),
+        reproducibility=run.reproducibility,
+        generators=tuple(generators),
+    )
+
+
+def publish_invocation(
+    store: DocumentStore,
+    *,
+    run: RunSpec,
+    stage_id: str,
+    stage: ParameterizedStageSpec,
+    input_paths: dict[str, str],
+    started_at: datetime,
+    completed_at: datetime,
+    commit: str,
+    attempt_id: int = 1,
+) -> ResolvedStageInvocationRef:
+    """Publish one successful stage-invocation receipt."""
+    binding = StageContextBinding(
+        run_id=run.run_id,
+        attempt_id=attempt_id,
+        stage_id=stage_id,
+        parameter_model=stage.parameter_model,
+        parameter_digest=document_digest(stage.params),
+        inputs=input_paths,
+        artifacts={name: artifact.path for name, artifact in stage.artifacts.items()},
+        metric_ids=stage.metric_ids,
+        numpy_generator_names=tuple(
+            sorted(run.reproducibility.numpy_randomness.generators)
+        ),
+    )
+    receipt = StageInvocationReceipt(
+        implementation=stage.implementation,
+        context=binding,
+        context_digest=document_digest(binding),
+        started_at=started_at,
+        completed_at=completed_at,
+        outcome="succeeded",
+    )
+    raw = yaml_bytes(receipt)
+    root = f"experiments/{run.experiment_id}/runs/{run.variant_id}/{run.run_id}"
+    location = hf_file(
+        commit,
+        f"{root}/attempts/{attempt_id}/invocations/{stage_id}.yaml",
+    )
+    store.put(location, raw)
+    return ResolvedStageInvocationRef(
+        sha256=sha256(raw),
+        bytes=len(raw),
+        stored_at=location,
     )
 
 
@@ -552,7 +644,11 @@ def publish_producer_run(
     """Publish a complete upstream run for stored-input verification."""
     run_root = "experiments/source_data/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAA"
     download = DownloadSpec(
-        script="pipelines/download.py",
+        implementation=stage_implementation_ref(
+            "pipelines/download.py",
+            DOWNLOAD_SOURCE,
+            symbol="download",
+        ),
         parameter_model=parameter_model_ref("download"),
         inputs={
             "archive": RemoteFileRef(
@@ -584,7 +680,11 @@ def publish_producer_run(
         params=DownloadParams(),
     )
     train = TrainSpec(
-        script="training/fit.py",
+        implementation=stage_implementation_ref(
+            "training/fit.py",
+            TRAIN_SOURCE,
+            symbol="fit",
+        ),
         parameter_model=parameter_model_ref("train"),
         inputs={
             "training_dataset": FutureInputRef(
@@ -670,32 +770,38 @@ def publish_producer_run(
     download_source = add_source_file(
         store,
         PRODUCER_SOURCE_COMMIT,
-        str(download.script),
-        b"# download\n",
+        str(download.implementation.path),
+        DOWNLOAD_SOURCE,
     )
     train_source = add_source_file(
         store,
         PRODUCER_SOURCE_COMMIT,
-        str(train.script),
-        b"# train\n",
+        str(train.implementation.path),
+        TRAIN_SOURCE,
     )
 
     download_commit = "7" * 40
     training_dataset_raw = b"fixed training dataset bytes"
     evaluation_dataset_raw = b"fixed evaluation dataset bytes"
     split_raw = b'{"test":[0,1]}\n'
+    download_invocation = publish_invocation(
+        store,
+        run=run,
+        stage_id="download",
+        stage=download,
+        input_paths={},
+        started_at=datetime(2026, 8, 20, 20, 1, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 20, 20, 9, tzinfo=UTC),
+        commit=PRODUCER_RESULT_COMMIT,
+    )
     resolved_download = ResolvedDownloadSpec(
         spec=download,
         source=download_source,
         environment=resolved_env,
         execution_context=execution_context(),
-        command=(
-            "python",
-            "-m",
-            "viper.stage_worker",
-            str(run.stages[0].spec),
-            f"{run_root}/spec.yaml",
-        ),
+        startup=startup_receipt(run),
+        invocation=download_invocation,
+        command=("python", "-m", "viper.stage_worker"),
         inputs=download.inputs,
         artifacts={
             "dataset": add_single_artifact(
@@ -729,18 +835,26 @@ def publish_producer_run(
     )
 
     train_commit = "8" * 40
+    train_invocation = publish_invocation(
+        store,
+        run=run,
+        stage_id="train",
+        stage=train,
+        input_paths={
+            "training_dataset": str(download.artifacts["dataset"].path),
+        },
+        started_at=datetime(2026, 8, 20, 20, 11, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 20, 20, 29, tzinfo=UTC),
+        commit=PRODUCER_RESULT_COMMIT,
+    )
     resolved_train = ResolvedTrainSpec(
         spec=train,
         source=train_source,
         environment=resolved_env,
         execution_context=execution_context(),
-        command=(
-            "python",
-            "-m",
-            "viper.stage_worker",
-            str(run.stages[1].spec),
-            f"{run_root}/spec.yaml",
-        ),
+        startup=startup_receipt(run),
+        invocation=train_invocation,
+        command=("python", "-m", "viper.stage_worker"),
         inputs={
             "training_dataset": ResolvedFutureInputRef(producer=download_stage),
         },
@@ -773,6 +887,7 @@ def publish_producer_run(
         started_at=datetime(2026, 8, 20, 20, tzinfo=UTC),
         completed_at=datetime(2026, 8, 20, 20, 35, tzinfo=UTC),
         resolved_stages=(download_stage, train_stage),
+        invocations=(download_invocation, train_invocation),
         measurement_files=(),
         log_files=(),
         failure_reason=None,
@@ -859,7 +974,11 @@ def build_complete_fixture(
     run_id = "01ARZ3NDEKTSV4RRFFQ69G5FAB"
     run_root = f"experiments/model_eval/runs/baseline/{run_id}"
     build = BuildSpec(
-        script="features/build_prior.py",
+        implementation=stage_implementation_ref(
+            "features/build_prior.py",
+            BUILD_SOURCE,
+            symbol="build_prior",
+        ),
         parameter_model=parameter_model_ref("build"),
         inputs={
             "dataset": StoredInputRef(
@@ -880,7 +999,11 @@ def build_complete_fixture(
         },
     )
     train = TrainSpec(
-        script="training/fit.py",
+        implementation=stage_implementation_ref(
+            "training/fit.py",
+            TRAIN_SOURCE,
+            symbol="fit",
+        ),
         parameter_model=parameter_model_ref("train"),
         inputs={
             "prior": FutureInputRef(
@@ -908,7 +1031,11 @@ def build_complete_fixture(
         },
     )
     evaluate = EvaluateSpec(
-        script="evaluation/predict.py",
+        implementation=stage_implementation_ref(
+            "evaluation/predict.py",
+            EVALUATE_SOURCE,
+            symbol="predict",
+        ),
         parameter_model=parameter_model_ref("evaluate"),
         evaluation_id="toy_predictions",
         metric_ids=("pearson_correlation",),
@@ -1021,13 +1148,22 @@ def build_complete_fixture(
         )
     resolved_env = resolved_environment(store, MAIN_SOURCE_COMMIT)
     build_source = add_source_file(
-        store, MAIN_SOURCE_COMMIT, str(build.script), b"# build\n"
+        store,
+        MAIN_SOURCE_COMMIT,
+        str(build.implementation.path),
+        BUILD_SOURCE,
     )
     train_source = add_source_file(
-        store, MAIN_SOURCE_COMMIT, str(train.script), b"# train\n"
+        store,
+        MAIN_SOURCE_COMMIT,
+        str(train.implementation.path),
+        TRAIN_SOURCE,
     )
     evaluate_source = add_source_file(
-        store, MAIN_SOURCE_COMMIT, str(evaluate.script), b"# evaluate\n"
+        store,
+        MAIN_SOURCE_COMMIT,
+        str(evaluate.implementation.path),
+        EVALUATE_SOURCE,
     )
 
     build_commit = "9" * 40
@@ -1041,18 +1177,24 @@ def build_complete_fixture(
         str(build.artifacts["prior"].path),
         prior_members,
     )
+    build_invocation = publish_invocation(
+        store,
+        run=run,
+        stage_id="build",
+        stage=build,
+        input_paths={"dataset": "inputs/datasets/toy/current.bin"},
+        started_at=datetime(2026, 8, 20, 21, 1, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 20, 21, 9, tzinfo=UTC),
+        commit=MAIN_FILES_COMMIT,
+    )
     resolved_build = ResolvedBuildSpec(
         spec=build,
         source=build_source,
         environment=resolved_env,
         execution_context=execution_context(),
-        command=(
-            "python",
-            "-m",
-            "viper.stage_worker",
-            str(run.stages[0].spec),
-            f"{run_root}/spec.yaml",
-        ),
+        startup=startup_receipt(run),
+        invocation=build_invocation,
+        command=("python", "-m", "viper.stage_worker"),
         inputs={
             "dataset": ResolvedStoredInputRef(
                 kind="stored", pointer=resolved_training_dataset_pointer
@@ -1070,18 +1212,24 @@ def build_complete_fixture(
     )
 
     train_commit = "a" * 40
+    train_invocation = publish_invocation(
+        store,
+        run=run,
+        stage_id="train",
+        stage=train,
+        input_paths={"prior": str(build.artifacts["prior"].path)},
+        started_at=datetime(2026, 8, 20, 21, 11, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 20, 21, 29, tzinfo=UTC),
+        commit=MAIN_FILES_COMMIT,
+    )
     resolved_train = ResolvedTrainSpec(
         spec=train,
         source=train_source,
         environment=resolved_env,
         execution_context=execution_context(),
-        command=(
-            "python",
-            "-m",
-            "viper.stage_worker",
-            str(run.stages[1].spec),
-            f"{run_root}/spec.yaml",
-        ),
+        startup=startup_receipt(run),
+        invocation=train_invocation,
+        command=("python", "-m", "viper.stage_worker"),
         inputs={"prior": ResolvedFutureInputRef(producer=build_stage)},
         artifacts={
             PARAMETERS: add_single_artifact(
@@ -1108,18 +1256,28 @@ def build_complete_fixture(
     )
 
     evaluate_commit = "b" * 40
+    evaluate_invocation = publish_invocation(
+        store,
+        run=run,
+        stage_id="evaluate",
+        stage=evaluate,
+        input_paths={
+            "parameters": str(train.artifacts[PARAMETERS].path),
+            "evaluation_dataset": "inputs/datasets/toy/evaluation.bin",
+            "test_split": "inputs/benchmarks/toy/test_split.json",
+        },
+        started_at=datetime(2026, 8, 20, 21, 31, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 20, 21, 39, tzinfo=UTC),
+        commit=MAIN_FILES_COMMIT,
+    )
     resolved_evaluate = ResolvedEvaluateSpec(
         spec=evaluate,
         source=evaluate_source,
         environment=resolved_env,
         execution_context=execution_context(),
-        command=(
-            "python",
-            "-m",
-            "viper.stage_worker",
-            str(run.stages[2].spec),
-            f"{run_root}/spec.yaml",
-        ),
+        startup=startup_receipt(run),
+        invocation=evaluate_invocation,
+        command=("python", "-m", "viper.stage_worker"),
         inputs={
             "parameters": ResolvedFutureInputRef(producer=train_stage),
             "evaluation_dataset": ResolvedStoredInputRef(
@@ -1170,6 +1328,7 @@ def build_complete_fixture(
         started_at=datetime(2026, 8, 20, 21, tzinfo=UTC),
         completed_at=datetime(2026, 8, 20, 21, 45, tzinfo=UTC),
         resolved_stages=(build_stage, train_stage, evaluate_stage),
+        invocations=(build_invocation, train_invocation, evaluate_invocation),
         measurement_files=(measurement_reference,),
         log_files=(),
         failure_reason=None,
@@ -1214,6 +1373,9 @@ def build_benchmark_fixture() -> tuple[
     resolved_run, store, _ = build_complete_fixture(benchmark_enabled=True)
     selected_attempt = resolved_run.attempts[-1]
     run_root = str(resolved_run.spec.stored_at.path).removesuffix("/spec.yaml")
+    run = RunSpec.model_validate(
+        yaml.safe_load(store.fetch(resolved_run.spec.stored_at))
+    )
 
     original_build, original_train, original_evaluate = selected_attempt.resolved_stages
     build_commit = "c" * 40
@@ -1231,6 +1393,18 @@ def build_benchmark_fixture() -> tuple[
             )
         )
     )
+    build_invocation = publish_invocation(
+        store,
+        run=run,
+        stage_id="build",
+        stage=resolved_build.spec,
+        input_paths={"dataset": "inputs/datasets/toy/current.bin"},
+        started_at=datetime(2026, 8, 20, 21, 1, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 20, 21, 9, tzinfo=UTC),
+        commit="f" * 40,
+        attempt_id=2,
+    )
+    resolved_build = resolved_build.model_copy(update={"invocation": build_invocation})
     confirmation_build = publish_resolved_stage(
         store,
         run_root_path=run_root,
@@ -1255,6 +1429,18 @@ def build_benchmark_fixture() -> tuple[
             "inputs": {"prior": ResolvedFutureInputRef(producer=confirmation_build)}
         }
     )
+    train_invocation = publish_invocation(
+        store,
+        run=run,
+        stage_id="train",
+        stage=resolved_train.spec,
+        input_paths={"prior": str(resolved_build.spec.artifacts["prior"].path)},
+        started_at=datetime(2026, 8, 20, 21, 11, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 20, 21, 29, tzinfo=UTC),
+        commit="f" * 40,
+        attempt_id=2,
+    )
+    resolved_train = resolved_train.model_copy(update={"invocation": train_invocation})
     confirmation_train = publish_resolved_stage(
         store,
         run_root_path=run_root,
@@ -1281,6 +1467,24 @@ def build_benchmark_fixture() -> tuple[
                 "parameters": ResolvedFutureInputRef(producer=confirmation_train),
             }
         }
+    )
+    evaluate_invocation = publish_invocation(
+        store,
+        run=run,
+        stage_id="evaluate",
+        stage=resolved_evaluate.spec,
+        input_paths={
+            "parameters": str(resolved_train.spec.artifacts[PARAMETERS].path),
+            "evaluation_dataset": "inputs/datasets/toy/evaluation.bin",
+            "test_split": "inputs/benchmarks/toy/test_split.json",
+        },
+        started_at=datetime(2026, 8, 20, 21, 31, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 20, 21, 39, tzinfo=UTC),
+        commit="f" * 40,
+        attempt_id=2,
+    )
+    resolved_evaluate = resolved_evaluate.model_copy(
+        update={"invocation": evaluate_invocation}
     )
     confirmation_evaluate = publish_resolved_stage(
         store,
@@ -1311,6 +1515,7 @@ def build_benchmark_fixture() -> tuple[
             confirmation_train,
             confirmation_evaluate,
         ),
+        invocations=(build_invocation, train_invocation, evaluate_invocation),
         measurement_files=(
             ResolvedFileRef(
                 sha256=sha256(measurement_raw),
@@ -1422,6 +1627,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
             started_at=datetime(2026, 8, 20, 19, tzinfo=UTC),
             completed_at=datetime(2026, 8, 20, 20, tzinfo=UTC),
             resolved_stages=(successful_attempt.resolved_stages[0],),
+            invocations=(successful_attempt.invocations[0],),
             measurement_files=(),
             log_files=(),
             failure_reason="retry required",
@@ -1448,6 +1654,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
             started_at=datetime(2026, 8, 20, 19, tzinfo=UTC),
             completed_at=datetime(2026, 8, 20, 20, tzinfo=UTC),
             resolved_stages=(),
+            invocations=(),
             measurement_files=successful_attempt.measurement_files,
             log_files=(),
             failure_reason="retry required",

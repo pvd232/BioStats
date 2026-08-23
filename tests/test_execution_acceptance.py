@@ -14,6 +14,7 @@ from viper.protocol import (
     RunSpec,
     RunStageRef,
     SingleFileArtifactSpec,
+    StageImplementationRef,
 )
 from viper.serialization import serialize_document
 from viper.stage_execution import execute_stage_process
@@ -33,8 +34,22 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
             b"class TinyDownloadParameters(DownloadParams):\n"
             b'    """Validate parameters for the execution fixture."""\n'
         )
+        implementation_source = (
+            b"from project.parameters.download import TinyDownloadParameters\n"
+            b"from viper import download_stage\n\n"
+            b"@download_stage(parameter_model=TinyDownloadParameters)\n"
+            b"def ingest(context):\n"
+            b"    target = context.artifacts['dataset']\n"
+            b"    target.parent.mkdir(parents=True, exist_ok=True)\n"
+            b"    target.write_bytes(b'tiny dataset')\n"
+        )
         spec = DownloadSpec(
-            script="jobs/ingest_tiny.py",
+            implementation=StageImplementationRef(
+                path="jobs/ingest_tiny.py",
+                symbol="ingest",
+                sha256=hashlib.sha256(implementation_source).hexdigest(),
+                bytes=len(implementation_source),
+            ),
             parameter_model=ParameterModelRef(
                 path="project/parameters/download.py",
                 symbol="TinyDownloadParameters",
@@ -61,14 +76,9 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
 
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            script_path = root / spec.script
+            script_path = root / spec.implementation.path
             script_path.parent.mkdir(parents=True)
-            script_path.write_text(
-                "from pathlib import Path\n"
-                f"target = Path({artifact_path!r})\n"
-                "target.parent.mkdir(parents=True, exist_ok=True)\n"
-                "target.write_bytes(b'tiny dataset')\n"
-            )
+            script_path.write_bytes(implementation_source)
             parameter_path = root / spec.parameter_model.path
             parameter_path.parent.mkdir(parents=True)
             parameter_path.write_bytes(parameter_source)
@@ -158,14 +168,9 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(
             result.command,
-            (
-                "python",
-                "-m",
-                "viper.stage_worker",
-                str(reference.spec),
-                f"{RUN_ROOT}/spec.yaml",
-            ),
+            ("python", "-m", "viper.stage_worker"),
         )
+        self.assertEqual(result.invocation.outcome, "succeeded")
         self.assertEqual(raw, b"tiny dataset")
         self.assertEqual(produced.file.sha256, hashlib.sha256(raw).hexdigest())
         self.assertEqual(produced.file.bytes, len(raw))

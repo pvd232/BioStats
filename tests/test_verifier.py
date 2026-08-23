@@ -18,6 +18,7 @@ from tests.fixtures import (
     parameter_model_ref,
     parameter_model_source,
     resume_state,
+    stage_implementation_ref,
     verification_policy,
 )
 from viper.ids import InputName
@@ -54,7 +55,7 @@ from viper.protocol import (
     NumericalRuntimeContext,
     NumPyRandomnessSpec,
     ParallelismSpec,
-    RandomnessContext,
+    ProcessStartupReceipt,
     ReplicateSpec,
     ReproducibilitySpec,
     ResolvedArtifactPointerRef,
@@ -68,6 +69,7 @@ from viper.protocol import (
     ResolvedRunRef,
     ResolvedRunSpecRef,
     ResolvedSingleFileArtifact,
+    ResolvedStageInvocationRef,
     ResolvedStageRef,
     ResolvedStoredInputRef,
     ResolvedTrainSpec,
@@ -77,6 +79,8 @@ from viper.protocol import (
     SingleFileArtifactSpec,
     SnapshotFileRef,
     StageArtifactRef,
+    StageContextBinding,
+    StageInvocationReceipt,
     StageResultSnapshotRef,
     StoredInputRef,
     TorchDeterminismSpec,
@@ -86,6 +90,8 @@ from viper.protocol import (
     TrainVariantStageParams,
     VariantSpec,
 )
+from viper.runtime import process_environment
+from viper.serialization import document_digest
 from viper.verifier import (
     VerificationError,
     VerificationPolicy,
@@ -204,7 +210,6 @@ def reproducibility() -> ReproducibilitySpec:
 
 def execution_context(seed: int = 42) -> ExecutionContext:
     """Build the runtime context observed by one stage."""
-    controls = reproducibility()
     return ExecutionContext(
         host=GCEHostContext(
             provider="gce",
@@ -234,15 +239,6 @@ def execution_context(seed: int = 42) -> ExecutionContext:
                 ),
             ),
         ),
-        randomness=RandomnessContext(
-            python_seed=seed,
-            numpy_seed=seed,
-            torch_seed=seed,
-            dataloader_seed=seed,
-        ),
-        determinism=controls.determinism,
-        precision=controls.precision,
-        parallelism=controls.parallelism,
     )
 
 
@@ -291,6 +287,12 @@ def run_spec(stage_specs: list[tuple[str, object]]) -> tuple[RunSpec, dict[str, 
                 bytes=len(raw),
             )
         )
+        if isinstance(spec, TrainSpec):
+            documents[str(spec.implementation.path)] = b"def fit(context):\n    pass\n"
+        elif isinstance(spec, BuildSpec):
+            documents[str(spec.implementation.path)] = (
+                b"def build_prior(context):\n    pass\n"
+            )
 
     run = RunSpec(
         run_id=RUN_ID,
@@ -328,7 +330,11 @@ def train_spec(*, future_prior: bool = False) -> TrainSpec:
         )
 
     return TrainSpec(
-        script="project/training/fit.py",
+        implementation=stage_implementation_ref(
+            "project/training/fit.py",
+            b"def fit(context):\n    pass\n",
+            symbol="fit",
+        ),
         parameter_model=parameter_model_ref("train"),
         inputs=inputs,
         params=TrainParams.model_validate(
@@ -354,7 +360,11 @@ def train_spec(*, future_prior: bool = False) -> TrainSpec:
 def build_spec() -> BuildSpec:
     """Build a valid prior-construction request."""
     return BuildSpec(
-        script="domain/prior_builder.py",
+        implementation=stage_implementation_ref(
+            "domain/prior_builder.py",
+            b"def build_prior(context):\n    pass\n",
+            symbol="build_prior",
+        ),
         parameter_model=parameter_model_ref("build"),
         inputs={
             "depmap": StoredInputRef(
@@ -389,6 +399,96 @@ def resolved_environment(lock_raw: bytes) -> ResolvedGCEEnvironment:
         compute=CPUComputeSpec(kind="cpu"),
         lockfile=resolved_git(lock_raw, "uv.lock"),
     )
+
+
+def startup_receipt(run: RunSpec) -> ProcessStartupReceipt:
+    """Build the minimum valid CPU startup evidence for one test run."""
+    from viper.protocol import GeneratorInitializationReceipt
+
+    generators = [
+        GeneratorInitializationReceipt(
+            family="python",
+            seed=run.seed,
+            state_sha256="1" * 64,
+        ),
+        GeneratorInitializationReceipt(
+            family="torch_cpu",
+            seed=run.seed,
+            state_sha256="2" * 64,
+        ),
+    ]
+    generators.extend(
+        GeneratorInitializationReceipt(
+            family="numpy_generator",
+            seed=run.seed,
+            name=name,
+            state_sha256="3" * 64,
+        )
+        for name in sorted(run.reproducibility.numpy_randomness.generators)
+    )
+    if run.reproducibility.numpy_randomness.capture_legacy_global:
+        generators.append(
+            GeneratorInitializationReceipt(
+                family="numpy_legacy",
+                seed=run.seed,
+                state_sha256="4" * 64,
+            )
+        )
+    return ProcessStartupReceipt(
+        environment=process_environment(
+            run.seed,
+            run.reproducibility,
+            CPUComputeSpec(),
+        ),
+        reproducibility=run.reproducibility,
+        generators=tuple(generators),
+    )
+
+
+def invocation_evidence(
+    run: RunSpec,
+    stage_id: str,
+    stage: TrainSpec | BuildSpec,
+    *,
+    inputs: dict[str, str],
+    started_at: datetime,
+    completed_at: datetime,
+) -> tuple[ResolvedStageInvocationRef, bytes]:
+    """Build one invocation receipt and its immutable reference."""
+    binding = StageContextBinding(
+        run_id=run.run_id,
+        attempt_id=1,
+        stage_id=stage_id,
+        parameter_model=stage.parameter_model,
+        parameter_digest=document_digest(stage.params),
+        inputs=inputs,
+        artifacts={name: artifact.path for name, artifact in stage.artifacts.items()},
+        metric_ids=stage.metric_ids,
+        numpy_generator_names=tuple(
+            sorted(run.reproducibility.numpy_randomness.generators)
+        ),
+    )
+    receipt = StageInvocationReceipt(
+        implementation=stage.implementation,
+        context=binding,
+        context_digest=document_digest(binding),
+        started_at=started_at,
+        completed_at=completed_at,
+        outcome="succeeded",
+    )
+    raw = yaml_bytes(receipt)
+    path = f"{RUN_ROOT}/attempts/1/invocations/{stage_id}.yaml"
+    reference = ResolvedStageInvocationRef(
+        sha256=sha256(raw),
+        bytes=len(raw),
+        stored_at=HuggingFaceFileRef(
+            repository=HF_REPOSITORY,
+            commit=SNAPSHOT_COMMIT,
+            repo_type="dataset",
+            path=path,
+        ),
+    )
+    return reference, raw
 
 
 class FileVerificationTests(unittest.TestCase):
@@ -806,7 +906,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
         """Verify that resolved stage checks run controls and snapshot files."""
         spec = train_spec()
         run, _ = run_spec([("train", spec)])
-        source_raw = b"print('train')\n"
+        source_raw = b"def fit(context):\n    pass\n"
         lock_raw = b"lockfile"
         model_raw = b"model parameters"
         resume_raw = b"optimizer rng sampler"
@@ -819,18 +919,22 @@ class RunAndStageVerificationTests(unittest.TestCase):
             "    return path.read_bytes()\n"
         ).encode()
 
+        invocation, invocation_raw = invocation_evidence(
+            run,
+            "train",
+            spec,
+            inputs={"training_dataset": "inputs/datasets/replogle/dataset.h5ad"},
+            started_at=datetime(2026, 8, 21, 12, 5, tzinfo=UTC),
+            completed_at=datetime(2026, 8, 21, 12, 25, tzinfo=UTC),
+        )
         resolved = ResolvedTrainSpec(
             spec=spec,
-            source=resolved_git(source_raw, str(spec.script)),
+            source=resolved_git(source_raw, str(spec.implementation.path)),
             environment=resolved_environment(lock_raw),
             execution_context=execution_context(),
-            command=(
-                "python",
-                "-m",
-                "viper.stage_worker",
-                str(run.stages[0].spec),
-                f"{RUN_ROOT}/spec.yaml",
-            ),
+            startup=startup_receipt(run),
+            invocation=invocation,
+            command=("python", "-m", "viper.stage_worker"),
             inputs={
                 "training_dataset": ResolvedStoredInputRef(
                     kind="stored",
@@ -875,6 +979,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             started_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
             completed_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
             resolved_stages=(stage,),
+            invocations=(invocation,),
             measurement_files=(),
             log_files=(),
             failure_reason=None,
@@ -893,7 +998,8 @@ class RunAndStageVerificationTests(unittest.TestCase):
         )
         documents = {
             f"{RUN_ROOT}/stages/train/resolved.yaml": resolved_raw,
-            str(spec.script): source_raw,
+            str(spec.implementation.path): source_raw,
+            invocation.stored_at.path: invocation_raw,
             "uv.lock": lock_raw,
             (f"{RUN_ROOT}/artifacts/models/strand/parameters.safetensors"): model_raw,
             (f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt"): resume_raw,
@@ -938,6 +1044,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             started_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
             completed_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
             resolved_stages=(stage,),
+            invocations=(),
             measurement_files=(
                 ResolvedFileRef(
                     sha256=sha256(measurement_raw),
@@ -1020,6 +1127,7 @@ class RunAndStageVerificationTests(unittest.TestCase):
             started_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
             completed_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
             resolved_stages=(),
+            invocations=(),
             measurement_files=(),
             log_files=(
                 ResolvedFileRef(
@@ -1358,7 +1466,11 @@ class RunPlanRelationshipTests(unittest.TestCase):
         """Verify that benchmark matches evaluation inputs splits and metrics."""
         train = train_spec()
         evaluation = EvaluateSpec(
-            script="analysis/predict.py",
+            implementation=stage_implementation_ref(
+                "analysis/predict.py",
+                b"def predict(context):\n    pass\n",
+                symbol="predict",
+            ),
             parameter_model=parameter_model_ref("evaluate"),
             evaluation_id="replogle_predictions",
             metric_ids=("pearson_correlation",),
@@ -1625,7 +1737,8 @@ class FutureInputVerificationTests(unittest.TestCase):
         run, _ = run_spec([("build", build), ("train", train)])
         lock_raw = b"lockfile"
         prior_raw = b"prior tensor"
-        source_raw = b"source"
+        build_source_raw = b"def build_prior(context):\n    pass\n"
+        train_source_raw = b"def fit(context):\n    pass\n"
 
         producer_stage = ResolvedStageRef(
             stage_id="build",
@@ -1646,18 +1759,33 @@ class FutureInputVerificationTests(unittest.TestCase):
             ),
         )
 
+        build_invocation, build_invocation_raw = invocation_evidence(
+            run,
+            "build",
+            build,
+            inputs={"depmap": "inputs/priors/depmap/prior.parquet"},
+            started_at=datetime(2026, 8, 21, 12, 5, tzinfo=UTC),
+            completed_at=datetime(2026, 8, 21, 12, 15, tzinfo=UTC),
+        )
+        train_invocation, train_invocation_raw = invocation_evidence(
+            run,
+            "train",
+            train,
+            inputs={"prior": f"{RUN_ROOT}/artifacts/priors/depmap/prior.pt"},
+            started_at=datetime(2026, 8, 21, 12, 25, tzinfo=UTC),
+            completed_at=datetime(2026, 8, 21, 12, 35, tzinfo=UTC),
+        )
         resolved_build = ResolvedBuildSpec(
             spec=build,
-            source=resolved_git(source_raw, str(build.script)),
+            source=resolved_git(
+                build_source_raw,
+                str(build.implementation.path),
+            ),
             environment=resolved_environment(lock_raw),
             execution_context=execution_context(),
-            command=(
-                "python",
-                "-m",
-                "viper.stage_worker",
-                str(run.stages[0].spec),
-                f"{RUN_ROOT}/spec.yaml",
-            ),
+            startup=startup_receipt(run),
+            invocation=build_invocation,
+            command=("python", "-m", "viper.stage_worker"),
             inputs={
                 "depmap": ResolvedStoredInputRef(
                     kind="stored",
@@ -1680,16 +1808,15 @@ class FutureInputVerificationTests(unittest.TestCase):
         )
         resolved_train = ResolvedTrainSpec(
             spec=train,
-            source=resolved_git(source_raw, str(train.script)),
+            source=resolved_git(
+                train_source_raw,
+                str(train.implementation.path),
+            ),
             environment=resolved_environment(lock_raw),
             execution_context=execution_context(),
-            command=(
-                "python",
-                "-m",
-                "viper.stage_worker",
-                str(run.stages[1].spec),
-                f"{RUN_ROOT}/spec.yaml",
-            ),
+            startup=startup_receipt(run),
+            invocation=train_invocation,
+            command=("python", "-m", "viper.stage_worker"),
             inputs={
                 "prior": ResolvedFutureInputRef(producer=producer_stage),
             },
@@ -1719,6 +1846,7 @@ class FutureInputVerificationTests(unittest.TestCase):
             started_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
             completed_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
             resolved_stages=(producer_stage, consumer_stage),
+            invocations=(build_invocation, train_invocation),
             measurement_files=(),
             log_files=(),
             failure_reason=None,

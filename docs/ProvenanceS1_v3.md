@@ -1195,6 +1195,10 @@ class BaseSpec(ProtocolModel):
     artifacts: dict[ArtifactName, ArtifactSpec] = Field(min_length=1)
 ```
 
+The parameter and context digests use `document_digest()`. This function hashes
+the model's JSON value with mapping keys sorted and compact separators, so the
+digest is independent of source-field order.
+
 For a single-file artifact, `path` identifies its file. For a bundle artifact,
 `path` identifies its directory root. Every artifact path has the form:
 

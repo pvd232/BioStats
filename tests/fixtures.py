@@ -16,6 +16,7 @@ from viper.protocol import (
     PCG64InternalState,
     PythonRNGState,
     ResumeState,
+    StageImplementationRef,
 )
 from viper.verifier import VerificationPolicy
 
@@ -41,6 +42,21 @@ def parameter_model_source(kind: str) -> bytes:
         f"class {class_name}({base_name}):\n"
         f'    """Validate the {kind} parameters used by this fixture."""\n'
     ).encode()
+
+
+def stage_implementation_ref(
+    path: str,
+    raw: bytes = b"# stage implementation\n",
+    *,
+    symbol: str = "run",
+) -> StageImplementationRef:
+    """Build one exact synthetic stage-callable identity for model tests."""
+    return StageImplementationRef(
+        path=path,
+        symbol=symbol,
+        sha256=hashlib.sha256(raw).hexdigest(),
+        bytes=len(raw),
+    )
 
 
 def verification_policy(*repositories: object) -> VerificationPolicy:

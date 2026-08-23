@@ -22,10 +22,10 @@ both named `viper`.
 | [training resume](viper/resume.py) | Captures, serializes, restores, and validates optimizer, generator, and stateful-loader state | `capture_resume_state()`, `restore_resume_state()` |
 | [plan authoring](viper/authoring.py) | Writes canonical experiment, variant, benchmark, stage, and frozen run-plan files | `freeze_run_plan()`, `write_experiment_spec()`, `write_variant_spec()` |
 | [stage execution](viper/stage_execution.py) | Invokes one canonical stage command and hashes every declared output file | `execute_stage_process()` |
-| [current runner](viper/runner.py) | Executes and verifies a complete frozen run in the implemented trusted-local environment | `run_local()` |
+| [current runner](viper/runner.py) | Executes and verifies a complete frozen run in the implemented trusted-host environment | `run()` |
 | [preflight](viper/preflight.py) | Checks the committed plan, source repository, environment kind, stage identities, code paths, plan relationships, and metric implementations | `preflight_local_plan()` |
 | [local storage](viper/local_store.py) | Publishes immutable stage snapshots and run files beneath `.viper/store` | `LocalArtifactStore` |
-| [installed command](viper/cli.py) | Exposes authoring, preflight, execution, validation, verification, and discovery | `viper preflight`, `viper run-local`, `viper verify-run` |
+| [installed command](viper/cli.py) | Exposes authoring, preflight, execution, validation, verification, and discovery | `viper preflight`, `viper run`, `viper verify-run` |
 | [serialization](viper/serialization.py) | Encodes protocol documents and parses duplicate-key-safe YAML | `serialize_document()`, `parse_yaml_bytes()`, `load_stage_spec()`, `load_resolved_stage()` |
 | [examples](examples/) | Supplies a user-project extension tree and loadable protocol records | Project code plus download and build records |
 | [identifiers](viper/ids.py) | Defines run and human-readable identifier types | `RunId`, `HumanId` |
@@ -128,7 +128,7 @@ benchmark data from entering a training stage.
   the canonical command, and records every produced artifact file.
 - `preflight_local_plan(repository_root, run_spec_path)` checks the complete
   local plan and returns every failed check in one result.
-- `run_local(repository_root, run_spec_path)` executes every stage, publishes
+- `run(repository_root, run_spec_path)` executes every stage, publishes
   immutable stage results, writes the terminal `resolved.yaml`, and verifies
   the completed run.
 - `plan_diff(...)` verifies and compares two RunSpecs and every stage spec they
@@ -143,7 +143,7 @@ Freeze the plan, inspect it, then execute it from the project repository:
 ```bash
 viper freeze-run <draft.yaml>
 viper preflight <run-spec-path>
-viper run-local <run-spec-path>
+viper run <run-spec-path>
 ```
 
 `RunSpec.source.commit` identifies the project source, environment lockfile,

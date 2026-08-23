@@ -351,7 +351,7 @@ class LocalEnvironmentSpec(ProtocolModel):
     """Declare a local development environment fixed by one lockfile."""
 
     kind: Literal["local"] = "local"
-    compute: CPUComputeSpec = Field(default_factory=CPUComputeSpec)
+    compute: ComputeSpec = Field(default_factory=CPUComputeSpec)
     lockfile: GitFileRef
 
 
@@ -359,7 +359,7 @@ class ResolvedLocalEnvironment(ProtocolModel):
     """Record the local development environment used by one stage."""
 
     kind: Literal["local"] = "local"
-    compute: CPUComputeSpec = Field(default_factory=CPUComputeSpec)
+    compute: ComputeSpec = Field(default_factory=CPUComputeSpec)
     lockfile: ResolvedGitFileRef
 
 
@@ -463,6 +463,51 @@ class ReproducibilitySpec(ProtocolModel):
     precision: TorchPrecisionSpec
     parallelism: ParallelismSpec
     numpy_randomness: NumPyRandomnessSpec
+
+
+GeneratorFamily = Literal[
+    "python",
+    "numpy_generator",
+    "numpy_legacy",
+    "torch_cpu",
+    "torch_cuda",
+]
+
+
+class GeneratorInitializationReceipt(ProtocolModel):
+    """Identify one generator state immediately after seeded initialization."""
+
+    family: GeneratorFamily
+    seed: RNGSeed
+    name: HumanId | None = None
+    device_index: int | None = Field(default=None, ge=0)
+    state_sha256: SHA256
+
+    @model_validator(mode="after")
+    def validate_identity_fields(self) -> GeneratorInitializationReceipt:
+        """Match optional identity fields to their generator family."""
+        if (self.family == "numpy_generator") != (self.name is not None):
+            raise ValueError("name is required exactly for a named NumPy generator")
+        if (self.family == "torch_cuda") != (self.device_index is not None):
+            raise ValueError("device_index is required exactly for a CUDA generator")
+        return self
+
+
+StartupVariable = Literal[
+    "CUBLAS_WORKSPACE_CONFIG",
+    "CUDA_VISIBLE_DEVICES",
+    "MKL_NUM_THREADS",
+    "OMP_NUM_THREADS",
+    "PYTHONHASHSEED",
+]
+
+
+class ProcessStartupReceipt(ProtocolModel):
+    """Record the startup environment, applied controls, and seeded generators."""
+
+    environment: dict[StartupVariable, str]
+    reproducibility: ReproducibilitySpec
+    generators: tuple[GeneratorInitializationReceipt, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -584,6 +629,54 @@ class ParameterModelRef(ProtocolModel):
     symbol: PythonSymbol
     sha256: SHA256
     bytes: int = Field(gt=0)
+
+
+class StageImplementationRef(ProtocolModel):
+    """Identify one project-owned top-level stage callable by exact file bytes."""
+
+    path: PythonRepoRelPath
+    symbol: PythonSymbol
+    sha256: SHA256
+    bytes: int = Field(gt=0)
+
+
+class StageContextBinding(ProtocolModel):
+    """Persist the stable values used to construct one live stage context."""
+
+    schema_version: Literal[1] = 1
+    run_id: RunId
+    attempt_id: int = Field(ge=1)
+    stage_id: StageId
+    parameter_model: ParameterModelRef
+    parameter_digest: SHA256
+    inputs: dict[InputName, RepoRelPath]
+    artifacts: dict[ArtifactName, RepoRelPath]
+    metric_ids: tuple[MetricId, ...]
+    numpy_generator_names: tuple[HumanId, ...]
+
+
+class StageInvocationReceipt(ProtocolModel):
+    """Record the callable, logical context, timing, and outcome of one invocation."""
+
+    implementation: StageImplementationRef
+    context: StageContextBinding
+    context_digest: SHA256
+    started_at: AwareDatetime
+    completed_at: AwareDatetime
+    outcome: Literal["succeeded", "failed", "cancelled", "preempted"]
+
+    @model_validator(mode="after")
+    def validate_timing(self) -> StageInvocationReceipt:
+        """Require completion to follow invocation start."""
+        if self.completed_at <= self.started_at:
+            raise ValueError("invocation completion must be after invocation start")
+        return self
+
+
+class ResolvedStageInvocationRef(ResolvedFileRef):
+    """Identify one immutable stage-invocation receipt."""
+
+    kind: Literal["stage_invocation"] = "stage_invocation"
 
 
 class MetricParams(ParameterSet):
@@ -754,6 +847,7 @@ class RunAttempt(ProtocolModel):
     completed_at: AwareDatetime
 
     resolved_stages: tuple[ResolvedStageRef, ...]
+    invocations: tuple[ResolvedStageInvocationRef, ...]
     measurement_files: tuple[ResolvedFileRef, ...]
     log_files: tuple[ResolvedFileRef, ...]
 
@@ -802,6 +896,12 @@ class RunAttempt(ProtocolModel):
 
         if set(measurement_locations) & set(log_locations):
             raise ValueError("measurement and log storage locations must be disjoint")
+
+        invocation_locations = tuple(
+            reference.stored_at for reference in self.invocations
+        )
+        if len(set(invocation_locations)) != len(invocation_locations):
+            raise ValueError("invocation receipt storage locations must be unique")
 
         return self
 
@@ -1107,10 +1207,6 @@ class ExecutionContext(ProtocolModel):
     cpu: CPUContext
     backend: ComputeBackendContext
     numerical_runtime: NumericalRuntimeContext
-    randomness: RandomnessContext
-    determinism: TorchDeterminismSpec
-    precision: TorchPrecisionSpec
-    parallelism: ParallelismSpec
 
 
 # ---------------------------------------------------------------------------
@@ -1193,7 +1289,7 @@ class BaseSpec(ProtocolModel):
     kind: str
     schema_version: Literal[1] = 1
 
-    script: PythonRepoRelPath
+    implementation: StageImplementationRef
 
     environment: EnvironmentSpec | None = None
     metric_ids: tuple[MetricId, ...] = ()
@@ -1243,9 +1339,9 @@ class BaseSpec(ProtocolModel):
                     "and entity ID"
                 )
 
-            if repo_file_paths_overlap(artifact.path, self.script):
+            if repo_file_paths_overlap(artifact.path, self.implementation.path):
                 raise ValueError(
-                    f"artifact {name!r} path collides with the stage script"
+                    f"artifact {name!r} path collides with the stage implementation"
                 )
 
             for previous_path, previous_name in artifact_roots.items():
@@ -1302,8 +1398,10 @@ class InternalSpec(ParameterizedSpec):
 
             materialization_paths[ref.path] = name
 
-            if repo_file_paths_overlap(ref.path, self.script):
-                raise ValueError(f"input {name!r} path collides with the stage script")
+            if repo_file_paths_overlap(ref.path, self.implementation.path):
+                raise ValueError(
+                    f"input {name!r} path collides with the stage implementation"
+                )
 
             for artifact_name, artifact in self.artifacts.items():
                 if repo_file_paths_overlap(artifact.path, ref.path):
@@ -1566,8 +1664,11 @@ class VariantSpec(ProtocolModel):
         return self
 
 
+ParameterizedStageSpec = DownloadSpec | BuildSpec | EmbedSpec | TrainSpec | EvaluateSpec
+
+
 Spec = Annotated[
-    DownloadSpec | BuildSpec | EmbedSpec | TrainSpec | EvaluateSpec,
+    ParameterizedStageSpec,
     Field(discriminator="kind"),
 ]
 
@@ -1655,6 +1756,8 @@ class ResolvedBaseSpec(ProtocolModel):
 
     environment: ResolvedEnvironment
     execution_context: ExecutionContext
+    startup: ProcessStartupReceipt
+    invocation: ResolvedStageInvocationRef
 
     command: tuple[str, ...] = Field(min_length=1)
 
@@ -1667,9 +1770,9 @@ class ResolvedBaseSpec(ProtocolModel):
         if not self.command[0]:
             raise ValueError("command executable must be nonempty")
 
-        if self.source.stored_at.path != self.spec.script:
+        if self.source.stored_at.path != self.spec.implementation.path:
             raise ValueError(
-                "resolved source entrypoint must match the stage spec script path"
+                "resolved source entrypoint must match the stage implementation path"
             )
 
         if set(self.artifacts) != set(self.spec.artifacts):

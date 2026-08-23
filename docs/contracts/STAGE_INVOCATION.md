@@ -214,11 +214,12 @@ generator names. Absolute workspace paths and generator objects exist only in
 The canonical digests are:
 
 ```python
-context_digest = sha256(serialize_document(binding)).hexdigest()
-parameter_digest = sha256(serialize_document(stage.params)).hexdigest()
+context_digest = document_digest(binding)
+parameter_digest = document_digest(stage.params)
 ```
 
-`serialize_document()` is VIPER's deterministic protocol encoder. The child
+`document_digest()` hashes the model's JSON value with mapping keys sorted and
+compact separators. Its result is independent of source-field order. The child
 receives the same binding, resolves each logical path beneath its attempt
 workspace, attaches the initialized generator objects and metric handles,
 constructs `StageContext`, and records the binding and digest in the receipt.

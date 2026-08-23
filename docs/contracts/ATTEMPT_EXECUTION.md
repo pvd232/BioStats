@@ -13,7 +13,7 @@ attempt.
 
 ## Current gap
 
-[`run_local()`](../../viper/runner.py) assigns attempt ID `1`. It constructs a
+[`run()`](../../viper/runner.py) assigns attempt ID `1`. It constructs a
 `RunAttempt` after every stage succeeds. A stage failure exits before a terminal
 attempt is published.
 

@@ -24,6 +24,7 @@ from viper.protocol import (
     ParameterModelRef,
     ReplicateSpec,
     RunSpec,
+    StageImplementationRef,
     TrainParams,
     TrainSpec,
     TrainVariantStageParams,
@@ -98,6 +99,7 @@ def reproducibility_payload() -> dict[str, object]:
 
 def training_spec(
     parameter_model: ParameterModelRef,
+    implementation: StageImplementationRef,
     *,
     commit: str = COMMIT,
 ) -> TrainSpec:
@@ -105,7 +107,7 @@ def training_spec(
     return TrainSpec.model_validate(
         {
             "kind": "train",
-            "script": "project_code/strand/fit.py",
+            "implementation": implementation.model_dump(mode="json"),
             "parameter_model": parameter_model.model_dump(mode="json"),
             "inputs": {
                 "training_dataset": {
@@ -167,6 +169,16 @@ class RunPlanAuthoringTests(unittest.TestCase):
             parameter_path = root / "project/parameters/train.py"
             parameter_path.parent.mkdir(parents=True)
             parameter_path.write_bytes(parameter_raw)
+            implementation_raw = (
+                b"from project.parameters.train import StrandTrainParameters\n"
+                b"from viper import train_stage\n\n"
+                b"@train_stage(parameter_model=StrandTrainParameters)\n"
+                b"def fit(context):\n"
+                b"    pass\n"
+            )
+            implementation_path = root / "project_code/strand/fit.py"
+            implementation_path.parent.mkdir(parents=True)
+            implementation_path.write_bytes(implementation_raw)
             environment_path = root / "environment.yml"
             environment_path.write_text("name: viper-test\n", encoding="utf-8")
             pointer_path = root / "inputs/datasets/replogle/current.pointer.yaml"
@@ -181,11 +193,21 @@ class RunPlanAuthoringTests(unittest.TestCase):
                 sha256=hashlib.sha256(parameter_raw).hexdigest(),
                 bytes=len(parameter_raw),
             )
+            implementation = StageImplementationRef(
+                path="project_code/strand/fit.py",
+                symbol="fit",
+                sha256=hashlib.sha256(implementation_raw).hexdigest(),
+                bytes=len(implementation_raw),
+            )
             draft_stage = root / "drafts/train.yaml"
             draft_stage.parent.mkdir(parents=True)
             draft_stage.write_bytes(
                 serialize_document(
-                    training_spec(parameter_model, commit=source_commit)
+                    training_spec(
+                        parameter_model,
+                        implementation,
+                        commit=source_commit,
+                    )
                 )
             )
             draft = RunPlanDraft.model_validate(
