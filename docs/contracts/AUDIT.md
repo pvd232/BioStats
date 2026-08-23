@@ -19,8 +19,8 @@ The review covers the ten contracts indexed by [README.md](README.md), the
 [formal protocol](../ProvenanceS1_v3.md), the
 [application API](../APPLICATION_API.md), the [public API](../PUBLIC_API.md),
 the [master checklist](../PUBLICATION_TODO.md), the active `viper` package, and
-the test suite. The inspected baseline commit is `0a00449`; the corrections and
-this report form one pending review increment above that baseline.
+the test suite. The inspected baseline commit is `0a00449`. The audit result
+applies to the complete document set in the Git commit containing this report.
 
 Historical material under `archive/` and reference material under `prior/`
 remain outside the active design state.
