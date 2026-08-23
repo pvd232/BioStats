@@ -43,6 +43,7 @@ ROOT_EXPORTS = (
     "train_stage",
     "http_transport",
     "run",
+    "retry",
 )
 
 PUBLIC_MODULES = (

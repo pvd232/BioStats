@@ -47,10 +47,14 @@ class StageExecutionError(RuntimeError):
         message: str,
         *,
         invocation: StageInvocationReceipt | None = None,
+        stdout: bytes = b"",
+        stderr: bytes = b"",
     ) -> None:
         """Preserve failed-invocation evidence when the child produced it."""
         super().__init__(message)
         self.invocation = invocation
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 class StageWorkerContext(BaseModel):
@@ -304,6 +308,8 @@ def execute_stage_process(
         raise StageExecutionError(
             f"stage command exited with status {completed.returncode}: {message}",
             invocation=worker_result.invocation,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
         )
     if worker_result.execution_context is None or worker_result.startup is None:
         raise StageExecutionError("successful stage omitted runtime evidence")

@@ -46,6 +46,7 @@ from viper.protocol import (
     ParameterModelRef,
     ReplicateSpec,
     ReproducibilitySpec,
+    ResolvedRun,
     SingleFileArtifactSpec,
     StageArtifactRef,
     StageImplementationRef,
@@ -54,9 +55,10 @@ from viper.protocol import (
     TrainVariantStageParams,
     VariantSpec,
 )
-from viper.runner import RunFetcher
+from viper.runner import RunError, RunFetcher
 from viper.runner import run as execute_run
-from viper.serialization import serialize_document
+from viper.serialization import parse_yaml_bytes, serialize_document
+from viper.stage_execution import StageExecutionError, execute_stage_process
 from viper.stages import load_stage_callable
 from viper.verifier import VerificationError, VerificationPolicy, verify_run_result
 
@@ -488,13 +490,47 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     assert len(requests) == 1
     assert requests[0].run_spec == frozen.files[-1].resolve()
 
-    result = execute_run(root, frozen.files[-1])
+    first_train_call = True
+
+    def fail_first_train(*args, **kwargs):
+        """Return real child evidence, then simulate one transient train failure."""
+        nonlocal first_train_call
+        process = execute_stage_process(*args, **kwargs)
+        stage_reference = args[2]
+        if stage_reference.stage_id == "train" and first_train_call:
+            first_train_call = False
+            raise StageExecutionError(
+                "transient train failure",
+                invocation=process.invocation.model_copy(
+                    update={"outcome": "failed"}
+                ),
+                stdout=process.stdout,
+                stderr=b"transient train failure\n",
+            )
+        return process
+
+    monkeypatch.setattr("viper.runner.execute_stage_process", fail_first_train)
+    with pytest.raises(RunError, match="attempt 1 failed"):
+        execute_run(root, frozen.files[-1])
+    failed_run = ResolvedRun.model_validate(
+        parse_yaml_bytes((root / RUN_ROOT / "resolved.yaml").read_bytes())
+    )
+    assert failed_run.status == "failed"
+    assert failed_run.attempts[0].failure is not None
+    assert failed_run.attempts[0].failure.code == "execution_failed"
+    assert len(failed_run.attempts[0].resolved_stages) == 1
+    assert len(failed_run.attempts[0].invocations) == 2
+
+    monkeypatch.setattr("viper.runner.execute_stage_process", execute_stage_process)
+    result = execute_run(root, frozen.files[-1], retry=True)
 
     assert result.resolved_run.status == "succeeded"
     assert result.resolved_run_path.is_file()
-    assert len(result.resolved_run.attempts[0].resolved_stages) == 2
-    assert len(result.resolved_run.attempts[0].measurement_files) == 2
-    assert len(result.resolved_run.attempts[0].metric_verification_files) == 1
+    assert [attempt.attempt_id for attempt in result.resolved_run.attempts] == [1, 2]
+    successful_attempt = result.resolved_run.attempts[1]
+    assert len(successful_attempt.resolved_stages) == 2
+    assert len(successful_attempt.measurement_files) == 2
+    assert len(successful_attempt.metric_verification_files) == 1
     assert result.journal_path.is_file()
     assert (result.journal_path.parent / "preflight.json").is_file()
     metric_runtime = root / ".viper" / "runtime"
@@ -513,17 +549,17 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         "running_stage",
         "publishing_stage",
         "running_stage",
-            "publishing_stage",
-            "closing_attempt",
-            "publishing_attempt_files",
-            "terminal",
-        )
+        "publishing_stage",
+        "closing_attempt",
+        "publishing_attempt_files",
+        "terminal",
+    )
 
     store = LocalArtifactStore(root)
     fetcher = RunFetcher(root, store, REPOSITORY)
     live_reference = next(
         reference
-        for reference in result.resolved_run.attempts[0].measurement_files
+        for reference in successful_attempt.measurement_files
         if str(reference.stored_at.path).endswith("train.epoch_mean.jsonl")
     )
     live_measurement = Measurement.model_validate_json(

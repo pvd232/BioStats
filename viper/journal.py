@@ -55,23 +55,7 @@ class DurableJournal:
         """Load and validate every complete journal entry in order."""
         if not self.path.exists():
             return ()
-        entries = tuple(
-            JournalEntry.model_validate_json(line)
-            for line in self.path.read_text(encoding="utf-8").splitlines()
-            if line
-        )
-        expected = tuple(range(1, len(entries) + 1))
-        if tuple(entry.sequence for entry in entries) != expected:
-            raise ValueError("journal sequence is discontinuous")
-        if entries and entries[0].state != "allocated":
-            raise ValueError("the first journal state must be allocated")
-        for previous, current in zip(entries, entries[1:], strict=False):
-            if current.state not in ATTEMPT_STATE_TRANSITIONS[previous.state]:
-                raise ValueError(
-                    f"invalid journal transition: {previous.state} -> {current.state}"
-                )
-        return entries
-
+        return parse_journal_bytes(self.path.read_bytes())
     def append(
         self,
         state: AttemptState,
@@ -108,9 +92,31 @@ class DurableJournal:
         return entries[-1] if entries else None
 
 
+def parse_journal_bytes(raw: bytes) -> tuple[JournalEntry, ...]:
+    """Parse and validate one immutable attempt journal."""
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise ValueError("journal is not valid UTF-8") from exc
+    entries = tuple(JournalEntry.model_validate_json(line) for line in lines if line)
+    if entries:
+        expected = tuple(range(1, len(entries) + 1))
+        if tuple(entry.sequence for entry in entries) != expected:
+            raise ValueError("journal sequence is discontinuous")
+        if entries[0].state != "allocated":
+            raise ValueError("the first journal state must be allocated")
+        for previous, current in zip(entries, entries[1:], strict=False):
+            if current.state not in ATTEMPT_STATE_TRANSITIONS[previous.state]:
+                raise ValueError(
+                    f"invalid journal transition: {previous.state} -> {current.state}"
+                )
+    return entries
+
+
 __all__ = [
     "ATTEMPT_STATE_TRANSITIONS",
     "AttemptState",
     "DurableJournal",
     "JournalEntry",
+    "parse_journal_bytes",
 ]

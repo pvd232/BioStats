@@ -1310,6 +1310,12 @@ class RunAttempt(ProtocolModel):
                 "metric verification, measurement, and log locations must be disjoint"
             )
 
+        journal_location = self.journal.stored_at
+        if journal_location in (
+            set(measurement_locations) | set(log_locations) | set(metric_locations)
+        ):
+            raise ValueError("attempt journal location must be distinct")
+
         invocation_locations = tuple(
             reference.stored_at for reference in self.invocations
         )
@@ -1398,6 +1404,8 @@ class ResolvedRun(ProtocolModel):
         previous_attempt: RunAttempt | None = None
 
         for index, attempt in enumerate(self.attempts):
+            if attempt.purpose != "run":
+                raise ValueError("resolved runs contain only ordinary run attempts")
             if attempt.attempt_id in unique_attempt_ids:
                 raise ValueError("attempt IDs must be unique")
             unique_attempt_ids.add(attempt.attempt_id)
@@ -1464,6 +1472,8 @@ class BenchmarkResult(ProtocolModel):
         """Require a successful confirmation completed before the result."""
         if self.confirmation.status != "succeeded":
             raise ValueError("benchmark confirmation attempt must succeed")
+        if self.confirmation.purpose != "benchmark_confirmation":
+            raise ValueError("benchmark confirmation has the wrong attempt purpose")
         if self.completed_at < self.confirmation.completed_at:
             raise ValueError(
                 "benchmark completion cannot precede confirmation completion"

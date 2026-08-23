@@ -28,6 +28,7 @@ from .artifact_loaders import (
 )
 from .http import HttpRetrievalError, validate_request_policy
 from .ids import InputName, StageId
+from .journal import parse_journal_bytes
 from .metrics import compare_metric_values
 from .parameter_models import ParameterModelError, verify_parameter_model_bytes
 from .paths import retrieval_body_path
@@ -1823,6 +1824,28 @@ def verify_resolved_stages(
     )
 
 
+def verify_attempt_journal(
+    attempt: RunAttempt,
+    run: RunSpec,
+    *,
+    fetcher: StorageFetcher | None = None,
+) -> None:
+    """Verify one terminal attempt journal and its canonical identity."""
+    expected_path = (
+        f"{run_root(run)}/attempts/{attempt.attempt_id}/journal.jsonl"
+    )
+    if attempt.journal.stored_at.path != expected_path:
+        raise VerificationError("attempt journal path is not canonical")
+    try:
+        entries = parse_journal_bytes(
+            read_resolved_file(attempt.journal, fetcher=fetcher)
+        )
+    except ValueError as exc:
+        raise VerificationError("attempt journal is invalid") from exc
+    if not entries or entries[-1].state != "terminal":
+        raise VerificationError("published attempt journal is not terminal")
+
+
 def verify_attempt_files(
     attempt: RunAttempt,
     run: RunSpec,
@@ -1856,7 +1879,6 @@ def verify_attempt_files(
     permitted_metrics = {metric.metric_id for metric in experiment.metrics}
     measurements: list[Measurement] = []
     root = run_root(run)
-
     for reference in attempt.measurement_files:
         if not isinstance(reference.stored_at, (HuggingFaceFileRef, LocalFileRef)):
             raise VerificationError(
@@ -2067,6 +2089,7 @@ def verify_recomputed_metrics(
     expected_keys = {
         (stage_id, metric_id)
         for stage_id, stage in plan.stages.items()
+        if stage_id in stage_refs
         for metric_id in stage.metric_ids
         if metric_specs[metric_id].mode == "recompute"
     }
@@ -2106,6 +2129,8 @@ def verify_recomputed_metrics(
         raise VerificationError("metric verification receipts select different metrics")
 
     for stage_id, stage in plan.stages.items():
+        if stage_id not in stage_refs:
+            continue
         for metric_id in stage.metric_ids:
             metric = metric_specs[metric_id]
             if metric.mode != "recompute":
@@ -2269,6 +2294,7 @@ def verify_run_result(
         current_attempt_file_snapshots = {
             identity
             for reference in (
+                attempt.journal,
                 *attempt.measurement_files,
                 *attempt.metric_verification_files,
                 *attempt.log_files,
@@ -2289,6 +2315,7 @@ def verify_run_result(
 
     for attempt in resolved_run.attempts:
         complete = attempt.status == "succeeded"
+        verify_attempt_journal(attempt, plan.run, fetcher=fetcher)
         verified_stages = verify_attempt_stages(
             attempt,
             plan.run,
@@ -2802,6 +2829,7 @@ def verify_benchmark_result(
         identity
         for attempt in resolved_run.attempts
         for reference in (
+            attempt.journal,
             *attempt.measurement_files,
             *attempt.metric_verification_files,
             *attempt.log_files,
@@ -2811,7 +2839,9 @@ def verify_benchmark_result(
     confirmation_attempt_file_snapshots = {
         identity
         for reference in (
+            result.confirmation.journal,
             *result.confirmation.measurement_files,
+            *result.confirmation.metric_verification_files,
             *result.confirmation.log_files,
         )
         if (identity := _artifact_revision_identity(reference.stored_at)) is not None

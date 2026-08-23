@@ -23,6 +23,7 @@ from .paths import retrieval_body_path
 from .preflight import preflight_local_plan
 from .protocol import (
     ArtifactPointer,
+    AttemptFailure,
     AttemptJournalRef,
     BaseSpec,
     DownloadSpec,
@@ -63,8 +64,13 @@ from .protocol import (
     StoredInputRef,
 )
 from .serialization import load_stage_spec, parse_yaml_bytes, serialize_document
-from .stage_execution import StageProcessResult, execute_stage_process
+from .stage_execution import (
+    StageExecutionError,
+    StageProcessResult,
+    execute_stage_process,
+)
 from .verifier import (
+    VerificationError,
     VerificationPolicy,
     VerifiedArtifact,
     fetch_git_file_bytes,
@@ -161,6 +167,74 @@ def _write_synchronized(path: Path, raw: bytes) -> None:
         temporary_path = Path(temporary_name)
         if temporary_path.exists():
             temporary_path.unlink()
+
+
+def _replace_synchronized(path: Path, raw: bytes) -> None:
+    """Atomically replace one mutable local head document and synchronize it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as temporary_file:
+            temporary_file.write(raw)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_name, path)
+    finally:
+        Path(temporary_name).unlink(missing_ok=True)
+
+
+def _publish_attempt_files(
+    store: LocalArtifactStore,
+    root: Path,
+    run_root: str,
+    attempt_id: int,
+    journal: DurableJournal,
+    log_files: Mapping[str, bytes],
+    measurement_paths: list[Path],
+    metric_verification_paths: list[Path],
+) -> tuple[
+    AttemptJournalRef,
+    tuple[ResolvedFileRef, ...],
+    tuple[ResolvedFileRef, ...],
+    tuple[ResolvedFileRef, ...],
+]:
+    """Publish one terminal journal and every available attempt-owned file."""
+    files = dict(log_files)
+    for path in (*measurement_paths, *metric_verification_paths):
+        files[path.relative_to(root).as_posix()] = path.read_bytes()
+    journal_path = f"{run_root}/attempts/{attempt_id}/journal.jsonl"
+    files[journal_path] = journal.path.read_bytes()
+    references = store.resolved_files(files)
+    journal_file = next(
+        reference
+        for reference in references
+        if reference.stored_at.path == journal_path
+    )
+    return (
+        AttemptJournalRef(
+            sha256=journal_file.sha256,
+            bytes=journal_file.bytes,
+            stored_at=journal_file.stored_at,
+        ),
+        tuple(
+            reference
+            for reference in references
+            if "/measurements/" in str(reference.stored_at.path)
+        ),
+        tuple(
+            reference
+            for reference in references
+            if "/metric_verification/" in str(reference.stored_at.path)
+        ),
+        tuple(
+            reference
+            for reference in references
+            if "/logs/" in str(reference.stored_at.path)
+        ),
+    )
 
 
 def _resolved_git_file(
@@ -524,6 +598,7 @@ def run(
     run_spec_path: Path,
     *,
     timeout_seconds: float | None = None,
+    retry: bool = False,
 ) -> RunResult:
     """Execute one frozen plan locally and verify its terminal resolved run."""
     root = repository_root.resolve()
@@ -535,13 +610,6 @@ def run(
     origin = _git(root, "remote", "get-url", "origin").decode().strip()
     if origin != str(run.source.repository):
         raise RunError("Git origin differs from RunSpec.source.repository")
-    preflight = preflight_local_plan(root, run_path)
-    if not preflight.ready:
-        failed_codes = ", ".join(
-            check.code for check in preflight.checks if check.status == "failure"
-        )
-        raise RunError(f"plan preflight failed: {failed_codes}")
-
     plan_commit = _git(root, "rev-parse", "HEAD").decode("ascii").strip()
     relative_run_path = run_path.relative_to(root).as_posix()
     if _git(root, "show", f"{plan_commit}:{relative_run_path}") != run_raw:
@@ -568,7 +636,23 @@ def run(
     workspace_root = root / ".viper" / "workspaces"
     run_lock = RunWorkspaceLock.for_run(workspace_root, run.run_id)
     run_lock.acquire()
-    attempt_id = next_attempt_id(workspace_root, run.run_id)
+    terminal_path = run_path.parent / "resolved.yaml"
+    previous_run: ResolvedRun | None = None
+    if terminal_path.is_file():
+        previous_run = ResolvedRun.model_validate(
+            parse_yaml_bytes(terminal_path.read_bytes())
+        )
+        if not retry:
+            run_lock.release()
+            raise RunError("run already has terminal attempt history; use retry")
+        if previous_run.status == "succeeded":
+            run_lock.release()
+            raise RunError("a successful run cannot be retried")
+    previous_attempts = () if previous_run is None else previous_run.attempts
+    attempt_id = max(
+        next_attempt_id(workspace_root, run.run_id),
+        max((attempt.attempt_id for attempt in previous_attempts), default=0) + 1,
+    )
     workspace = AttemptWorkspace.create(workspace_root, run.run_id, attempt_id)
     journal = DurableJournal(workspace.control / "journal.jsonl")
     attempt_started = datetime.now(UTC)
@@ -579,8 +663,10 @@ def run(
     measurement_paths: list[Path] = []
     metric_verification_paths: list[Path] = []
     log_files: dict[str, bytes] = {}
+    active_stage_id: StageId | None = None
     try:
         journal.append("allocated", "attempt allocated", recorded_at=attempt_started)
+        preflight = preflight_local_plan(root, run_path)
         preflight_path = workspace.control / "preflight.json"
         _write_synchronized(
             preflight_path,
@@ -588,14 +674,20 @@ def run(
         )
         journal.append(
             "preflighting",
-            "preflight passed and frozen plan located in Git",
+            "preflight completed and frozen plan located in Git",
             recorded_at=datetime.now(UTC),
             details={
                 "plan_commit": plan_commit,
                 "report": preflight_path.relative_to(workspace.root).as_posix(),
             },
         )
+        if not preflight.ready:
+            failed_codes = ", ".join(
+                check.code for check in preflight.checks if check.status == "failure"
+            )
+            raise RunError(f"plan preflight failed: {failed_codes}")
         for stage_reference in run.stages:
+            active_stage_id = stage_reference.stage_id
             stage = load_stage_spec(root / stage_reference.spec)
             loaded_stages[stage_reference.stage_id] = stage
             effective_environment = stage.environment or run.environment
@@ -640,16 +732,42 @@ def run(
                 recorded_at=datetime.now(UTC),
                 details={"stage_id": stage_reference.stage_id},
             )
-            process = execute_stage_process(
-                root,
-                run,
-                stage_reference,
-                stage,
-                attempt_id=attempt_id,
-                input_paths=input_paths,
-                retrievals=resolved_retrievals,
-                timeout_seconds=timeout_seconds,
-            )
+            try:
+                process = execute_stage_process(
+                    root,
+                    run,
+                    stage_reference,
+                    stage,
+                    attempt_id=attempt_id,
+                    input_paths=input_paths,
+                    retrievals=resolved_retrievals,
+                    timeout_seconds=timeout_seconds,
+                )
+            except StageExecutionError as exc:
+                run_log_root = f"{run_root}/attempts/{attempt_id}/logs"
+                log_files[
+                    f"{run_log_root}/{stage_reference.stage_id}.stdout.log"
+                ] = exc.stdout
+                log_files[
+                    f"{run_log_root}/{stage_reference.stage_id}.stderr.log"
+                ] = exc.stderr
+                if exc.invocation is not None:
+                    invocation_path = (
+                        f"{run_root}/attempts/{attempt_id}/invocations/"
+                        f"{stage_reference.stage_id}.yaml"
+                    )
+                    invocation_raw = serialize_document(exc.invocation)
+                    invocation_file = store.resolved_files(
+                        {invocation_path: invocation_raw}
+                    )[0]
+                    invocation_refs.append(
+                        ResolvedStageInvocationRef(
+                            sha256=invocation_file.sha256,
+                            bytes=invocation_file.bytes,
+                            stored_at=invocation_file.stored_at,
+                        )
+                    )
+                raise
             metric_specs = {
                 metric.metric_id: metric for metric in experiment.metrics
             }
@@ -752,17 +870,13 @@ def run(
                     "commit": snapshot.commit,
                 },
             )
+            active_stage_id = None
 
         journal.append(
             "closing_attempt",
             "all planned stages completed",
             recorded_at=datetime.now(UTC),
         )
-        attempt_files = dict(log_files)
-        for path in measurement_paths:
-            attempt_files[path.relative_to(root).as_posix()] = path.read_bytes()
-        for path in metric_verification_paths:
-            attempt_files[path.relative_to(root).as_posix()] = path.read_bytes()
         journal.append(
             "publishing_attempt_files",
             "attempt evidence publication started",
@@ -774,28 +888,20 @@ def run(
             "attempt succeeded",
             recorded_at=datetime.now(UTC),
         )
-        journal_path = f"{run_root}/attempts/{attempt_id}/journal.jsonl"
-        attempt_files[journal_path] = journal.path.read_bytes()
-        attempt_references = store.resolved_files(attempt_files)
-        measurement_references = tuple(
-            reference
-            for reference in attempt_references
-            if "/measurements/" in str(reference.stored_at.path)
-        )
-        metric_verification_references = tuple(
-            reference
-            for reference in attempt_references
-            if "/metric_verification/" in str(reference.stored_at.path)
-        )
-        log_references = tuple(
-            reference
-            for reference in attempt_references
-            if "/logs/" in str(reference.stored_at.path)
-        )
-        journal_file = next(
-            reference
-            for reference in attempt_references
-            if reference.stored_at.path == journal_path
+        (
+            journal_reference,
+            measurement_references,
+            metric_verification_references,
+            log_references,
+        ) = _publish_attempt_files(
+            store,
+            root,
+            run_root,
+            attempt_id,
+            journal,
+            log_files,
+            measurement_paths,
+            metric_verification_paths,
         )
         attempt_completed = datetime.now(UTC)
         attempt = RunAttempt(
@@ -806,11 +912,7 @@ def run(
             completed_at=attempt_completed,
             resolved_stages=tuple(resolved_stage_refs),
             invocations=tuple(invocation_refs),
-            journal=AttemptJournalRef(
-                sha256=journal_file.sha256,
-                bytes=journal_file.bytes,
-                stored_at=journal_file.stored_at,
-            ),
+            journal=journal_reference,
             measurement_files=measurement_references,
             metric_verification_files=metric_verification_references,
             log_files=log_references,
@@ -828,13 +930,12 @@ def run(
                 stored_at=run_reference,
             ),
             status="succeeded",
-            attempts=(attempt,),
+            attempts=(*previous_attempts, attempt),
             successful_attempt_id=attempt_id,
             completed_at=datetime.now(UTC),
         )
         terminal_raw = serialize_document(resolved_run)
-        terminal_path = run_path.parent / "resolved.yaml"
-        _write_synchronized(terminal_path, terminal_raw)
+        _replace_synchronized(terminal_path, terminal_raw)
         _write_synchronized(workspace.terminal, terminal_raw)
         verify_run_result(resolved_run, policy=policy, fetcher=fetcher)
         return RunResult(
@@ -842,5 +943,88 @@ def run(
             resolved_run_path=terminal_path,
             journal_path=journal.path,
         )
+    except Exception as exc:
+        failed_at = datetime.now(UTC)
+        latest = journal.latest()
+        if latest is not None and latest.state != "terminal":
+            journal.append(
+                "terminal",
+                "attempt failed",
+                recorded_at=failed_at,
+                details={
+                    "stage_id": active_stage_id,
+                    "exception": type(exc).__name__,
+                },
+            )
+        code = (
+            "preflight_failed"
+            if isinstance(exc, RunError)
+            and str(exc).startswith("plan preflight failed")
+            else "verification_failed"
+            if isinstance(exc, VerificationError)
+            else "execution_failed"
+            if isinstance(
+                exc,
+                (StageExecutionError, MetricExecutionError, HttpRetrievalError),
+            )
+            else "internal_error"
+        )
+        (
+            journal_reference,
+            measurement_references,
+            metric_verification_references,
+            log_references,
+        ) = _publish_attempt_files(
+            store,
+            root,
+            run_root,
+            attempt_id,
+            journal,
+            log_files,
+            measurement_paths,
+            metric_verification_paths,
+        )
+        completed_at = datetime.now(UTC)
+        failed_attempt = RunAttempt(
+            attempt_id=attempt_id,
+            purpose="run",
+            status="failed",
+            started_at=attempt_started,
+            completed_at=completed_at,
+            resolved_stages=tuple(resolved_stage_refs),
+            invocations=tuple(invocation_refs),
+            journal=journal_reference,
+            measurement_files=measurement_references,
+            metric_verification_files=metric_verification_references,
+            log_files=log_references,
+            failure=AttemptFailure(
+                code=code,
+                stage_id=active_stage_id,
+                message=str(exc) or type(exc).__name__,
+                occurred_at=failed_at,
+            ),
+        )
+        run_reference = GitFileRef(
+            repository=run.source.repository,
+            commit=plan_commit,
+            path=relative_run_path,
+        )
+        failed_run = ResolvedRun(
+            spec=ResolvedRunSpecRef(
+                sha256=hashlib.sha256(run_raw).hexdigest(),
+                bytes=len(run_raw),
+                stored_at=run_reference,
+            ),
+            status="failed",
+            attempts=(*previous_attempts, failed_attempt),
+            successful_attempt_id=None,
+            completed_at=datetime.now(UTC),
+        )
+        terminal_raw = serialize_document(failed_run)
+        _replace_synchronized(terminal_path, terminal_raw)
+        _replace_synchronized(workspace.terminal, terminal_raw)
+        raise RunError(
+            f"attempt {attempt_id} failed; evidence written to {terminal_path}"
+        ) from exc
     finally:
         run_lock.release()

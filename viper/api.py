@@ -9,7 +9,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from .application import RunRequest, RunSuccess
+from .application import RetryRequest, RetrySuccess, RunRequest, RunSuccess
+from .application import retry as application_retry
 from .application import run as application_run
 from .protocol import ParameterizedSpec, RunSpec
 from .serialization import load_stage_spec, parse_yaml_bytes
@@ -86,5 +87,26 @@ def run(
             run_spec=run_spec_path,
             repository_root=root,
             timeout_seconds=arguments.timeout_seconds,
+        )
+    )
+
+
+def retry(
+    run_spec: Path,
+    *,
+    repository_root: Path = Path.cwd(),
+    timeout_seconds: float | None = None,
+) -> RetrySuccess:
+    """Append one attempt to a failed frozen run."""
+    root = repository_root.resolve()
+    selected = run_spec if run_spec.is_absolute() else root / run_spec
+    selected = selected.resolve()
+    if not selected.is_relative_to(root):
+        raise PythonRunError("run specification is outside the repository root")
+    return application_retry(
+        RetryRequest(
+            run_spec=selected,
+            repository_root=root,
+            timeout_seconds=timeout_seconds,
         )
     )

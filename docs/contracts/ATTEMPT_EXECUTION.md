@@ -2,8 +2,11 @@
 
 ## Status
 
-Successful local execution is implemented. Failed-attempt publication,
-successive attempt allocation, and explicit retry are approved for VIPER 0.1.
+Successful and failed local attempts are published with immutable journals,
+stage invocations, logs, measurements, and completed stage snapshots. Explicit
+retry allocates the next attempt ID and preserves the earlier attempt history.
+Cancellation, preemption, and abandoned-journal reconciliation remain approved
+for VIPER 0.1.
 
 ## Required claim
 
@@ -13,12 +16,13 @@ attempt.
 
 ## Current gap
 
-[`run()`](../../viper/runner.py) assigns attempt ID `1`. It constructs a
-`RunAttempt` after every stage succeeds. A stage failure exits before a terminal
-attempt is published.
+[`run()`](../../viper/runner.py) acquires a run-scoped advisory lock, allocates
+the next durable attempt ID, and writes the allocation event before preflight.
+Every successful or failed attempt reaches a terminal journal state and enters
+the terminal `ResolvedRun`. [`retry()`](../../viper/application.py) accepts the
+same frozen plan after a failed run and appends the next attempt.
 
-The current runner therefore proves successful execution for one attempt.
-Failure reporting, attempt `2` allocation, and retry history remain open.
+Signal handling and abandoned-journal reconciliation remain open.
 
 ## Contract models
 

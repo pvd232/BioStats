@@ -459,33 +459,33 @@ python -m pytest tests/test_metric_interface.py tests/test_metric_provenance.py 
 
 **Contract:** [Attempt execution](contracts/ATTEMPT_EXECUTION.md).
 
-- [ ] Replace the stale-file lock with an operating-system-managed advisory
+- [x] Replace the stale-file lock with an operating-system-managed advisory
   lock scoped to one run.
-- [ ] Allocate `max(persisted attempt IDs) + 1` while holding that lock.
-- [ ] Write the allocation event before preflight begins.
+- [x] Allocate `max(persisted attempt IDs) + 1` while holding that lock.
+- [x] Write the allocation event before preflight begins.
 - [ ] Persist every attempt transition before its associated side effect.
-- [ ] Write one standard-output file and one standard-error file for each stage
+- [x] Write one standard-output file and one standard-error file for each stage
   invocation.
-- [ ] Preserve every verified stage snapshot completed before an attempt ends.
-- [ ] Persist one `StageInvocationReceipt` for every started stage and include
+- [x] Preserve every verified stage snapshot completed before an attempt ends.
+- [x] Persist one `StageInvocationReceipt` for every started stage and include
   its `ResolvedStageInvocationRef` in `RunAttempt.invocations`.
 - [ ] Close and publish attempts with `succeeded`, `failed`, `cancelled`, or
   `preempted` status.
-- [ ] Replace `failure_reason` with typed `AttemptFailure`.
+- [x] Replace `failure_reason` with typed `AttemptFailure`.
 - [ ] Publish every attempt as
   `attempts/<attempt_id>/resolved.yaml`; place its journal, measurements,
   metric-verification receipts, and logs beneath the same attempt directory;
   store one immutable `ResolvedAttemptRef` in the terminal run.
-- [ ] Add `AttemptJournalRef` and metric-verification files to `RunAttempt`.
-- [ ] Add attempt purpose; keep ordinary attempts in `ResolvedRun` and bind the
+- [x] Add `AttemptJournalRef` and metric-verification files to `RunAttempt`.
+- [x] Add attempt purpose; keep ordinary attempts in `ResolvedRun` and bind the
   independent confirmation directly to `BenchmarkResult`.
 - [ ] Map `SIGINT` to cancellation, map `SIGTERM` to preemption, and reconcile
   an abandoned journal as `coordinator_lost`; journal each observed event.
 - [ ] Reconcile an abandoned nonterminal journal as `coordinator_lost` after
   acquiring its released lock.
-- [ ] Add `retry()` and `viper retry`; each retry uses the same frozen plan and
+- [x] Add `retry()` and `viper retry`; each retry uses the same frozen plan and
   the next attempt ID.
-- [ ] Verify attempt ordering, terminal status, failure identity, attempt files,
+- [x] Verify attempt ordering, terminal status, failure identity, attempt files,
   and retry plan identity.
 - [ ] Exercise a failed first attempt, a successful retry, stale ownership,
   cancellation, preemption, and tampered prior evidence.

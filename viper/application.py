@@ -55,6 +55,7 @@ OperationName = Literal[
     "preflight",
     "execute_stage",
     "run",
+    "retry",
     "plan_diff",
     "lineage",
     "status",
@@ -226,6 +227,20 @@ class RunSuccess(SuccessModel):
     journal: Path
 
 
+class RetryRequest(RunRequest):
+    """Select a failed frozen run for one new attempt."""
+
+
+class RetrySuccess(SuccessModel):
+    """Report the terminal document written by one successful retry."""
+
+    operation: Literal["retry"] = "retry"  # pyright: ignore[reportIncompatibleVariableOverride]
+    run_id: RunId
+    attempt_id: int = Field(ge=2)
+    resolved_run: Path
+    journal: Path
+
+
 class PlanDiffRequest(ApplicationModel):
     """Select two complete frozen plans for deterministic comparison."""
 
@@ -390,6 +405,8 @@ SCHEMA_REGISTRY: dict[str, Any] = {
     "ResolvedRun": ResolvedRun,
     "RunRequest": RunRequest,
     "RunSuccess": RunSuccess,
+    "RetryRequest": RetryRequest,
+    "RetrySuccess": RetrySuccess,
     "RunSpec": RunSpec,
     "SchemaRequest": SchemaRequest,
     "SchemaSuccess": SchemaSuccess,
@@ -417,6 +434,7 @@ OPERATIONS: tuple[OperationName, ...] = (
     "preflight",
     "execute_stage",
     "run",
+    "retry",
     "plan_diff",
     "lineage",
     "status",
@@ -585,6 +603,46 @@ def run(request: RunRequest) -> RunSuccess:
     run = RunSpec.model_validate(parse_yaml_bytes(request.run_spec.read_bytes()))
     return RunSuccess(
         run_id=run.run_id,
+        resolved_run=result.resolved_run_path,
+        journal=result.journal_path,
+    )
+
+
+def retry(request: RetryRequest) -> RetrySuccess:
+    """Append one attempt to a failed frozen run and verify its terminal result."""
+    try:
+        result = execute_run(
+            request.repository_root,
+            request.run_spec,
+            timeout_seconds=request.timeout_seconds,
+            retry=True,
+        )
+    except (RunError, StageExecutionError) as exc:
+        raise ViperError(
+            ViperFailure(
+                operation="retry",
+                origin="application",
+                code="execution_failed",
+                message="retry failed",
+            )
+        ) from exc
+    except VerificationError as exc:
+        raise ViperError(
+            ViperFailure(
+                operation="retry",
+                origin="application",
+                code="verification_failed",
+                message="retry verification failed",
+            )
+        ) from exc
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        raise _document_error("retry", request.run_spec, exc) from exc
+    run_spec = RunSpec.model_validate(parse_yaml_bytes(request.run_spec.read_bytes()))
+    attempt_id = result.resolved_run.successful_attempt_id
+    assert attempt_id is not None
+    return RetrySuccess(
+        run_id=run_spec.run_id,
+        attempt_id=attempt_id,
         resolved_run=result.resolved_run_path,
         journal=result.journal_path,
     )
@@ -872,6 +930,7 @@ REQUEST_REGISTRY: dict[OperationName, RequestType] = {
     "preflight": PreflightRequest,
     "execute_stage": ExecuteStageRequest,
     "run": RunRequest,
+    "retry": RetryRequest,
     "plan_diff": PlanDiffRequest,
     "lineage": LineageRequest,
     "status": StatusRequest,
@@ -891,6 +950,7 @@ HANDLER_REGISTRY: dict[OperationName, Handler] = {
     "preflight": preflight,
     "execute_stage": execute_stage,
     "run": run,
+    "retry": retry,
     "plan_diff": plan_diff,
     "lineage": lineage,
     "status": status,
@@ -962,6 +1022,8 @@ __all__ = [
     "PreflightSuccess",
     "RunRequest",
     "RunSuccess",
+    "RetryRequest",
+    "RetrySuccess",
     "SchemaRequest",
     "SchemaSuccess",
     "StatusRequest",
@@ -990,6 +1052,7 @@ __all__ = [
     "plan_diff",
     "preflight",
     "result_json_bytes",
+    "retry",
     "run",
     "status",
     "validate_resolved_stage",

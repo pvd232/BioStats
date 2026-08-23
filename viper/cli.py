@@ -79,6 +79,14 @@ def build_parser() -> argparse.ArgumentParser:
     run_command.add_argument("--repository-root", type=Path, default=Path.cwd())
     run_command.add_argument("--timeout-seconds", type=float)
 
+    retry_command = commands.add_parser(
+        "retry",
+        help="append one attempt to a failed frozen run",
+    )
+    retry_command.add_argument("run_spec", type=Path)
+    retry_command.add_argument("--repository-root", type=Path, default=Path.cwd())
+    retry_command.add_argument("--timeout-seconds", type=float)
+
     plan_diff = commands.add_parser(
         "plan-diff",
         help="compare two complete frozen run plans",
@@ -143,6 +151,7 @@ def _operation_and_payload(
         "preflight": "preflight",
         "execute-stage": "execute_stage",
         "run": "run",
+        "retry": "retry",
         "plan-diff": "plan_diff",
         "lineage": "lineage",
         "status": "status",
@@ -190,6 +199,11 @@ def _human_success(result: SuccessModel) -> str:
         )
     if result.operation == "run":
         return f"completed and verified run {getattr(result, 'run_id')}"
+    if result.operation == "retry":
+        return (
+            f"completed attempt {getattr(result, 'attempt_id')} for run "
+            f"{getattr(result, 'run_id')}"
+        )
     if result.operation == "plan_diff":
         changes = getattr(result, "changes")
         if not changes:

@@ -42,7 +42,7 @@ __all__ = [
     "workspace",
 ]
 
-from .api import run
+from .api import retry, run
 from .http import (
     DownloadContext,
     HttpRetrievalHandle,
@@ -74,4 +74,5 @@ __all__ += [
     "train_stage",
     "http_transport",
     "run",
+    "retry",
 ]
