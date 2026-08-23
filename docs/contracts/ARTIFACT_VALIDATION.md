@@ -2,9 +2,9 @@
 
 ## Status
 
-Exact loader references and the shared project-source trust policy are
-implemented. Worker-owned loader invocation, complete bundle checks, and
-named guarantee results remain in Phase 3 of the publication checklist.
+Exact loader references, complete bundle checks, worker-owned loader
+invocation, named guarantee results, and terminal resume parity are
+implemented.
 
 ## Required claim
 
@@ -66,7 +66,7 @@ Bundle minimality remains an authoring decision based on actual consumer needs.
 |---|---|
 | Protocol | Replace loader paths with `ArtifactLoaderRef`. |
 | Stage publication | Preserve complete bundle enumeration. |
-| Worker | Invoke loaders through the selected execution backend. |
+| Worker | Invoke loaders through a dedicated trusted-local worker process. |
 | Verification | Separate representation, loadability, and semantic checks. |
 | Errors | Name the failed guarantee level. |
 | Tests | Cover generic loadability, reserved semantic validation, same-length tampering, missing members, and extra members. |

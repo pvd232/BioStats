@@ -374,17 +374,18 @@ python -m pytest tests/test_http_retrieval.py tests/test_stage_invocation.py \
 - [x] Rename the verifier policy field to `trusted_source_repositories` and the
   CLI option to `--trust-source`; apply it to every project code path executed
   during verification.
-- [ ] Enumerate every regular bundle member during publication and reject
+- [x] Enumerate every regular bundle member during publication and reject
   symlinks, path escape, missing members, and unrecorded members.
-- [ ] Invoke project loaders through the trusted stage-worker boundary.
-- [ ] Report generic loader success as `artifact.loadability`.
-- [ ] Apply core semantic validation to the reserved `resume_state` artifact.
-- [ ] Update verifier errors and protocol prose to distinguish representation
+- [x] Invoke project loaders through a dedicated trusted-local worker boundary.
+- [x] Report generic loader success as `artifact.loadability`.
+- [x] Apply core semantic validation to the reserved `resume_state` artifact.
+- [x] Update verifier errors and protocol prose to distinguish representation
   identity, loadability, and reserved semantic validity.
-- [ ] Exercise single-file loading, bundle loading, missing and extra members,
+- [x] Exercise single-file loading, bundle loading, missing and extra members,
   same-length tampering, loader tampering, loader failure, and invalid
   `resume_state`.
-- [ ] Run the maintained project's interruption-and-resumption case and compare
+- [x] Run the maintained interruption-and-resumption case with zero and two
+  DataLoader workers and compare
   its resumed terminal state with the uninterrupted execution.
 
 **Focused gate**
