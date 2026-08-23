@@ -18,6 +18,7 @@ from viper.authoring import (
 from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
+    ArtifactLoaderRef,
     ExperimentSpec,
     FactorSpec,
     MetricParams,
@@ -36,6 +37,17 @@ from viper.serialization import parse_yaml_bytes, serialize_document
 RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 RUN_ROOT = f"experiments/e001_strand/runs/baseline/{RUN_ID}"
 COMMIT = "a" * 40
+LOADER_RAW = b"def load(path):\n    return path.read_bytes()\n"
+
+
+def loader_ref(path: str) -> ArtifactLoaderRef:
+    """Identify the shared test loader by its exact source bytes."""
+    return ArtifactLoaderRef(
+        path=path,
+        symbol="load",
+        sha256=hashlib.sha256(LOADER_RAW).hexdigest(),
+        bytes=len(LOADER_RAW),
+    )
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -130,13 +142,17 @@ def training_spec(
                     "path": (
                         f"{RUN_ROOT}/artifacts/models/strand/parameters.safetensors"
                     ),
-                    "loader": "project_code/loaders/parameters.py",
+                    "loader": loader_ref(
+                        "project_code/loaders/parameters.py"
+                    ).model_dump(mode="json"),
                     "data_role": "training",
                 },
                 RESUME_STATE: {
                     "kind": "file",
                     "path": (f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt"),
-                    "loader": "project_code/loaders/resume_state.py",
+                    "loader": loader_ref(
+                        "project_code/loaders/resume_state.py"
+                    ).model_dump(mode="json"),
                     "data_role": "training",
                 },
             },
@@ -185,6 +201,13 @@ class RunPlanAuthoringTests(unittest.TestCase):
             pointer_path = root / "inputs/datasets/replogle/current.pointer.yaml"
             pointer_path.parent.mkdir(parents=True)
             pointer_path.write_text("schema_version: 1\n", encoding="utf-8")
+            for relative_path in (
+                "project_code/loaders/parameters.py",
+                "project_code/loaders/resume_state.py",
+            ):
+                loader_path = root / relative_path
+                loader_path.parent.mkdir(parents=True, exist_ok=True)
+                loader_path.write_bytes(LOADER_RAW)
             _git(root, "add", ".")
             _git(root, "commit", "--quiet", "-m", "source")
             source_commit = _git(root, "rev-parse", "HEAD")

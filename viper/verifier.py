@@ -209,15 +209,15 @@ class VerificationError(ValueError):
 
 @dataclass(frozen=True)
 class VerificationPolicy:
-    """Define which source repositories may execute artifact-loader code."""
+    """Define which source repositories may execute project-owned code."""
 
-    trusted_loader_repositories: frozenset[str]
+    trusted_source_repositories: frozenset[str]
 
-    def permits_loader_source(self, repository: object) -> bool:
-        """Return whether loader code from one repository may execute."""
+    def permits_source(self, repository: object) -> bool:
+        """Return whether project code from one repository may execute."""
         normalized = str(repository).rstrip("/")
         return normalized in {
-            trusted.rstrip("/") for trusted in self.trusted_loader_repositories
+            trusted.rstrip("/") for trusted in self.trusted_source_repositories
         }
 
 
@@ -523,33 +523,39 @@ def load_verified_artifact(
     fetcher: StorageFetcher | None = None,
 ) -> object:
     """Materialize verified files and reconstruct one artifact with its loader."""
-    if not policy.permits_loader_source(run.source.repository):
+    if not policy.permits_source(run.source.repository):
         raise VerificationError(
             "artifact-loader execution requires an explicitly trusted source repository"
         )
 
     retrieve = fetch_storage_bytes if fetcher is None else fetcher
+    loader_reference = declaration.loader
     loader_location = GitFileRef(
         repository=run.source.repository,
         commit=run.source.commit,
-        path=declaration.loader,
+        path=loader_reference.path,
     )
     loader_raw = retrieve(loader_location)
+    if len(loader_raw) != loader_reference.bytes:
+        raise VerificationError("artifact.loader: loader byte count differs")
+    if hashlib.sha256(loader_raw).hexdigest() != loader_reference.sha256:
+        raise VerificationError("artifact.loader: loader SHA-256 differs")
 
-    loader_digest = hashlib.sha256(declaration.loader.encode()).hexdigest()
+    loader_digest = hashlib.sha256(loader_reference.path.encode()).hexdigest()
     module = ModuleType(f"viper_artifact_loader_{loader_digest}")
     module.__file__ = str(loader_location.path)
     try:
         exec(compile(loader_raw, module.__file__, "exec"), module.__dict__)
     except Exception as exc:
         raise VerificationError(
-            f"artifact loader {declaration.loader!r} could not be loaded"
+            f"artifact loader {loader_reference.path!r} could not be loaded"
         ) from exc
 
-    load = getattr(module, "load", None)
+    load = getattr(module, loader_reference.symbol, None)
     if not callable(load):
         raise VerificationError(
-            f"artifact loader {declaration.loader!r} does not define load(path)"
+            f"artifact loader {loader_reference.path!r} does not define "
+            f"{loader_reference.symbol}(path)"
         )
 
     with tempfile.TemporaryDirectory(prefix="viper-artifact-") as directory:
@@ -583,7 +589,7 @@ def load_verified_artifact(
             loaded = load(artifact_path)
         except Exception as exc:
             raise VerificationError(
-                f"artifact loader {declaration.loader!r} could not reconstruct "
+                f"artifact loader {loader_reference.path!r} could not load "
                 "the verified artifact"
             ) from exc
 
@@ -1833,7 +1839,7 @@ def verify_recomputed_metrics(
     fetcher: StorageFetcher | None = None,
 ) -> None:
     """Recompute selected metrics from frozen code and verified dependencies."""
-    if not policy.permits_loader_source(plan.run.source.repository):
+    if not policy.permits_source(plan.run.source.repository):
         raise VerificationError(
             "metric recomputation requires an explicitly trusted source repository"
         )

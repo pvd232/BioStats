@@ -127,7 +127,11 @@ spec:
     prior:
       data_role: training
       kind: bundle
-      loader: project/loaders/prior_bundle.py
+      loader:
+        path: project/loaders/prior_bundle.py
+        symbol: load
+        sha256: 10799621e2dc91fd464ea960aca190bdb458e8a32342006310a1397ca3a368c4
+        bytes: 101
       path: experiments/model_eval/runs/baseline/01ARZ3NDEKTSV4RRFFQ69G5FAB/artifacts/priors/toy
   environment: null
   inputs:

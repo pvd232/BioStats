@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 
 from tests.fixtures import (
+    artifact_loader_ref,
     builtin_http_transport,
     http_policy,
     http_request,
@@ -33,7 +34,7 @@ def _artifact(path: str) -> SingleFileArtifactSpec:
     """Build one training-role file artifact for local preflight tests."""
     return SingleFileArtifactSpec(
         path=path,
-        loader="project/loaders/bytes_file.py",
+        loader=artifact_loader_ref("project/loaders/bytes_file.py"),
         data_role="training",
     )
 

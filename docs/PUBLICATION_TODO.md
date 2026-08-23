@@ -368,10 +368,10 @@ python -m pytest tests/test_http_retrieval.py tests/test_stage_invocation.py \
 
 **Contract:** [Artifact validation](contracts/ARTIFACT_VALIDATION.md).
 
-- [ ] Add `ArtifactLoaderRef` with path, symbol, SHA-256, and byte count.
-- [ ] Replace artifact loader IDs and paths with exact implementation
+- [x] Add `ArtifactLoaderRef` with path, symbol, SHA-256, and byte count.
+- [x] Replace artifact loader IDs and paths with exact implementation
   references.
-- [ ] Rename the verifier policy field to `trusted_source_repositories` and the
+- [x] Rename the verifier policy field to `trusted_source_repositories` and the
   CLI option to `--trust-source`; apply it to every project code path executed
   during verification.
 - [ ] Enumerate every regular bundle member during publication and reject

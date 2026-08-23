@@ -307,6 +307,33 @@ def freeze_run_plan(
                             raise ValueError(
                                 "HTTP transport source differs from the frozen commit"
                             )
+        for artifact in spec.artifacts.values():
+            loader = artifact.loader
+            try:
+                local_loader_raw = (root / loader.path).read_bytes()
+                committed_loader_raw = subprocess.run(
+                    (
+                        "git",
+                        "-C",
+                        str(root),
+                        "show",
+                        f"{draft.source.commit}:{loader.path}",
+                    ),
+                    check=True,
+                    capture_output=True,
+                ).stdout
+            except (OSError, subprocess.CalledProcessError) as exc:
+                raise ValueError(
+                    "artifact loader is absent from the frozen source commit"
+                ) from exc
+            if len(local_loader_raw) != loader.bytes:
+                raise ValueError("artifact loader byte count differs")
+            if hashlib.sha256(local_loader_raw).hexdigest() != loader.sha256:
+                raise ValueError("artifact loader SHA-256 differs")
+            if local_loader_raw != committed_loader_raw:
+                raise ValueError(
+                    "artifact loader differs from the frozen source commit"
+                )
         raw = serialize_document(spec)
         relative_path = f"{run_root}/stages/{stage.stage_id}/spec.yaml"
         target = _target_path(root, relative_path)

@@ -271,10 +271,15 @@ def preflight_local_plan(repository_root: Path, run_spec_path: Path) -> Prefligh
         )
         loaders_exist = True
         for artifact in stage.artifacts.values():
-            loader_path = root / artifact.loader
+            loader = artifact.loader
+            loader_path = root / loader.path
             try:
-                if not loader_path.is_file() or loader_path.read_bytes() != _git_bytes(
-                    root, run.source.commit, artifact.loader
+                loader_raw = loader_path.read_bytes()
+                if (
+                    not loader_path.is_file()
+                    or len(loader_raw) != loader.bytes
+                    or hashlib.sha256(loader_raw).hexdigest() != loader.sha256
+                    or loader_raw != _git_bytes(root, run.source.commit, loader.path)
                 ):
                     loaders_exist = False
             except (OSError, subprocess.CalledProcessError):

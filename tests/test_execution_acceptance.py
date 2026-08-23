@@ -6,7 +6,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from tests.fixtures import builtin_http_transport, http_policy, http_request
+from tests.fixtures import (
+    artifact_loader_ref,
+    builtin_http_transport,
+    http_policy,
+    http_request,
+)
 from viper.local_store import LocalArtifactStore
 from viper.paths import retrieval_body_path
 from viper.protocol import (
@@ -75,7 +80,7 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
             artifacts={
                 "dataset": SingleFileArtifactSpec(
                     path=artifact_path,
-                    loader="project/loaders/bytes_file.py",
+                    loader=artifact_loader_ref("project/loaders/bytes_file.py"),
                     data_role="training",
                 )
             },

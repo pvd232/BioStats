@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from tests.fixtures import stage_implementation_ref
+from tests.fixtures import artifact_loader_ref, stage_implementation_ref
 from viper.parameter_models import (
     ParameterModelError,
     load_parameter_model,
@@ -179,13 +179,13 @@ def test_stage_parameter_validation_runs_in_a_worker(tmp_path: Path) -> None:
             PARAMETERS: SingleFileArtifactSpec(
                 path="experiments/example/runs/baseline/"
                 "01JABCDEFGHJKMNPQRSTVWXYZ0/artifacts/models/main/parameters.bin",
-                loader="project/loaders/parameters.py",
+                loader=artifact_loader_ref("project/loaders/parameters.py"),
                 data_role="training",
             ),
             RESUME_STATE: SingleFileArtifactSpec(
                 path="experiments/example/runs/baseline/"
                 "01JABCDEFGHJKMNPQRSTVWXYZ0/artifacts/models/main/resume.bin",
-                loader="project/loaders/resume.py",
+                loader=artifact_loader_ref("project/loaders/resume.py"),
                 data_role="training",
             ),
         },

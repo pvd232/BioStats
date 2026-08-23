@@ -9,7 +9,11 @@ from tempfile import TemporaryDirectory
 import yaml
 from pydantic import ValidationError
 
-from tests.fixtures import parameter_model_ref, stage_implementation_ref
+from tests.fixtures import (
+    artifact_loader_ref,
+    parameter_model_ref,
+    stage_implementation_ref,
+)
 from viper.protocol import (
     PARAMETERS,
     PREDICTIONS,
@@ -104,7 +108,9 @@ def artifact(path: str, loader: str, data_role: DataRole = "training") -> dict:
     return {
         "kind": "file",
         "path": path,
-        "loader": f"project/loaders/{loader}.py",
+        "loader": artifact_loader_ref(
+            f"project/loaders/{loader}.py"
+        ).model_dump(mode="json"),
         "data_role": data_role,
     }
 
@@ -611,7 +617,9 @@ class EvaluationTests(unittest.TestCase):
                     "path": (
                         f"{RUN_ROOT}/artifacts/evaluations/structured_predictions"
                     ),
-                    "loader": "custom_code/load_prediction_bundle.py",
+                    "loader": artifact_loader_ref(
+                        "custom_code/load_prediction_bundle.py"
+                    ).model_dump(mode="json"),
                     "data_role": "evaluation",
                 }
             },

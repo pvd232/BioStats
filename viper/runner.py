@@ -421,7 +421,7 @@ def run(
     store = LocalArtifactStore(root)
     fetcher = RunFetcher(root, store, str(run.source.repository))
     policy = VerificationPolicy(
-        trusted_loader_repositories=frozenset({str(run.source.repository)})
+        trusted_source_repositories=frozenset({str(run.source.repository)})
     )
     experiment = ExperimentSpec.model_validate(
         parse_yaml_bytes(

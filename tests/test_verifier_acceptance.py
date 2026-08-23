@@ -32,6 +32,7 @@ from viper.paths import retrieval_body_path
 from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
+    ArtifactLoaderRef,
     ArtifactPointer,
     ArtifactPointerRef,
     BaseSpec,
@@ -143,6 +144,35 @@ EVALUATE_SOURCE = b"def predict(context):\n    pass\n"
 def loader_path(name: str) -> str:
     """Return one exact user-repository artifact-loader path."""
     return f"project/loaders/{name}.py"
+
+
+def loader_source(loader_id: str, *, bundle: bool = False) -> bytes:
+    """Return the exact source bytes for one simulated artifact loader."""
+    if loader_id == "resume_state":
+        return (
+            b"from viper.resume "
+            b"import load_resume_state\n\n"
+            b"def load(path):\n"
+            b"    return load_resume_state(path)\n"
+        )
+    if bundle:
+        return (
+            b"def load(path):\n"
+            b"    return tuple(p.read_bytes() for p in sorted(path.rglob('*')) "
+            b"if p.is_file())\n"
+        )
+    return b"def load(path):\n    return path.read_bytes()\n"
+
+
+def loader_ref(loader_id: str, *, bundle: bool = False) -> ArtifactLoaderRef:
+    """Identify one simulated loader by its exact source bytes."""
+    raw = loader_source(loader_id, bundle=bundle)
+    return ArtifactLoaderRef(
+        path=loader_path(loader_id),
+        symbol="load",
+        sha256=sha256(raw),
+        bytes=len(raw),
+    )
 
 
 def yaml_bytes(value: object) -> bytes:
@@ -456,21 +486,7 @@ def add_loader(
     bundle: bool = False,
 ) -> None:
     """Publish one artifact-loader module into the simulated source commit."""
-    if loader_id == "resume_state":
-        raw = (
-            b"from viper.resume "
-            b"import load_resume_state\n\n"
-            b"def load(path):\n"
-            b"    return load_resume_state(path)\n"
-        )
-    elif bundle:
-        raw = (
-            b"def load(path):\n"
-            b"    return tuple(p.read_bytes() for p in sorted(path.rglob('*')) "
-            b"if p.is_file())\n"
-        )
-    else:
-        raw = b"def load(path):\n    return path.read_bytes()\n"
+    raw = loader_source(loader_id, bundle=bundle)
     store.put(
         git_file(
             source_commit,
@@ -682,19 +698,19 @@ def publish_producer_run(
             "dataset": SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/datasets/toy/dataset.bin",
-                loader=loader_path("bytes_file"),
+                loader=loader_ref("bytes_file"),
                 data_role="training",
             ),
             "evaluation_dataset": SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/datasets/toy/evaluation.bin",
-                loader=loader_path("bytes_file"),
+                loader=loader_ref("bytes_file"),
                 data_role=evaluation_role,
             ),
             "split": SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/datasets/toy/split.json",
-                loader=loader_path("bytes_file"),
+                loader=loader_ref("bytes_file"),
                 data_role=evaluation_role,
             ),
         },
@@ -721,13 +737,13 @@ def publish_producer_run(
             PARAMETERS: SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/models/toy/parameters.bin",
-                loader=loader_path("bytes_file"),
+                loader=loader_ref("bytes_file"),
                 data_role="training",
             ),
             RESUME_STATE: SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/models/toy/resume_state.bin",
-                loader=loader_path("resume_state"),
+                loader=loader_ref("resume_state"),
                 data_role="training",
             ),
         },
@@ -1033,7 +1049,7 @@ def build_complete_fixture(
             "prior": BundleArtifactSpec(
                 kind="bundle",
                 path=f"{run_root}/artifacts/priors/toy",
-                loader=loader_path("prior_bundle"),
+                loader=loader_ref("prior_bundle", bundle=True),
                 data_role="training",
             )
         },
@@ -1059,13 +1075,13 @@ def build_complete_fixture(
             PARAMETERS: SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/models/toy/parameters.bin",
-                loader=loader_path("bytes_file"),
+                loader=loader_ref("bytes_file"),
                 data_role="training",
             ),
             RESUME_STATE: SingleFileArtifactSpec(
                 kind="file",
                 path=f"{run_root}/artifacts/models/toy/resume_state.bin",
-                loader=loader_path("resume_state"),
+                loader=loader_ref("resume_state"),
                 data_role="training",
             ),
         },
@@ -1106,7 +1122,7 @@ def build_complete_fixture(
                 path=(
                     f"{run_root}/artifacts/evaluations/toy_predictions/predictions.json"
                 ),
-                loader=loader_path("json_file"),
+                loader=loader_ref("json_file"),
                 data_role=evaluation_role,
             )
         },

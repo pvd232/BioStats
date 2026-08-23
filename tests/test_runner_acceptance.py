@@ -26,6 +26,7 @@ from viper.local_store import LocalArtifactStore
 from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
+    ArtifactLoaderRef,
     DownloadParams,
     DownloadSpec,
     DownloadVariantStageParams,
@@ -314,7 +315,14 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         artifacts={
             "prior": SingleFileArtifactSpec(
                 path=f"{RUN_ROOT}/artifacts/datasets/tiny/prior.bin",
-                loader="project/loaders/bytes_file.py",
+                loader=ArtifactLoaderRef(
+                    path="project/loaders/bytes_file.py",
+                    symbol="load",
+                    sha256=hashlib.sha256(
+                        source_files["project/loaders/bytes_file.py"]
+                    ).hexdigest(),
+                    bytes=len(source_files["project/loaders/bytes_file.py"]),
+                ),
                 data_role="training",
             )
         },
@@ -346,12 +354,26 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         artifacts={
             PARAMETERS: SingleFileArtifactSpec(
                 path=f"{RUN_ROOT}/artifacts/models/tiny/parameters.bin",
-                loader="project/loaders/bytes_file.py",
+                loader=ArtifactLoaderRef(
+                    path="project/loaders/bytes_file.py",
+                    symbol="load",
+                    sha256=hashlib.sha256(
+                        source_files["project/loaders/bytes_file.py"]
+                    ).hexdigest(),
+                    bytes=len(source_files["project/loaders/bytes_file.py"]),
+                ),
                 data_role="training",
             ),
             RESUME_STATE: SingleFileArtifactSpec(
                 path=f"{RUN_ROOT}/artifacts/models/tiny/resume_state.bin",
-                loader="project/loaders/resume_state.py",
+                loader=ArtifactLoaderRef(
+                    path="project/loaders/resume_state.py",
+                    symbol="load",
+                    sha256=hashlib.sha256(
+                        source_files["project/loaders/resume_state.py"]
+                    ).hexdigest(),
+                    bytes=len(source_files["project/loaders/resume_state.py"]),
+                ),
                 data_role="training",
             ),
         },
@@ -446,7 +468,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         CompareRunsRequest(
             left_path=result.resolved_run_path,
             right_path=result.resolved_run_path,
-            trusted_loader_repositories=frozenset({REPOSITORY}),
+            trusted_source_repositories=frozenset({REPOSITORY}),
         ),
         left_fetcher=fetcher,
         right_fetcher=fetcher,
@@ -467,7 +489,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         verify_run_result(
             result.resolved_run,
             policy=VerificationPolicy(
-                trusted_loader_repositories=frozenset({REPOSITORY})
+                trusted_source_repositories=frozenset({REPOSITORY})
             ),
             fetcher=RunFetcher(root, store, REPOSITORY),
         )
@@ -483,7 +505,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         verify_run_result(
             result.resolved_run,
             policy=VerificationPolicy(
-                trusted_loader_repositories=frozenset({REPOSITORY})
+                trusted_source_repositories=frozenset({REPOSITORY})
             ),
             fetcher=RunFetcher(root, store, REPOSITORY),
         )

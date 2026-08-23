@@ -266,7 +266,7 @@ class StatusSuccess(SuccessModel):
 class VerificationRequest(PathRequest):
     """Select a document and source repositories trusted to supply code."""
 
-    trusted_loader_repositories: frozenset[str] = Field(min_length=1)
+    trusted_source_repositories: frozenset[str] = Field(min_length=1)
 
 
 class VerifyRunRequest(VerificationRequest):
@@ -302,7 +302,7 @@ class CompareRunsRequest(ApplicationModel):
 
     left_path: Path
     right_path: Path
-    trusted_loader_repositories: frozenset[str] = Field(min_length=1)
+    trusted_source_repositories: frozenset[str] = Field(min_length=1)
 
 
 class CompareRunsSuccess(SuccessModel):
@@ -640,7 +640,7 @@ def status(request: StatusRequest) -> StatusSuccess:
 
 def _policy(repositories: frozenset[str]) -> VerificationPolicy:
     """Construct the verifier policy carried by one application request."""
-    return VerificationPolicy(trusted_loader_repositories=repositories)
+    return VerificationPolicy(trusted_source_repositories=repositories)
 
 
 def verify_run(
@@ -654,7 +654,7 @@ def verify_run(
         assert isinstance(resolved, ResolvedRun)
         verified = verify_run_result(
             resolved,
-            policy=_policy(request.trusted_loader_repositories),
+            policy=_policy(request.trusted_source_repositories),
             fetcher=fetcher,
         )
     except VerificationError as exc:
@@ -688,7 +688,7 @@ def lineage(
         assert isinstance(resolved, ResolvedRun)
         verified = verify_run_result(
             resolved,
-            policy=_policy(request.trusted_loader_repositories),
+            policy=_policy(request.trusted_source_repositories),
             fetcher=fetcher,
         )
     except VerificationError as exc:
@@ -722,7 +722,7 @@ def compare_runs(
         right_resolved = _load_model(request.right_path, ResolvedRun)
         assert isinstance(left_resolved, ResolvedRun)
         assert isinstance(right_resolved, ResolvedRun)
-        policy = _policy(request.trusted_loader_repositories)
+        policy = _policy(request.trusted_source_repositories)
         left = verify_run_result(
             left_resolved,
             policy=policy,
@@ -779,7 +779,7 @@ def verify_benchmark(
         assert isinstance(result, BenchmarkResult)
         verified = verify_benchmark_result(
             result,
-            policy=_policy(request.trusted_loader_repositories),
+            policy=_policy(request.trusted_source_repositories),
             fetcher=fetcher,
         )
     except VerificationError as exc:
@@ -814,7 +814,7 @@ def verify_pointer(
         assert isinstance(pointer, ArtifactPointer)
         artifact = verify_promoted_artifact(
             pointer,
-            policy=_policy(request.trusted_loader_repositories),
+            policy=_policy(request.trusted_source_repositories),
             fetcher=fetcher,
         )
     except VerificationError as exc:

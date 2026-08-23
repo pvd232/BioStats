@@ -82,7 +82,6 @@ GitCommit = Annotated[
     Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"),
 ]
 ArtifactName = HumanId
-ArtifactLoaderPath = PythonRepoRelPath
 BenchmarkId = HumanId
 EvaluationId = HumanId
 SelectionName = HumanId
@@ -739,6 +738,15 @@ class StageImplementationRef(ProtocolModel):
 
     path: PythonRepoRelPath
     symbol: PythonSymbol
+    sha256: SHA256
+    bytes: int = Field(gt=0)
+
+
+class ArtifactLoaderRef(ProtocolModel):
+    """Identify one project-owned artifact loader by exact file bytes."""
+
+    path: PythonRepoRelPath
+    symbol: PythonSymbol = "load"
     sha256: SHA256
     bytes: int = Field(gt=0)
 
@@ -1507,7 +1515,7 @@ class SingleFileArtifactSpec(ProtocolModel):
 
     kind: Literal["file"] = "file"
     path: RepoRelPath
-    loader: ArtifactLoaderPath
+    loader: ArtifactLoaderRef
     data_role: DataRole
 
 
@@ -1516,7 +1524,7 @@ class BundleArtifactSpec(ProtocolModel):
 
     kind: Literal["bundle"] = "bundle"
     path: RepoRelPath
-    loader: ArtifactLoaderPath
+    loader: ArtifactLoaderRef
     data_role: DataRole
 
 

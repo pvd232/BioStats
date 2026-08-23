@@ -14,6 +14,8 @@ import yaml
 from pydantic import HttpUrl, TypeAdapter
 
 from tests.fixtures import (
+    DEFAULT_ARTIFACT_LOADER_SOURCE,
+    artifact_loader_ref,
     metric_spec,
     parameter_model_ref,
     parameter_model_source,
@@ -25,6 +27,7 @@ from viper.ids import InputName
 from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
+    ArtifactLoaderRef,
     ArtifactPointer,
     ArtifactPointerRef,
     BenchmarkSpec,
@@ -127,6 +130,14 @@ POLICY = verification_policy(REPOSITORY)
 def loader_path(name: str) -> str:
     """Return one exact user-repository artifact-loader path."""
     return f"project/loaders/{name}.py"
+
+
+def loader_ref(
+    name: str,
+    raw: bytes = DEFAULT_ARTIFACT_LOADER_SOURCE,
+) -> ArtifactLoaderRef:
+    """Return one exact user-repository artifact-loader reference."""
+    return artifact_loader_ref(loader_path(name), raw)
 
 
 def yaml_bytes(value: object) -> bytes:
@@ -344,13 +355,13 @@ def train_spec(*, future_prior: bool = False) -> TrainSpec:
             PARAMETERS: SingleFileArtifactSpec(
                 kind="file",
                 path=(f"{RUN_ROOT}/artifacts/models/strand/parameters.safetensors"),
-                loader=loader_path("parameters"),
+                loader=loader_ref("parameters"),
                 data_role="training",
             ),
             RESUME_STATE: SingleFileArtifactSpec(
                 kind="file",
                 path=f"{RUN_ROOT}/artifacts/models/strand/resume_state.pt",
-                loader=loader_path("resume_state"),
+                loader=loader_ref("resume_state"),
                 data_role="training",
             ),
         },
@@ -379,7 +390,7 @@ def build_spec() -> BuildSpec:
             "prior": SingleFileArtifactSpec(
                 kind="file",
                 path=f"{RUN_ROOT}/artifacts/priors/depmap/prior.pt",
-                loader=loader_path("prior"),
+                loader=loader_ref("prior"),
                 data_role="training",
             )
         },
@@ -496,7 +507,20 @@ class FileVerificationTests(unittest.TestCase):
 
     def test_artifact_loader_uses_the_consumer_materialization_path(self) -> None:
         """Verify that artifact loader uses the consumer materialization path."""
-        spec = train_spec().model_copy(update={"metric_ids": ("training_loss",)})
+        loader_raw = (
+            b"def load(path):\n"
+            b"    assert path.as_posix().endswith("
+            b"'/inputs/models/strand/selected.bin')\n"
+            b"    return path.read_bytes()\n"
+        )
+        base = train_spec()
+        artifacts = dict(base.artifacts)
+        artifacts[PARAMETERS] = artifacts[PARAMETERS].model_copy(
+            update={"loader": loader_ref("parameters", loader_raw)}
+        )
+        spec = base.model_copy(
+            update={"metric_ids": ("training_loss",), "artifacts": artifacts}
+        )
         run, _ = run_spec([("train", spec)])
         declaration = spec.artifacts[PARAMETERS]
         content = b"model parameters"
@@ -518,12 +542,6 @@ class FileVerificationTests(unittest.TestCase):
             ),
         )
         consumer_path = "inputs/models/strand/selected.bin"
-        loader_raw = (
-            b"def load(path):\n"
-            b"    assert path.as_posix().endswith("
-            b"'/inputs/models/strand/selected.bin')\n"
-            b"    return path.read_bytes()\n"
-        )
 
         loaded = load_verified_artifact(
             run,
@@ -567,7 +585,7 @@ class FileVerificationTests(unittest.TestCase):
                 declaration,
                 PARAMETERS,
                 verified,
-                policy=VerificationPolicy(trusted_loader_repositories=frozenset()),
+                policy=VerificationPolicy(trusted_source_repositories=frozenset()),
                 fetcher=lambda _: b"def load(path): return path.read_bytes()\n",
             )
 
@@ -601,6 +619,9 @@ class FileVerificationTests(unittest.TestCase):
             prefetch_factor=2,
         ).model_dump(mode="python")
         loader_raw = (f"def load(path):\n    return {resume_value!r}\n").encode()
+        declaration = declaration.model_copy(
+            update={"loader": loader_ref("resume_state", loader_raw)}
+        )
 
         with self.assertRaisesRegex(
             VerificationError,
@@ -662,6 +683,9 @@ class FileVerificationTests(unittest.TestCase):
                 )
                 value = mismatched.model_dump(mode="python")
                 loader_raw = (f"def load(path):\n    return {value!r}\n").encode()
+                declaration = spec.artifacts[RESUME_STATE].model_copy(
+                    update={"loader": loader_ref("resume_state", loader_raw)}
+                )
 
                 with self.assertRaisesRegex(VerificationError, message):
                     load_verified_artifact(
@@ -918,6 +942,15 @@ class RunAndStageVerificationTests(unittest.TestCase):
             f"        return {resume_value!r}\n"
             "    return path.read_bytes()\n"
         ).encode()
+        artifacts = dict(spec.artifacts)
+        artifacts[PARAMETERS] = artifacts[PARAMETERS].model_copy(
+            update={"loader": loader_ref("parameters", loader_raw)}
+        )
+        artifacts[RESUME_STATE] = artifacts[RESUME_STATE].model_copy(
+            update={"loader": loader_ref("resume_state", loader_raw)}
+        )
+        spec = spec.model_copy(update={"artifacts": artifacts})
+        run, _ = run_spec([("train", spec)])
 
         invocation, invocation_raw = invocation_evidence(
             run,
@@ -1506,7 +1539,7 @@ class RunPlanRelationshipTests(unittest.TestCase):
                         f"{RUN_ROOT}/artifacts/evaluations/"
                         "replogle_predictions/predictions.json"
                     ),
-                    loader=loader_path("json_file"),
+                    loader=loader_ref("json_file"),
                     data_role="benchmark",
                 )
             },

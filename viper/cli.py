@@ -101,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     compare_runs.add_argument("left_path", type=Path)
     compare_runs.add_argument("right_path", type=Path)
     compare_runs.add_argument(
-        "--trust-loader-source",
+        "--trust-source",
         action="append",
         required=True,
         help="source repository URL approved to supply executable loaders",
@@ -116,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
         command = commands.add_parser(name, help=help_text)
         command.add_argument("path", type=Path)
         command.add_argument(
-            "--trust-loader-source",
+            "--trust-source",
             action="append",
             required=True,
             help="source repository URL approved to supply executable loaders",
@@ -154,9 +154,9 @@ def _operation_and_payload(
         "capabilities": "get_capabilities",
     }
     operation = mapping[command]
-    trusted = values.pop("trust_loader_source", None)
+    trusted = values.pop("trust_source", None)
     if trusted is not None:
-        values["trusted_loader_repositories"] = trusted
+        values["trusted_source_repositories"] = trusted
     return operation, values
 
 

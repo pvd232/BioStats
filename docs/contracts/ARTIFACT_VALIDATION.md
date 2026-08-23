@@ -2,9 +2,9 @@
 
 ## Status
 
-File identity, bundle enumeration, loader invocation, and semantic validation
-of `resume_state` are implemented in separate code paths. Their guarantee
-levels and verifier vocabulary are approved for VIPER 0.1.
+Exact loader references and the shared project-source trust policy are
+implemented. Worker-owned loader invocation, complete bundle checks, and
+named guarantee results remain in Phase 3 of the publication checklist.
 
 ## Required claim
 

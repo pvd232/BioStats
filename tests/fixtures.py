@@ -3,6 +3,7 @@
 import hashlib
 
 from viper.protocol import (
+    ArtifactLoaderRef,
     BuiltinHttpTransportSpec,
     DataLoaderConfiguration,
     DataLoaderResumeState,
@@ -22,6 +23,8 @@ from viper.protocol import (
     StageImplementationRef,
 )
 from viper.verifier import VerificationPolicy
+
+DEFAULT_ARTIFACT_LOADER_SOURCE = b"def load(path):\n    return path.read_bytes()\n"
 
 
 def parameter_model_ref(kind: str) -> ParameterModelRef:
@@ -55,6 +58,21 @@ def stage_implementation_ref(
 ) -> StageImplementationRef:
     """Build one exact synthetic stage-callable identity for model tests."""
     return StageImplementationRef(
+        path=path,
+        symbol=symbol,
+        sha256=hashlib.sha256(raw).hexdigest(),
+        bytes=len(raw),
+    )
+
+
+def artifact_loader_ref(
+    path: str,
+    raw: bytes = DEFAULT_ARTIFACT_LOADER_SOURCE,
+    *,
+    symbol: str = "load",
+) -> ArtifactLoaderRef:
+    """Build one exact synthetic artifact-loader identity for tests."""
+    return ArtifactLoaderRef(
         path=path,
         symbol=symbol,
         sha256=hashlib.sha256(raw).hexdigest(),
@@ -101,9 +119,9 @@ def builtin_http_transport() -> BuiltinHttpTransportSpec:
 
 
 def verification_policy(*repositories: object) -> VerificationPolicy:
-    """Trust artifact-loader code from the named test repositories."""
+    """Trust project code from the named test repositories."""
     return VerificationPolicy(
-        trusted_loader_repositories=frozenset(str(value) for value in repositories)
+        trusted_source_repositories=frozenset(str(value) for value in repositories)
     )
 
 
