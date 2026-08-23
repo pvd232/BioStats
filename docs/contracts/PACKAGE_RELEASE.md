@@ -73,7 +73,7 @@ The release candidate must satisfy each check:
 | Cloud acceptance | The installed wheel passes the advertised live GCE smoke profile. |
 | TestPyPI | The candidate installs from TestPyPI and repeats the wheel acceptance path. |
 | CI | The exact release commit passes every supported Python version. |
-| Release | The signed tag and PyPI files match the validated distributions. |
+| Release | The signed tag verifies against the release owner identity, and the PyPI files match the validated distributions. |
 
 The Python Packaging User Guide documents the standard build, TestPyPI, and
 publication sequence: [Building and
@@ -90,6 +90,9 @@ publishing](https://packaging.python.org/en/latest/guides/section-build-and-publ
 | Template | Add one maintained runnable project template. |
 | CI | Build, install, and exercise the wheel from outside the checkout. |
 | Release | Publish to TestPyPI, validate, tag, and publish the exact artifacts to PyPI. |
+
+Tag signing is an owner-supplied release prerequisite. The release report
+records the signing identity and the successful signature-verification command.
 
 ## Acceptance case
 

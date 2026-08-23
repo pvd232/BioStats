@@ -1,5 +1,8 @@
 # Foundational reproducibility formalism
 
+This document defines the VIPER 0.1 protocol target. The contract index records
+implementation status for each increment: [VIPER contracts](contracts/README.md).
+
 ## Contents
 
 - [1. Model family and estimator](#1-model-family-and-estimator)
@@ -84,7 +87,7 @@ D_q
 $$
 
 The exact dataset artifacts selected by the stage inputs, together with the
-stage scripts and typed parameters that select samples, features, quality
+stage callables and typed parameters that select samples, features, quality
 controls, and transformations, determine $D_q$.
 
 The final parameter value produced by the run is denoted:
@@ -627,8 +630,8 @@ $$
 
 If $q$ permits replay from $s_k^{(t)}$ for some $0<t<N_k$, that state terminates
 $\omega_k$ and the remaining updates belong to another training stage. Each
-run plan contains finitely many stages, while the run-plan space places no fixed
-upper bound on $m$.
+run plan contains finitely many stages, and $m$ ranges over the positive
+integers across the run-plan space.
 
 ```text
 training stage ωₖ
@@ -757,7 +760,7 @@ class ResumeState(ProtocolModel):
 `main_process_rng` records the Python, named NumPy, legacy NumPy, and PyTorch
 generator states held by the training process. `dataloader.state_dict` records
 the state returned by the stateful loader, including the position from which
-data loading continues. Together, the latter two fields represent
+data loading continues. Together, `main_process_rng` and `dataloader` represent
 $r_k^{(N_k)}$ and $b_k^{(N_k)}$.
 
 The verifier requires `dataloader.configuration` to equal the run-wide
@@ -844,9 +847,9 @@ The protocol applies completeness and parsimony at three nested boundaries:
 These rules supply direct parsimony tests:
 
 - Two adjacent training stages can be merged exactly when their shared state is
-  not a permitted replay state.
-- Two artifacts can be merged exactly when no required use loads either value
-  independently.
+  outside the permitted replay-state set.
+- Two artifacts can be merged exactly when every required use loads both
+  values together.
 - A file can be removed from $F_j(a)$ exactly when $L_{j,a}$ still reconstructs
   $v_a^{(j)}$ from the remaining files.
 
@@ -987,6 +990,12 @@ Every protocol record is closed and immutable after validation:
 ```python
 class ProtocolModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ParameterSet(BaseModel):
+    model_config = ConfigDict(extra="allow", frozen=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    schema_version: Literal[1] = 1
 ```
 
 The records below use these shared types:
@@ -994,16 +1003,23 @@ The records below use these shared types:
 | Type | Accepted value |
 |---|---|
 | `HumanId` | A lowercase identifier matching `^[a-z][a-z0-9_]*$`. |
-| `RepoRelPath` | A normalized POSIX path relative to the repository root that contains no empty or dot segments, parent traversal, backslashes, or control characters. |
+| `RepoRelPath` | A normalized POSIX path relative to the repository root, composed of named segments and free of dot segments, parent traversal, backslashes, and control characters. |
 | `PythonRepoRelPath` | A `RepoRelPath` ending in `.py`. |
 | `PythonSymbol` | A top-level Python identifier selected from one module. |
+| `NormalizedDistributionName` | A Python distribution name normalized under the PyPA name-normalization rule. |
+| `HttpHeaderName` | A lowercase HTTP field name accepted by the controlled retrieval client. |
 | `SHA256` | A 64-character lowercase hexadecimal digest. |
 | `GitCommit` | A 40- or 64-character lowercase hexadecimal commit ID. |
 | `NonEmptyStr` | A string containing at least one character. |
 
+`RunId`, `StageId`, `ExperimentId`, `VariantId`, `ReplicateId`, `FactorId`,
+`LevelId`, `MetricId`, `InputName`, `EvaluationId`, and `BenchmarkId` are
+role-specific aliases of `HumanId`.
+
 ### Exact file identity
 
-A standalone file is stored at an immutable Git or Hugging Face revision:
+A standalone file is stored at an immutable Git, Hugging Face, or
+repository-local VIPER revision:
 
 ```python
 class GitSource(ProtocolModel):
@@ -1024,8 +1040,15 @@ class HuggingFaceFileRef(ProtocolModel):
     repo_type: Literal["model", "dataset", "space"]
 
 
+class LocalFileRef(ProtocolModel):
+    kind: Literal["local"] = "local"
+    store: RepoRelPath = ".viper/store"
+    commit: SHA256
+    path: RepoRelPath
+
+
 StorageRef = Annotated[
-    GitFileRef | HuggingFaceFileRef,
+    GitFileRef | HuggingFaceFileRef | LocalFileRef,
     Field(discriminator="kind"),
 ]
 ```
@@ -1047,6 +1070,18 @@ class StageResultSnapshotRef(ProtocolModel):
     repository: NonEmptyStr
     commit: GitCommit
     repo_type: Literal["model", "dataset", "space"]
+
+
+class LocalStageResultSnapshotRef(ProtocolModel):
+    kind: Literal["local"] = "local"
+    store: RepoRelPath = ".viper/store"
+    commit: SHA256
+
+
+StageResultSnapshot = Annotated[
+    StageResultSnapshotRef | LocalStageResultSnapshotRef,
+    Field(discriminator="kind"),
+]
 ```
 
 Each file within that snapshot records its repository-relative path and content
@@ -1059,12 +1094,14 @@ class SnapshotFileRef(ProtocolModel):
     bytes: int = Field(ge=0)
 ```
 
-The exact storage location of a snapshot file is determined by:
+The exact storage location of a snapshot file is determined by one branch:
 
 ```text
-StageResultSnapshotRef.repository
-+ StageResultSnapshotRef.commit
-+ SnapshotFileRef.path
+Hugging Face snapshot
+└── repository + commit + SnapshotFileRef.path
+
+local snapshot
+└── store + commit + SnapshotFileRef.path
 ```
 
 The verifier retrieves that file and requires equality with
@@ -1074,21 +1111,62 @@ The verifier retrieves that file and requires equality with
 
 ```python
 ArtifactName = HumanId
-ArtifactLoaderPath = PythonRepoRelPath
 DataRole = Literal["training", "validation", "evaluation", "benchmark"]
+
+
+class ArtifactLoaderRef(ProtocolModel):
+    path: PythonRepoRelPath
+    symbol: PythonSymbol = "load"
+    sha256: SHA256
+    bytes: int = Field(gt=0)
+
+
+class StageImplementationRef(ProtocolModel):
+    path: PythonRepoRelPath
+    symbol: PythonSymbol
+    sha256: SHA256
+    bytes: int = Field(gt=0)
+
+
+class ParameterModelRef(ProtocolModel):
+    path: PythonRepoRelPath
+    symbol: PythonSymbol
+    sha256: SHA256
+    bytes: int = Field(gt=0)
+
+
+class StageContextBinding(ProtocolModel):
+    schema_version: Literal[1] = 1
+    run_id: RunId
+    attempt_id: int = Field(ge=1)
+    stage_id: StageId
+    parameter_model: ParameterModelRef
+    parameter_digest: SHA256
+    inputs: dict[InputName, RepoRelPath]
+    artifacts: dict[ArtifactName, RepoRelPath]
+    metric_ids: tuple[MetricId, ...]
+
+
+class StageInvocationReceipt(ProtocolModel):
+    implementation: StageImplementationRef
+    context: StageContextBinding
+    context_digest: SHA256
+    started_at: AwareDatetime
+    completed_at: AwareDatetime
+    outcome: Literal["succeeded", "failed"]
 
 
 class SingleFileArtifactSpec(ProtocolModel):
     kind: Literal["file"] = "file"
     path: RepoRelPath
-    loader: ArtifactLoaderPath
+    loader: ArtifactLoaderRef
     data_role: DataRole
 
 
 class BundleArtifactSpec(ProtocolModel):
     kind: Literal["bundle"] = "bundle"
     path: RepoRelPath
-    loader: ArtifactLoaderPath
+    loader: ArtifactLoaderRef
     data_role: DataRole
 
 
@@ -1101,8 +1179,8 @@ ArtifactSpec = Annotated[
 class BaseSpec(ProtocolModel):
     kind: str
     schema_version: Literal[1] = 1
-    script: PythonRepoRelPath
-    environment: GCEEnvironmentSpec | None = None
+    implementation: StageImplementationRef
+    environment: EnvironmentSpec | None = None
     metric_ids: tuple[MetricId, ...] = ()
     artifacts: dict[ArtifactName, ArtifactSpec] = Field(min_length=1)
 ```
@@ -1120,10 +1198,12 @@ stage, `models` for an embed or train stage, and `evaluations` for an evaluate
 stage. A single-file artifact includes a filename after `<entity_id>`. A bundle
 root may equal the identity directory or a directory beneath it.
 
-`BaseSpec.script`, `MetricSpec.implementation`, and `ArtifactSpec.loader` each
-identify one Python file by its exact repository-relative path. VIPER assigns
-no package name or source-directory layout to the user repository.
-`RunSpec.source` fixes the repository revision containing each file.
+`BaseSpec.implementation`, `MetricSpec.implementation`, and
+`ArtifactSpec.loader` identify one top-level symbol in one exact Python file.
+Each reference stores the repository-relative path, symbol, SHA-256 digest, and
+byte count. `RunSpec.source` fixes the repository revision containing each
+file. VIPER accepts every project package name and source-directory layout that
+the frozen repository-relative paths identify.
 
 An artifact loader defines:
 
@@ -1164,8 +1244,10 @@ class ResolvedBaseSpec(ProtocolModel):
     kind: str
     spec: BaseSpec
     source: ResolvedGitFileRef
-    environment: ResolvedGCEEnvironment
+    environment: ResolvedEnvironment
     execution_context: ExecutionContext
+    startup: ProcessStartupReceipt
+    invocation: StageInvocationReceipt
     command: tuple[str, ...] = Field(min_length=1)
     artifacts: dict[ArtifactName, ResolvedArtifact] = Field(min_length=1)
     completed_at: AwareDatetime
@@ -1239,7 +1321,7 @@ $$
 ```python
 class ResolvedStageRef(ProtocolModel):
     stage_id: StageId
-    snapshot: StageResultSnapshotRef
+    snapshot: StageResultSnapshot
     resolved_spec: SnapshotFileRef
 ```
 
@@ -1297,7 +1379,7 @@ class RunSpec(ProtocolModel):
 
     seed: RNGSeed
     source: GitSource
-    environment: GCEEnvironmentSpec
+    environment: EnvironmentSpec
     reproducibility: ReproducibilitySpec
 
     stages: tuple[RunStageRef, ...] = Field(min_length=1)
@@ -1347,12 +1429,10 @@ class ResolvedRunSpecRef(ResolvedFileRef):
 
 class ResolvedRunRef(ResolvedFileRef):
     kind: Literal["resolved_run"] = "resolved_run"
-    stored_at: HuggingFaceFileRef
 
 
 class ResolvedBenchmarkResultRef(ResolvedFileRef):
     kind: Literal["benchmark_result"] = "benchmark_result"
-    stored_at: HuggingFaceFileRef
 ```
 
 An `ArtifactPointer` selects one artifact accepted for reuse:
@@ -1426,7 +1506,8 @@ StoredInputRef.pointer
 `StoredInputRef.path` identifies the local file path or bundle root supplied to
 the consuming stage. Its category and entity ID equal those in
 `StoredInputRef.pointer.path`. The materialization path and pointer-file path
-do not overlap, and the materialization path does not end in `.pointer.yaml`.
+are disjoint. The materialization path uses a suffix other than
+`.pointer.yaml`.
 
 A same-run input selects one artifact from an earlier stage:
 
@@ -1478,14 +1559,13 @@ $$
 $$
 
 The role of a source artifact is assigned when that artifact enters the
-provenance graph. VIPER records and propagates that declaration; it does not
-infer scientific use from file contents.
+provenance graph. VIPER records and propagates that declaration. Scientific use
+comes exclusively from the declared role.
 
 A stored input declares the role of the artifact selected by its pointer. The
 verifier retrieves the producer stage spec and requires equality between the
 stored-input declaration and the selected artifact declaration. A
-`FutureInputRef` carries no duplicate role field; it inherits the role of the
-producer artifact it selects.
+`FutureInputRef` inherits the role of the producer artifact it selects.
 
 For every stage input $x$ and every artifact $a$ produced by that stage:
 
@@ -1502,9 +1582,9 @@ evaluation governed by a `BenchmarkSpec` uses `benchmark` for those records.
 The `parameters` input to either evaluation has role `training` or
 `validation`.
 
-These rules enforce stage-level access and artifact lineage. A stage script is
-user code fixed by `RunSpec.source`; VIPER does not inspect that code to prove
-how a permitted validation input is used inside the stage.
+These rules enforce stage-level access and artifact lineage. A stage callable
+is user code fixed by `RunSpec.source`. Project tests establish how that
+callable uses a permitted validation input.
 
 ### Attempts and terminal run result
 
@@ -1517,53 +1597,107 @@ AttemptStatus = Literal[
 ]
 
 
+AttemptFailureCode = Literal[
+    "preflight_failed",
+    "execution_failed",
+    "verification_failed",
+    "publication_failed",
+    "cancelled",
+    "preempted",
+    "coordinator_lost",
+    "internal_error",
+]
+
+
+class AttemptFailure(ProtocolModel):
+    code: AttemptFailureCode
+    stage_id: StageId | None
+    message: NonEmptyStr
+    occurred_at: AwareDatetime
+
+
+class AttemptJournalRef(ResolvedFileRef):
+    kind: Literal["attempt_journal"] = "attempt_journal"
+
+
 class RunAttempt(ProtocolModel):
+    schema_version: Literal[1] = 1
     attempt_id: int = Field(ge=1)
+    purpose: Literal["run", "benchmark_confirmation"]
     status: AttemptStatus
     started_at: AwareDatetime
     completed_at: AwareDatetime
 
     resolved_stages: tuple[ResolvedStageRef, ...]
+    journal: AttemptJournalRef
     measurement_files: tuple[ResolvedFileRef, ...]
+    metric_verification_files: tuple[ResolvedFileRef, ...]
     log_files: tuple[ResolvedFileRef, ...]
-    failure_reason: str | None
+    failure: AttemptFailure | None
+
+
+class ResolvedAttemptRef(ResolvedFileRef):
+    kind: Literal["resolved_attempt"] = "resolved_attempt"
 
 
 class ResolvedRun(ProtocolModel):
     schema_version: Literal[1] = 1
     spec: ResolvedRunSpecRef
     status: Literal["succeeded", "failed", "cancelled"]
-    attempts: tuple[RunAttempt, ...] = Field(min_length=1)
+    attempts: tuple[ResolvedAttemptRef, ...] = Field(min_length=1)
     successful_attempt_id: int | None
     completed_at: AwareDatetime
 ```
 
-Attempt IDs are unique and strictly increasing. Each attempt's
-`resolved_stages` is an ordered prefix of `RunSpec.stages`. Its stage snapshots
-are unique. Measurement-file storage locations and log-file storage locations
-are unique and disjoint. When an attempt records measurement or log files,
-they belong to one immutable snapshot $D_i$. Distinct attempts use distinct
-stage-result snapshots and distinct populated $D_i$ snapshots. Every populated
-$D_i$ is distinct from every stage-result snapshot. Attempts do not overlap in
-time, and no attempt follows a successful attempt. `ResolvedRun.completed_at`
-is at or after every attempt's completion time.
+Each `ResolvedAttemptRef` retrieves one `RunAttempt` from the canonical path:
+
+```text
+experiments/<experiment_id>/runs/<variant_id>/<run_id>/
+    attempts/<attempt_id>/resolved.yaml
+```
+
+Its journal occurs at:
+
+```text
+experiments/<experiment_id>/runs/<variant_id>/<run_id>/
+    attempts/<attempt_id>/journal.jsonl
+```
+
+Measurements, metric-verification receipts, and logs occupy subdirectories of
+the same `attempts/<attempt_id>/` directory.
+
+Attempt IDs are unique and strictly increasing across the run workspace. Each
+attempt has an ordered `resolved_stages` prefix of `RunSpec.stages`. Its stage
+snapshots are unique. The journal, measurement, metric-verification, and log
+paths are unique and pairwise disjoint. They belong to one immutable attempt
+revision $D_i$. Distinct attempts use distinct stage-result snapshots and distinct
+$D_i$ revisions. Every $D_i$ differs from every stage-result snapshot.
+Attempt intervals are disjoint. A successful run attempt closes the ordinary
+run history. A later benchmark-confirmation attempt can use the same frozen
+plan and a greater attempt ID. `ResolvedRun.completed_at` is at or after every
+run attempt's completion time.
 
 A successful attempt satisfies:
 
-1. Its `failure_reason` is null.
+1. Its `failure` value is null.
 2. Its `resolved_stages` is nonempty and contains every declared stage exactly
    once and in order.
 3. Every `ResolvedStageRef` identifies a verified stage-result snapshot.
 
-A failed, preempted, or cancelled attempt records a nonempty `failure_reason`.
+A failed, preempted, or cancelled attempt records one typed `AttemptFailure`.
 Its log files may identify completed stages and the next declared stage whose
 execution failed, was preempted, or was cancelled before producing a
 `ResolvedStageRef`. A successful attempt's logs identify its completed stages.
 
 A successful `ResolvedRun` identifies exactly one successful attempt through
-`successful_attempt_id`. A failed or cancelled `ResolvedRun` has no successful
-attempt. `ResolvedRun.spec` identifies the exact `RunSpec` file whose stages
+`successful_attempt_id`. A failed or cancelled `ResolvedRun` sets
+`successful_attempt_id` to null. A terminal preempted attempt yields a failed
+run result. `ResolvedRun.spec` identifies the exact `RunSpec` file whose stages
 govern every attempt.
+
+Every attempt referenced by `ResolvedRun.attempts` has `purpose="run"`. A
+`BenchmarkResult` identifies its separate attempt through
+`confirmation`; that attempt has `purpose="benchmark_confirmation"`.
 
 ```text
 ResolvedRun.spec
@@ -1571,7 +1705,8 @@ ResolvedRun.spec
 → ordered RunStageRef records
 
 ResolvedRun.attempts
-→ ordered RunAttempt records
+→ ordered ResolvedAttemptRef records
+→ immutable RunAttempt documents
 → ordered ResolvedStageRef prefixes
 
 ResolvedRun.successful_attempt_id
@@ -1583,9 +1718,20 @@ ResolvedRun.successful_attempt_id
 ### Requested environment
 
 ```python
-class GCEMachineImageRef(ProtocolModel):
+class GCEBootImageRef(ProtocolModel):
     project: NonEmptyStr
     name: NonEmptyStr
+    id: NonEmptyStr
+
+
+class PythonDistributionSpec(ProtocolModel):
+    name: NormalizedDistributionName
+    version: NonEmptyStr
+
+
+class PythonEnvironmentSpec(ProtocolModel):
+    python_version: NonEmptyStr
+    distributions: tuple[PythonDistributionSpec, ...] = Field(min_length=1)
 
 
 class CPUComputeSpec(ProtocolModel):
@@ -1606,14 +1752,31 @@ ComputeSpec = Annotated[
 
 class GCEEnvironmentSpec(ProtocolModel):
     kind: Literal["gce"] = "gce"
-    machine_image: GCEMachineImageRef
+    boot_image: GCEBootImageRef
     machine_type: NonEmptyStr
     compute: ComputeSpec
     lockfile: GitFileRef
+    python_environment: PythonEnvironmentSpec
+
+
+class LocalEnvironmentSpec(ProtocolModel):
+    kind: Literal["local"] = "local"
+    compute: ComputeSpec
+    lockfile: GitFileRef
+    python_environment: PythonEnvironmentSpec
+
+
+EnvironmentSpec = Annotated[
+    GCEEnvironmentSpec | LocalEnvironmentSpec,
+    Field(discriminator="kind"),
+]
 ```
 
-`RunSpec.environment` supplies the shared `GCEEnvironmentSpec`. A stage-level
+`RunSpec.environment` supplies the shared `EnvironmentSpec`. A stage-level
 `BaseSpec.environment` supplies the selected stage's environment override.
+Distribution names are unique and sorted after PyPA normalization. The
+resolved Python version and distribution tuple equal the selected
+`PythonEnvironmentSpec`.
 
 ### Run-wide reproducibility controls
 
@@ -1671,20 +1834,30 @@ captures NumPy's global MT19937 generator.
 ### Realized environment and runtime state
 
 ```python
-class ResolvedGCEMachineImageRef(GCEMachineImageRef):
-    id: NonEmptyStr
-
-
 class ResolvedGitFileRef(ResolvedFileRef):
     stored_at: GitFileRef
 
 
 class ResolvedGCEEnvironment(ProtocolModel):
     kind: Literal["gce"] = "gce"
-    machine_image: ResolvedGCEMachineImageRef
+    boot_image: GCEBootImageRef
     machine_type: NonEmptyStr
     compute: ComputeSpec
     lockfile: ResolvedGitFileRef
+    python_environment: PythonEnvironmentSpec
+
+
+class ResolvedLocalEnvironment(ProtocolModel):
+    kind: Literal["local"] = "local"
+    compute: ComputeSpec
+    lockfile: ResolvedGitFileRef
+    python_environment: PythonEnvironmentSpec
+
+
+ResolvedEnvironment = Annotated[
+    ResolvedGCEEnvironment | ResolvedLocalEnvironment,
+    Field(discriminator="kind"),
+]
 
 
 class GCEHostContext(ProtocolModel):
@@ -1694,6 +1867,20 @@ class GCEHostContext(ProtocolModel):
     guest_os_name: NonEmptyStr
     guest_os_version: NonEmptyStr
     kernel_release: NonEmptyStr
+
+
+class LocalHostContext(ProtocolModel):
+    provider: Literal["local"] = "local"
+    host_name: NonEmptyStr
+    guest_os_name: NonEmptyStr
+    guest_os_version: NonEmptyStr
+    kernel_release: NonEmptyStr
+
+
+HostContext = Annotated[
+    GCEHostContext | LocalHostContext,
+    Field(discriminator="provider"),
+]
 
 
 class CPUContext(ProtocolModel):
@@ -1747,22 +1934,40 @@ class NumericalRuntimeContext(ProtocolModel):
     native_thread_pools: tuple[NativeThreadPoolContext, ...]
 
 
-class RandomnessContext(ProtocolModel):
-    python_seed: RNGSeed
-    numpy_seed: RNGSeed
-    torch_seed: RNGSeed
-    dataloader_seed: RNGSeed
-
-
 class ExecutionContext(ProtocolModel):
-    host: GCEHostContext
+    host: HostContext
     cpu: CPUContext
     backend: ComputeBackendContext
     numerical_runtime: NumericalRuntimeContext
-    randomness: RandomnessContext
-    determinism: TorchDeterminismSpec
-    precision: TorchPrecisionSpec
-    parallelism: ParallelismSpec
+
+
+class GeneratorInitializationReceipt(ProtocolModel):
+    family: Literal[
+        "python",
+        "numpy_generator",
+        "numpy_legacy",
+        "torch_cpu",
+        "torch_cuda",
+    ]
+    seed: RNGSeed
+    name: HumanId | None = None
+    device_index: int | None = Field(default=None, ge=0)
+    state_sha256: SHA256
+
+
+StartupVariable = Literal[
+    "CUBLAS_WORKSPACE_CONFIG",
+    "CUDA_VISIBLE_DEVICES",
+    "MKL_NUM_THREADS",
+    "OMP_NUM_THREADS",
+    "PYTHONHASHSEED",
+]
+
+
+class ProcessStartupReceipt(ProtocolModel):
+    environment: dict[StartupVariable, str]
+    reproducibility: ReproducibilitySpec
+    generators: tuple[GeneratorInitializationReceipt, ...]
 ```
 
 CUDA device ordinals are unique within one `CUDABackendContext`.
@@ -1783,11 +1988,11 @@ $$
 The verifier establishes $e_j\in E_{q,j}$ through these equalities:
 
 ```text
-ResolvedGCEEnvironment.machine_image.project
-== selected GCEEnvironmentSpec.machine_image.project
+ResolvedGCEEnvironment.boot_image
+== selected GCEEnvironmentSpec.boot_image
 
-ResolvedGCEEnvironment.machine_image.name
-== selected GCEEnvironmentSpec.machine_image.name
+ResolvedGCEEnvironment.python_environment
+== selected GCEEnvironmentSpec.python_environment
 
 ResolvedGCEEnvironment.machine_type
 == selected GCEEnvironmentSpec.machine_type
@@ -1799,38 +2004,48 @@ ResolvedGCEEnvironment.compute
 ResolvedGCEEnvironment.lockfile.stored_at
 == selected GCEEnvironmentSpec.lockfile
 
-ExecutionContext.determinism
-== RunSpec.reproducibility.determinism
+ResolvedLocalEnvironment.compute
+== selected LocalEnvironmentSpec.compute
 
-ExecutionContext.precision
-== RunSpec.reproducibility.precision
+ResolvedLocalEnvironment.python_environment
+== selected LocalEnvironmentSpec.python_environment
 
-ExecutionContext.parallelism
-== RunSpec.reproducibility.parallelism
+ResolvedLocalEnvironment.lockfile.stored_at
+== selected LocalEnvironmentSpec.lockfile
 
-ExecutionContext.randomness.python_seed
-== ExecutionContext.randomness.numpy_seed
-== ExecutionContext.randomness.torch_seed
-== ExecutionContext.randomness.dataloader_seed
-== RunSpec.seed
+ProcessStartupReceipt.reproducibility
+== RunSpec.reproducibility
+
+set(receipt.seed for receipt in ProcessStartupReceipt.generators)
+== {RunSpec.seed}
 ```
 
-The executor records `ResolvedGCEEnvironment` and `ExecutionContext`. The
-verifier establishes their equality to the requested environment and
-reproducibility controls shown above.
+Generator receipts are unique by family, name, and device index. The named
+NumPy receipts equal `NumPyRandomnessSpec.generators`; the optional legacy
+receipt follows `capture_legacy_global`. A CUDA stage records one `torch_cuda`
+receipt for each exposed device. A CPU stage records Python, configured NumPy,
+and `torch_cpu` receipts. `ProcessStartupReceipt.environment` equals the
+canonical allowlisted startup mapping derived for the selected stage.
+`name` is present exactly for `numpy_generator`, and `device_index` is present
+exactly for `torch_cuda`.
+
+The executor records `ResolvedEnvironment`, `ExecutionContext`, and
+`ProcessStartupReceipt`. The verifier establishes the requested-to-realized
+equalities shown above.
 
 For a CPU environment, `ExecutionContext.backend.kind` is `cpu`. For a CUDA
 environment, the backend is `cuda`, its number of devices equals
 `CUDAComputeSpec.count`, and each device model equals `CUDAComputeSpec.model`.
 
-`ResolvedGCEEnvironment` records the machine-image ID and verified lockfile
-reference. `ExecutionContext` records the runtime library implementations and
-versions used by the stage. The verifier also verifies the source-entrypoint
-bytes.
+Every resolved environment records the exact Python environment and verified
+lockfile reference. A resolved GCE environment also records the boot-image
+identity. `ExecutionContext` records the runtime library implementations and
+versions used by the stage.
 
-### Source and command
+### Source and invocation
 
-`ResolvedBaseSpec.source` identifies `BaseSpec.script` at `RunSpec.source`:
+`ResolvedBaseSpec.source` identifies the file containing the callable selected
+by `BaseSpec.implementation` at `RunSpec.source`:
 
 ```text
 ResolvedBaseSpec.source.stored_at.repository
@@ -1840,23 +2055,28 @@ ResolvedBaseSpec.source.stored_at.commit
 == RunSpec.source.commit
 
 ResolvedBaseSpec.source.stored_at.path
-== ResolvedBaseSpec.spec.script
+== ResolvedBaseSpec.spec.implementation.path
+
+ResolvedBaseSpec.source.sha256
+== ResolvedBaseSpec.spec.implementation.sha256
+
+ResolvedBaseSpec.source.bytes
+== ResolvedBaseSpec.spec.implementation.bytes
 ```
 
-For the `RunStageRef` belonging to stage $\omega_j$, the executor constructs:
+The process-startup layer records the actual child-process command in
+`ResolvedBaseSpec.command`. The stage worker imports the selected symbol and
+passes it the typed context reconstructed from `StageInvocationReceipt.context`.
 
 ```text
-python <BaseSpec.script> <RunStageRef.spec>
-```
+BaseSpec.implementation
+-> exact callable
 
-The resolved record satisfies:
+StageInvocationReceipt.context
+-> exact run, attempt, stage, parameters, inputs, and artifacts
 
-```python
-ResolvedBaseSpec.command == (
-    "python",
-    str(ResolvedBaseSpec.spec.script),
-    str(run_stage_ref.spec),
-)
+exact callable(StageContext)
+-> one recorded invocation
 ```
 
 ## 16. Experiment, variant, replicate, and measurement records
@@ -1874,16 +2094,71 @@ class ReplicateSpec(ProtocolModel):
     seed: RNGSeed
 
 
-class MetricSpec(ProtocolModel):
+MetricKind = Literal["training", "evaluation", "diagnostic"]
+
+
+class MetricParams(ParameterSet):
+    """Metric-specific values preserved by the protocol."""
+
+
+class FloatComparator(ProtocolModel):
+    mode: Literal["exact", "absolute", "relative"] = "exact"
+    tolerance: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+
+
+class MetricImplementationRef(ProtocolModel):
+    path: PythonRepoRelPath
+    symbol: PythonSymbol
+    sha256: SHA256
+    bytes: int = Field(gt=0)
+
+
+class FileMetricDependency(ProtocolModel):
+    source: Literal["input", "artifact"]
+    name: InputName | ArtifactName
+    data_role: DataRole
+
+
+class AfterStageMetricSpec(ProtocolModel):
     schema_version: Literal[1] = 1
     metric_id: MetricId
-    kind: Literal["training", "evaluation", "diagnostic"]
-    implementation: PythonRepoRelPath
-    symbol: PythonSymbol = "compute"
+    kind: MetricKind
+    implementation: MetricImplementationRef
+    dependencies: tuple[FileMetricDependency, ...] = Field(min_length=1)
     params: MetricParams
-    production: Literal["during_stage", "after_stage"]
-    verification: Literal["execution", "recompute"]
-    comparator: FloatComparator = FloatComparator()
+    production: Literal["after_stage"] = "after_stage"
+    verification: Literal["recompute"] = "recompute"
+    comparator: FloatComparator
+
+
+class DuringStageMetricSpec(ProtocolModel):
+    schema_version: Literal[1] = 1
+    metric_id: MetricId
+    kind: Literal["training", "diagnostic"]
+    implementation: MetricImplementationRef
+    params: MetricParams
+    production: Literal["during_stage"] = "during_stage"
+    verification: Literal["execution"] = "execution"
+
+
+MetricSpec = Annotated[
+    AfterStageMetricSpec | DuringStageMetricSpec,
+    Field(discriminator="production"),
+]
+
+
+class DuringStageMetricHandle(Protocol):
+    def update(self, *args: object, **kwargs: object) -> None:
+        ...
+
+    def record(
+        self,
+        *args: object,
+        epoch: int | None = None,
+        step: int | None = None,
+        **kwargs: object,
+    ) -> Measurement:
+        ...
 
 
 class ExperimentSpec(ProtocolModel):
@@ -1897,17 +2172,15 @@ class ExperimentSpec(ProtocolModel):
 
 Factor IDs are unique. Level IDs are unique within each factor. Variant IDs,
 replicate IDs, replicate seeds, and `MetricSpec.metric_id` values are unique
-within the experiment. `MetricSpec.implementation` and `MetricSpec.symbol`
-identify the metric callable within the repository fixed by `RunSpec.source`.
-`production` states when VIPER receives the value. `verification` states
-whether the verifier checks the producing execution or recomputes the value
-from verified inputs. `FloatComparator` defines exact, absolute-tolerance, or
-relative-tolerance comparison for recomputed values.
+within the experiment. Each implementation reference identifies the exact
+metric file and top-level symbol within `RunSpec.source`. An after-stage metric
+names every stage input or artifact it receives. VIPER recomputes its value
+from those verified files and applies its `FloatComparator`. A during-stage
+metric enters the stage through a runner-owned metric handle and writes
+measurements through the active attempt's measurement sink.
 
-Evaluation metrics use `production="after_stage"` and
-`verification="recompute"`. A metric produced during a stage uses
-`verification="execution"` because its measurement belongs to that exact
-stage invocation.
+An exact comparator has zero tolerance. An absolute or relative comparator has
+a positive tolerance.
 
 The experiment file and its variant files occur at:
 
@@ -2009,7 +2282,7 @@ RunSpec.seed
 ```
 
 The executor applies this value before every stage. Section 15 defines the
-corresponding `ExecutionContext.randomness` equalities.
+corresponding `ProcessStartupReceipt.generators` equalities.
 
 ### Measurements
 
@@ -2023,6 +2296,19 @@ class Measurement(ProtocolModel):
     measured_at: AwareDatetime
     epoch: int | None = Field(default=None, ge=0)
     step: int | None = Field(default=None, ge=0)
+
+
+class MetricVerificationReceipt(ProtocolModel):
+    schema_version: Literal[1] = 1
+    metric_id: MetricId
+    stage_id: StageId
+    measurement: Measurement
+    dependency_digest: SHA256
+    environment_digest: SHA256
+    recomputed_value: float = Field(allow_inf_nan=False)
+    comparator: FloatComparator
+    passed: bool
+    completed_at: AwareDatetime
 ```
 
 Each file in `RunAttempt.measurement_files` contains `Measurement` rows. For
@@ -2055,15 +2341,42 @@ Measurement.measured_at
 Measurement JSON objects have unique field names. A successful evaluation stage
 records exactly one row for each metric in `EvaluateSpec.metric_ids`.
 
+Each after-stage metric produces one `MetricVerificationReceipt`. Its
+dependency digest binds the canonical ordered mapping from the declared
+dependencies to their resolved file identities. Its environment digest binds
+the effective environment and observed execution context used for
+recomputation. The containing attempt identifies the immutable receipt file
+through `RunAttempt.metric_verification_files`.
+
+```python
+dependency_digest = sha256(
+    serialize_document(ordered_resolved_dependencies)
+).hexdigest()
+environment_digest = sha256(
+    serialize_document((effective_environment, execution_context))
+).hexdigest()
+```
+
+The embedded measurement equals one row in the containing attempt's
+measurement file for the same stage and metric.
+
 ## 17. Concrete stage records
 
 ### Planned stage inputs
 
 ```python
-class RemoteFileRef(ProtocolModel):
-    kind: Literal["remote"] = "remote"
+class EnvironmentSecretRef(ProtocolModel):
+    kind: Literal["environment"] = "environment"
+    variable: NonEmptyStr
+
+
+class HttpRequestSpec(ProtocolModel):
+    kind: Literal["http"] = "http"
+    method: Literal["GET"] = "GET"
     url: HttpUrl
+    headers: dict[HttpHeaderName, NonEmptyStr] = Field(default_factory=dict)
     version: NonEmptyStr
+    credentials: EnvironmentSecretRef | None = None
 
 
 InternalInputRef = Annotated[
@@ -2072,23 +2385,25 @@ InternalInputRef = Annotated[
 ]
 ```
 
-A download stage consumes one versioned external source. Build, embed, and
+A download stage consumes one or more frozen HTTP requests. Build, embed, and
 train stages consume stored or same-run artifacts.
 
 ### Stage specifications
 
 ```python
-class ParameterSet(BaseModel):
-    model_config = ConfigDict(extra="allow", frozen=True)
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+ParamsT = TypeVar("ParamsT", bound=ParameterSet)
+
+
+class StageContext(ProtocolModel, Generic[ParamsT]):
     schema_version: Literal[1] = 1
-
-
-class ParameterModelRef(ProtocolModel):
-    path: PythonRepoRelPath
-    symbol: PythonSymbol
-    sha256: SHA256
-    bytes: int = Field(gt=0)
+    run_id: RunId
+    attempt_id: int = Field(ge=1)
+    stage_id: StageId
+    parameter_model: ParameterModelRef
+    params: ParamsT
+    inputs: dict[InputName, Path]
+    artifacts: dict[ArtifactName, Path]
+    metrics: dict[MetricId, DuringStageMetricHandle]
 
 
 class ParameterizedSpec(BaseSpec):
@@ -2101,8 +2416,33 @@ class DownloadParams(ParameterSet):
 
 class DownloadSpec(ParameterizedSpec):
     kind: Literal["download"] = "download"
-    inputs: dict[InputName, RemoteFileRef] = Field(min_length=1, max_length=1)
+    inputs: dict[InputName, HttpRequestSpec] = Field(min_length=1)
     params: DownloadParams
+
+
+class HttpResponseHandle(ProtocolModel):
+    exchange_index: int = Field(ge=0)
+    cause: Literal["initial", "redirect", "follow_up"]
+    response_url: HttpUrl
+    status: int = Field(ge=100, le=599)
+    response_headers: dict[HttpHeaderName, str]
+    body: Path
+
+
+class ControlledHttpClient(Protocol):
+    def get(
+        self,
+        input_name: InputName,
+        url: HttpUrl,
+        *,
+        headers: Mapping[HttpHeaderName, str] | None = None,
+    ) -> HttpResponseHandle:
+        ...
+
+
+class DownloadContext(StageContext[DownloadParams]):
+    responses: dict[InputName, tuple[HttpResponseHandle, ...]]
+    http: ControlledHttpClient
 
 
 class InternalSpec(ParameterizedSpec):
@@ -2154,6 +2494,31 @@ Spec = Annotated[
 ]
 ```
 
+`StageImplementationRef` identifies the callable. The runner validates
+`ParameterizedSpec.params` through `ParameterModelRef`, constructs one
+`StageContext`, and passes it as the callable's sole argument:
+
+```text
+stage implementation reference
+-> exact callable
+
+stage spec + active attempt
+-> typed StageContext
+
+exact callable(StageContext)
+-> StageInvocationReceipt
+```
+
+The runtime context contains absolute attempt-workspace paths. Its persisted
+`StageContextBinding` contains their canonical repository-relative forms and
+the metric IDs bound to runner-owned handles.
+
+`DownloadContext.responses` exposes the verified response bodies already
+retrieved for each frozen input. `DownloadContext.http.get()` performs a
+follow-up request under the same input identity, credential reference, and
+network policy. The runner appends its request and response to that input's
+ordered `ResolvedHttpExchange` sequence before returning the handle.
+
 Each core parameter class preserves a versioned JSON mapping. Every stage
 selects a project-owned Pydantic subclass through `parameter_model`.
 The subclass may declare fields, types, defaults, constraints, and
@@ -2177,7 +2542,7 @@ Within one stage spec:
 2. Artifact names are unique.
 3. Stored-input paths are pairwise non-overlapping.
 4. Artifact roots are pairwise non-overlapping.
-5. Input paths, artifact roots, and `BaseSpec.script` are pairwise
+5. Input paths, artifact roots, and `BaseSpec.implementation.path` are pairwise
    non-overlapping.
 6. `parameters` and `resume_state` occur only as training-stage
    artifacts.
@@ -2206,11 +2571,22 @@ inputs.
 ### Resolved stage specifications
 
 ```python
+class ResolvedHttpExchange(ProtocolModel):
+    input_name: InputName
+    exchange_index: int = Field(ge=0)
+    cause: Literal["initial", "redirect", "follow_up"]
+    request: HttpRequestSpec
+    response_url: HttpUrl
+    status: int = Field(ge=100, le=599)
+    response_headers: dict[HttpHeaderName, str]
+    body: ResolvedFileRef
+    completed_at: AwareDatetime
+
+
 class ResolvedDownloadSpec(ResolvedBaseSpec):
     kind: Literal["download"] = "download"
     spec: DownloadSpec
-    inputs: dict[InputName, RemoteFileRef]
-    retrieved_at: AwareDatetime
+    exchanges: tuple[ResolvedHttpExchange, ...] = Field(min_length=1)
 
 
 class ResolvedInternalSpec(ResolvedBaseSpec):
@@ -2248,18 +2624,37 @@ ResolvedSpec = Annotated[
 ]
 ```
 
-For a download stage:
+For the first exchange associated with each download input:
 
 ```text
-ResolvedDownloadSpec.inputs
-== ResolvedDownloadSpec.spec.inputs
+ResolvedHttpExchange.input_name
+in keys(ResolvedDownloadSpec.spec.inputs)
 
-ResolvedDownloadSpec.retrieved_at
-<= ResolvedDownloadSpec.completed_at
+ResolvedHttpExchange.exchange_index
+== 0
+
+ResolvedHttpExchange.cause
+== initial
+
+ResolvedHttpExchange.request
+== ResolvedDownloadSpec.spec.inputs[ResolvedHttpExchange.input_name]
 ```
 
-The completed download snapshot records the exact retrieved bytes. A promoted
-download artifact can then serve as a stored input selected by a later run.
+Exchange indices begin at zero and remain contiguous within each input. Each
+exchange completion time lies within the containing attempt and precedes stage
+completion. `ResolvedHttpExchange.body` identifies the exact retrieved bytes.
+`DownloadContext.responses` supplies those verified bodies to the stage
+callable in the same input-scoped order. A promoted download artifact can then
+serve as a stored input selected by a later run.
+
+A redirect exchange follows the target declared by the preceding redirect
+response. A follow-up exchange records a call made through
+`DownloadContext.http`.
+
+VIPER 0.1 trusts the project source identified by `RunSpec.source` to use the
+delivered handles for network input. The controlled client records every
+request made through `DownloadContext.http`. A future confinement contract
+will restrict direct outbound network access by project code.
 
 For every resolved stage:
 
@@ -2335,8 +2730,8 @@ TrainSpec.inputs[resume_state]
 ```
 
 Their common `producer_stage_id` identifies the single checkpoint-producing
-stage. Stored checkpoint inputs use `inputs/models`. A training stage
-initialized without a prior checkpoint omits both reserved inputs.
+stage. Stored checkpoint inputs use `inputs/models`. A fresh training stage
+omits both reserved inputs.
 
 ### Resolved stage result
 
@@ -2583,12 +2978,12 @@ across candidates and requires a reproducible, threshold-qualified result.
 binds the candidate parameters, evaluation inputs, metrics, execution
 parameters, and declared outputs. `BenchmarkSpec` is the reusable qualification
 policy. It fixes the evaluation dataset, splits, metric thresholds, and
-confirmation count applied to candidate run plans.
+required execution count applied to candidate run plans.
 
 ```text
 BenchmarkSpec
 ├── fixes the evaluation ID, dataset, splits, and metrics
-├── adds a threshold for each metric and the confirmation count
+├── adds a threshold for each metric and the required execution count
 └── constrains each candidate EvaluateSpec
     ├── binds that candidate's parameters
     ├── supplies its evaluation execution parameters
@@ -2616,7 +3011,7 @@ class BenchmarkSpec(ProtocolModel):
     evaluation_dataset: ArtifactPointerRef
     splits: dict[InputName, ArtifactPointerRef] = Field(min_length=1)
     metrics: tuple[MetricCriterion, ...] = Field(min_length=1)
-    confirmation_count: Literal[2] = 2
+    execution_count: Literal[2] = 2
 ```
 
 Benchmark split names and metric IDs are unique. The benchmark file is:
@@ -2673,11 +3068,31 @@ class ResolvedBenchmarkSpecRef(ResolvedFileRef):
     stored_at: GitFileRef
 
 
+class ArtifactComparisonReceipt(ProtocolModel):
+    artifact: StageArtifactRef
+    candidate_stage: ResolvedStageRef
+    confirmation_stage: ResolvedStageRef
+    candidate_digest: SHA256
+    confirmation_digest: SHA256
+    passed: bool
+
+
+class MetricCriterionReceipt(ProtocolModel):
+    metric_id: MetricId
+    candidate_verification: ResolvedFileRef
+    confirmation_verification: ResolvedFileRef
+    comparison: Literal["ge", "le"]
+    threshold: float = Field(allow_inf_nan=False)
+    passed: bool
+
+
 class BenchmarkResult(ProtocolModel):
     schema_version: Literal[1] = 1
     benchmark: ResolvedBenchmarkSpecRef
     run: ResolvedRunRef
-    confirmation: RunAttempt
+    confirmation: ResolvedAttemptRef
+    artifacts: tuple[ArtifactComparisonReceipt, ...] = Field(min_length=2)
+    metrics: tuple[MetricCriterionReceipt, ...] = Field(min_length=1)
     status: Literal["passed", "failed"]
     completed_at: AwareDatetime
 ```
@@ -2695,10 +3110,12 @@ ResolvedBenchmarkSpecRef.stored_at.path
 == benchmarks/<RunSpec.benchmark_id>.spec.yaml
 ```
 
-The selected run attempt and `BenchmarkResult.confirmation` have distinct
-attempt IDs, `succeeded` status, and every stage declared by the shared
-`RunSpec`. Their stage-result snapshots and attempt-file snapshots are
-distinct from each other and from all snapshots in the selected run.
+The selected run attempt and the attempt loaded through
+`BenchmarkResult.confirmation` have distinct attempt IDs, `succeeded` status,
+and purposes of `run` and `benchmark_confirmation`, respectively. Both contain
+every stage declared by the shared `RunSpec`. Their stage-result snapshots
+and attempt-file snapshots are distinct from each other and from all snapshots
+in the selected run.
 `BenchmarkResult.completed_at` is at or after the completion times of the
 selected `ResolvedRun` and confirmation attempt. Every stored and same-run
 input in the confirmation attempt passes the input-lineage checks in Section
@@ -2712,20 +3129,28 @@ T_{\alpha,\beta,q}(e)
 T_{\alpha,\beta,q}(e').
 $$
 
-The verifier establishes this pairwise equality by loading the artifact
-selected by `RunSpec.estimator` from the selected run attempt and confirmation
-attempt and comparing every file's SHA-256, byte count, relative path, and
-bundle membership. When $q$ satisfies the strict condition in Section 6, both
-values equal $\widehat{\theta}_q$. The benchmark result records the
-two-execution claim; Section 6 defines the universal claim over $E_q$.
+The verifier establishes this pairwise equality by reconstructing the
+`ArtifactComparisonReceipt` for the artifact selected by `RunSpec.estimator`.
+Each digest hashes the canonical `ResolvedArtifact` description, including
+every file identity and bundle member. When $q$ satisfies the strict condition
+in Section 6, both values equal $\widehat{\theta}_q$. The benchmark result
+records the two-execution claim; Section 6 defines the universal claim over
+$E_q$.
 
 Prediction parity applies the same comparison to the `predictions` artifact
 produced by each attempt's evaluation stage.
 
-For every `MetricCriterion`, each attempt must contain a matching
-evaluation-stage `Measurement`. A `ge` criterion requires a value greater than
-or equal to its threshold. An `le` criterion requires a value less than or
-equal to its threshold.
+`BenchmarkResult.artifacts` contains exactly the estimator `parameters`
+comparison and the evaluation `predictions` comparison. The metric-receipt IDs
+equal the criterion IDs in `BenchmarkSpec.metrics`. Every referenced
+`MetricVerificationReceipt.passed` value is true before threshold evaluation.
+
+For every `MetricCriterion`, `BenchmarkResult.metrics` contains one
+`MetricCriterionReceipt`. Its two file references load the immutable
+`MetricVerificationReceipt` values for the candidate and confirmation. A `ge`
+criterion requires both recomputed values to meet or exceed its threshold. An
+`le` criterion requires both recomputed values to meet or fall below its
+threshold.
 
 `BenchmarkResult.status` is `passed` exactly when estimator parity, prediction
 parity, and every metric criterion hold across both executions. A promoted
@@ -2768,19 +3193,20 @@ Pydantic enforces:
 3. Required fields, nonempty mappings, and discriminated unions.
 4. Unique stage, artifact, factor, level, variant, replicate, seed, metric, and
    bundle-member identities within their containing records, plus unique stage
-   snapshots, measurement files, and log files within an attempt and disjoint
-   measurement and log locations.
+   snapshots and pairwise-disjoint journal, measurement, metric-verification,
+   and log paths within an attempt.
 5. Single-file cardinality of one and bundle cardinality of at least two.
 6. Matching declared and resolved artifact-name sets inside one resolved stage
    spec.
-7. Attempt status, failure-reason, and timestamp relationships.
+7. Attempt status, typed failure, and timestamp relationships.
 8. The training checkpoint input pair and training-stage ownership of the
    `parameters` and `resume_state` artifact names.
 9. The evaluation model, dataset, split, and metric requirements and
    evaluation-stage ownership of the `predictions` artifact name, including
    equality among the evaluation dataset, split, and output roles.
 10. The required data-use role on every stored input and artifact declaration.
-11. Benchmark split, metric, confirmation, and result requirements.
+11. Benchmark split, metric, execution-count, comparison-receipt, and result
+    requirements.
 
 ### Run-plan verification
 
@@ -2796,18 +3222,20 @@ Starting from a `ResolvedRunSpecRef`, the verifier:
 5. Retrieves every stage-spec file identified by `RunSpec.stages` and checks
    its SHA-256 and byte count.
 6. Requires every lockfile and stored-input pointer to belong to
-   `RunSpec.source`, and requires each stage spec, script, artifact root, and
-   stored-input path to use the canonical repository location defined in
-   Section 23.
+   `RunSpec.source`. Stage specs, artifact roots, and stored-input paths use the
+   canonical repository locations defined in Section 23.
 7. Parses each file through the `Spec` union.
-8. Checks that every `FutureInputRef` selects an earlier stage and a declared
+8. Retrieves each stage implementation, parameter model, metric
+   implementation, and artifact loader from `RunSpec.source`; checks its path,
+   symbol, SHA-256 digest, and byte count.
+9. Checks that every `FutureInputRef` selects an earlier stage and a declared
    producer artifact.
-9. Checks input, script, and within-stage artifact-path disjointness after
-   resolving every input path.
-10. Resolves the role of every same-run input from its producer artifact,
+10. Checks input, implementation-file, and within-stage artifact-path
+    disjointness after resolving every input path.
+11. Resolves the role of every same-run input from its producer artifact,
     rejects evaluation and benchmark inputs to training, prevents output-role
     downgrades, and selects the required ordinary-evaluation or benchmark role.
-11. Checks that `RunSpec.estimator` selects `parameters` from a training
+12. Checks that `RunSpec.estimator` selects `parameters` from a training
    stage.
 
 These checks reconstruct the complete frozen $q$ from its root record and exact
@@ -2825,16 +3253,19 @@ For each `ResolvedStageRef`, the verifier:
 4. Requires its embedded stage spec to equal the stage spec selected by the
    corresponding `RunStageRef`.
 5. Verifies `ResolvedBaseSpec.source` against `RunSpec.source` and
-   `BaseSpec.script`.
-6. Resolves the selected stage environment and checks the environment,
-   execution context, global seed, and global reproducibility controls defined
-   in Section 15.
-7. Checks the canonical command.
-8. Checks the resolved input names and kinds against the planned inputs.
-9. Checks that `completed_at` lies within the containing attempt and does not
-   precede the prior completed stage.
-10. For a download stage, checks that `retrieved_at` lies between attempt start
-    and stage completion.
+   `BaseSpec.implementation`.
+6. Resolves the selected stage environment and checks `ResolvedEnvironment`,
+   `ExecutionContext`, and `ProcessStartupReceipt` under Section 15.
+7. Reconstructs `StageContextBinding`; checks its parameter digest, input and
+   artifact paths, metric IDs, canonical context digest, callable identity,
+   and successful outcome against `StageInvocationReceipt`.
+8. Checks the recorded child-process command.
+9. Checks the resolved input names and kinds against the planned inputs.
+10. Checks that `completed_at` lies within the containing attempt and is at or
+    after the prior completed stage.
+11. For a download stage, verifies each input-scoped HTTP exchange, cause,
+    response body, exchange index, completion time, and delivered response
+    handle.
 
 These checks establish that the recorded runtime state satisfies:
 
@@ -2854,8 +3285,10 @@ For every artifact name in the loaded resolved stage spec, the verifier:
    cross-artifact disjointness.
 4. Retrieves every `SnapshotFileRef` from the stage-result snapshot.
 5. Checks every file's SHA-256 and byte count.
-6. Retrieves the loader from `RunSpec.source` using `ArtifactSpec.loader`.
-7. Materializes the verified file or directory and invokes `load(path)`.
+6. Retrieves the loader from `RunSpec.source` and verifies the complete
+   `ArtifactLoaderRef` identity.
+7. Materializes the verified file or directory and invokes the selected loader
+   symbol with that path.
 
 This traversal establishes:
 
@@ -2867,6 +3300,25 @@ F_j(a)
 =
 v_a^{(j)}.
 $$
+
+### Metric verification
+
+For an after-stage metric, the verifier:
+
+1. Retrieves and verifies its `MetricImplementationRef`.
+2. Resolves exactly the file dependencies declared by the metric.
+3. Checks each dependency name, source, and data-use role against the selected
+   stage.
+4. Reconstructs the canonical dependency and environment digests.
+5. Invokes the metric with the frozen parameters and verified dependency paths.
+6. Applies `FloatComparator` to the recomputed and recorded values.
+7. Reconstructs and verifies the immutable `MetricVerificationReceipt`.
+
+For a during-stage metric, the verifier establishes that the active
+`StageContext` contained the frozen metric handle and that the measurement was
+written through the attempt's measurement sink. A numerical recomputation
+claim requires a future contract that captures the live values supplied to the
+metric.
 
 ### Input-lineage verification
 
@@ -2895,12 +3347,11 @@ For a same-run input, the verifier:
 4. Inherits the selected artifact's declared data-use role.
 5. Verifies and materializes the complete artifact.
 
-For each attempt that records measurement or log files, the verifier requires
-every such file to belong to one immutable snapshot $D_i$. Distinct attempts
-use disjoint stage-result and populated $D_i$ snapshots, and no populated
-$D_i$ equals a stage-result snapshot. Measurement rows identify completed
-stages. Log paths identify completed stages or the next interrupted stage of a
-non-successful attempt.
+For each attempt, the verifier requires its journal, measurements,
+metric-verification receipts, and logs to belong to the immutable attempt
+revision $D_i$. Distinct attempts use distinct stage-result and $D_i$
+revisions. Measurement rows identify completed stages. Log paths identify
+completed stages or the next interrupted stage of a non-successful attempt.
 
 ### Training-resume verification
 
@@ -2929,29 +3380,35 @@ $$
 
 For a `ResolvedRun`, the verifier:
 
-1. Checks attempt IDs, order, timestamps, statuses, and failure reasons.
-2. Requires each attempt's resolved stages to form an ordered prefix of
+1. Retrieves every `ResolvedAttemptRef` and checks its file identity, canonical
+   path, attempt ID, order, timestamps, status, and typed failure.
+2. Checks each attempt journal against the attempt's terminal state and
+   failure.
+3. Requires each attempt's resolved stages to form an ordered prefix of
    `RunSpec.stages`.
-3. Requires the successful attempt to contain every stage exactly once and in
+4. Requires the successful attempt to contain every stage exactly once and in
    order.
-4. Requires stage-result and attempt-file snapshots to satisfy the
+5. Requires stage-result and attempt-file snapshots to satisfy the
    disjointness rules above.
-5. Verifies every stored and same-run input consumed by every completed stage
+6. Verifies every stored and same-run input consumed by every completed stage
    in every attempt.
-6. Verifies every measurement and log file.
-7. Requires canonical measurement and log paths.
-8. Checks every measurement against the run, attempt, stage, experiment, and
-   stage-specific metric identities and requires its timestamp not to follow
-   the named stage's completion.
-9. Loads the estimator artifact selected by `RunSpec.estimator`.
+7. Verifies every journal, measurement, metric-verification, and log file.
+8. Requires their canonical attempt-scoped paths.
+9. Checks every measurement against the run, attempt, stage, experiment, and
+   stage-specific metric identities and requires its timestamp to be at or
+   before the named stage's completion.
+10. Applies the metric-verification rules to every after-stage measurement.
+11. Loads the estimator artifact selected by `RunSpec.estimator`.
 
-For a `BenchmarkResult`, the verifier additionally performs the benchmark-spec,
-confirmation-attempt, estimator-parity, prediction-parity, and metric-criterion
-relationships defined in Section 20. The confirmation uses a new attempt ID,
-stage-result snapshots, and attempt-file snapshot disjoint from every attempt
-in the selected run. Its stored and same-run inputs pass the same lineage
-verification applied to the selected run. Artifact-pointer verification
-separately establishes the promotion relationships in Sections 14 and 20.
+For a `BenchmarkResult`, the verifier retrieves the confirmation through its
+`ResolvedAttemptRef`, reconstructs every `ArtifactComparisonReceipt`, and
+retrieves both `MetricVerificationReceipt` files named by each
+`MetricCriterionReceipt`. It derives the expected benchmark status from those
+receipts. The confirmation attempt ID exceeds every candidate run attempt ID,
+its purpose is `benchmark_confirmation`, and it uses new snapshots. Its inputs
+pass the same lineage verification applied to the selected run.
+Artifact-pointer verification separately establishes the promotion
+relationships in Sections 14 and 20.
 
 ## 22. Execution and publication sequence
 
@@ -2962,7 +3419,7 @@ The protocol publishes immutable snapshots in dependency order:
 | A | Git | Source, experiment records, benchmark specs, loaders, lockfile, and existing promotion pointers. |
 | B | Git | One `RunSpec` and every stage-spec file identified by it. |
 | $C_{i,j}$ | Artifact repository | The resolved spec and every artifact file for stage $j$ of attempt $i$. |
-| $D_i$ | Artifact repository | Closed measurement and log files for attempt $i$. |
+| $D_i$ | Artifact repository | Attempt document, journal, metric-verification receipts, measurements, and logs for attempt $i$. |
 | E | Artifact repository | The terminal `ResolvedRun`. |
 | F | Artifact repository | The optional `BenchmarkResult`. |
 | G | Git | Optional promotion pointers. |
@@ -2992,24 +3449,28 @@ For attempt $i$:
 5. Resolve each same-run input through an earlier `ResolvedStageRef`.
 6. Apply `RunSpec.seed`, `RunSpec.reproducibility`, and the selected stage
    environment.
-7. Construct and record the canonical command.
-8. Execute the stage script.
-9. Resolve every declared artifact and construct the resolved stage spec.
-10. Publish the resolved stage spec and every artifact file together as
+7. Launch the controlled child and record `ProcessStartupReceipt` and
+   `ExecutionContext`.
+8. Validate the project parameter model, construct `StageContext`, and invoke
+   the exact callable selected by `StageImplementationRef`.
+9. Record `StageInvocationReceipt`.
+10. Resolve every declared artifact and construct the resolved stage spec.
+11. Publish the resolved stage spec and every artifact file together as
     snapshot $C_{i,j}$.
-11. Retrieve and verify the complete snapshot.
-12. Construct `ResolvedStageRef` from the returned snapshot commit and resolved
+12. Retrieve and verify the complete snapshot.
+13. Construct `ResolvedStageRef` from the returned snapshot commit and resolved
     stage-spec file identity.
-13. Append the verified stage result to the current attempt.
+14. Append the verified stage result to the current attempt.
 
 After the attempt reaches a terminal status:
 
-1. Record `completed_at`, status, and failure reason.
-2. Close its measurement and log files.
-3. When either file collection is nonempty, publish the files as snapshot
-   $D_i$.
-4. Retrieve and verify each published file.
-5. Construct the complete `RunAttempt`.
+1. Record `completed_at`, terminal status, and the typed failure when the
+   status is unsuccessful.
+2. Close the journal, metric-verification receipts, measurements, and logs.
+3. Construct the complete `RunAttempt`.
+4. Publish the attempt document and its files as revision $D_i$.
+5. Retrieve and verify the complete revision.
+6. Construct `ResolvedAttemptRef` from the published attempt document.
 
 ```text
 stage execution
@@ -3029,7 +3490,7 @@ ResolvedStageRef
 
 1. Determine the terminal run status and `successful_attempt_id`.
 2. Construct `ResolvedRun` with the reference to snapshot B and every completed
-   `RunAttempt`.
+   `ResolvedAttemptRef`.
 3. Publish `ResolvedRun` as snapshot E.
 4. Retrieve and verify the terminal record and its complete provenance graph.
 
@@ -3041,11 +3502,10 @@ For a benchmark run:
    snapshot B.
 2. Publish and verify its stage-result snapshots $C_{i,j}$ and attempt files
    $D_i$.
-3. Compare estimator and prediction artifacts with the successful attempt in
-   snapshot E.
-4. Check every benchmark metric criterion.
+3. Construct comparison receipts for the estimator and prediction artifacts.
+4. Recompute each benchmark metric and construct its criterion receipt.
 5. Construct and publish `BenchmarkResult` as snapshot F.
-6. Retrieve and verify the benchmark result.
+6. Retrieve every referenced receipt and verify the benchmark result.
 
 ### Promote an artifact
 
@@ -3068,7 +3528,8 @@ Pointer filenames use:
 SelectionName = HumanId
 ```
 
-This is the suggested project layout that we have found to be effective at Viper.
+VIPER reserves the paths shown below. Project source can occupy any other
+repository-relative paths.
 
 ```text
 repository/
@@ -3100,6 +3561,17 @@ repository/
                     ├── spec.yaml
                     ├── resolved.yaml
                     ├── benchmark.result.yaml
+                    ├── attempts/
+                    │   └── <attempt_id>/
+                    │       ├── resolved.yaml
+                    │       ├── journal.jsonl
+                    │       ├── measurements/
+                    │       │   └── <stage_id>.<metric_id>.jsonl
+                    │       ├── metric_verification/
+                    │       │   └── <stage_id>.<metric_id>.yaml
+                    │       └── logs/
+                    │           ├── <stage_id>.stdout.log
+                    │           └── <stage_id>.stderr.log
                     ├── stages/
                     │   └── <stage_id>/
                     │       ├── spec.yaml
@@ -3119,17 +3591,11 @@ repository/
                     │   └── evaluations/
                     │       └── <evaluation_id>/
                     │           └── <prediction file or bundle>
-                    ├── measurements/
-                    │   └── <stage_id>.<metric_id>.jsonl
-                    └── logs/
-                        ├── <attempt_id>.<stage_id>.stdout.log
-                        └── <attempt_id>.<stage_id>.stderr.log
 ```
 
-VIPER assigns no layout to the user-owned portion of the repository. Each
-`BaseSpec.script`, `MetricSpec.implementation`, and `ArtifactSpec.loader`
-records its selected Python file as a `PythonRepoRelPath`. For example, all of these
-layouts are valid:
+Each `BaseSpec.implementation.path`, `MetricSpec.implementation.path`, and
+`ArtifactSpec.loader.path` records its selected Python file as a
+`PythonRepoRelPath` value. For example, each of these paths is valid:
 
 ```text
 src/my_project/training/fit.py
@@ -3143,7 +3609,7 @@ module, metric, and artifact loader.
 
 When a project uses `tools/`, that directory contains repository-maintenance,
 migration, generation, and inspection utilities. A tool has one documented
-purpose and is not selected by `BaseSpec.script`.
+purpose and is not selected by `BaseSpec.implementation`.
 
 When a project uses `tests/`, that directory contains deterministic checks for
 its entrypoints, metrics, and loaders. Test files may be present in the source

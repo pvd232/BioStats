@@ -23,26 +23,82 @@ Failure reporting, attempt `2` allocation, and retry history remain open.
 ## Contract models
 
 ```python
+AttemptFailureCode = Literal[
+    "preflight_failed",
+    "execution_failed",
+    "verification_failed",
+    "publication_failed",
+    "cancelled",
+    "preempted",
+    "coordinator_lost",
+    "internal_error",
+]
+
+
 class AttemptFailure(ProtocolModel):
-    code: ErrorCode
+    code: AttemptFailureCode
     stage_id: StageId | None
     message: NonEmptyStr
     occurred_at: AwareDatetime
 
 
+class AttemptJournalRef(ResolvedFileRef):
+    kind: Literal["attempt_journal"] = "attempt_journal"
+
+
 class RunAttempt(ProtocolModel):
+    schema_version: Literal[1] = 1
     attempt_id: int = Field(ge=1)
+    purpose: Literal["run", "benchmark_confirmation"]
     status: AttemptStatus
     started_at: AwareDatetime
     completed_at: AwareDatetime
     resolved_stages: tuple[ResolvedStageRef, ...]
+    journal: AttemptJournalRef
     measurement_files: tuple[ResolvedFileRef, ...]
+    metric_verification_files: tuple[ResolvedFileRef, ...]
     log_files: tuple[ResolvedFileRef, ...]
     failure: AttemptFailure | None
+
+
+class ResolvedAttemptRef(ResolvedFileRef):
+    kind: Literal["resolved_attempt"] = "resolved_attempt"
+
+
+class ResolvedRun(ProtocolModel):
+    schema_version: Literal[1] = 1
+    spec: ResolvedRunSpecRef
+    status: Literal["succeeded", "failed", "cancelled"]
+    attempts: tuple[ResolvedAttemptRef, ...] = Field(min_length=1)
+    successful_attempt_id: int | None
+    completed_at: AwareDatetime
 ```
 
 This replaces the current free-text `failure_reason` with one typed failure.
-The remaining fields preserve their current meaning.
+It also makes each completed attempt an independently retrievable immutable
+document.
+
+The canonical attempt files are:
+
+```text
+experiments/<experiment_id>/runs/<variant_id>/<run_id>/
+└── attempts/<attempt_id>/
+    ├── resolved.yaml
+    ├── journal.jsonl
+    ├── measurements/
+    │   └── <stage_id>.<metric_id>.jsonl
+    ├── metric_verification/
+    │   └── <stage_id>.<metric_id>.yaml
+    └── logs/
+        ├── <stage_id>.stdout.log
+        └── <stage_id>.stderr.log
+```
+
+`ResolvedAttemptRef` identifies `resolved.yaml`. That document contains the
+`RunAttempt`, including references to the remaining attempt files. The terminal
+run stores the ordered references whose purpose is `run`. A benchmark result
+stores its `benchmark_confirmation` attempt separately. The verifier retrieves
+each attempt through its reference before checking its owning result.
 
 ## Allocation and ownership
 
@@ -78,11 +134,27 @@ An attempt closes with exactly one terminal status:
 VIPER publishes the attempt journal and available logs for every outcome. A
 failed attempt retains every verified stage snapshot completed before failure.
 
+The coordinator assigns terminal outcomes through these operations:
+
+| Outcome | Evidence-producing operation |
+|---|---|
+| `cancelled` | The application receives an explicit cancellation request, records it in the journal, and acknowledges it before closing the attempt. |
+| `preempted` | The coordinator receives a supported host preemption signal, records that signal in the journal, and closes the attempt before exit. |
+| `failed` with `coordinator_lost` | A later coordinator acquires the released lock and reconciles an abandoned nonterminal journal. |
+
+An abrupt host loss that prevents terminal publication enters the third path
+when a later coordinator performs reconciliation.
+
 ## Retry
 
 Retry receives the same frozen `RunSpec` and allocates the next attempt ID.
 Every earlier attempt remains immutable. A retry policy may limit the number of
 attempts and select the terminal statuses eligible for retry.
+
+Benchmark confirmation uses the same allocator and frozen plan with
+`purpose="benchmark_confirmation"`. It can follow a successful run attempt and
+belongs directly to `BenchmarkResult.confirmation`. `ResolvedRun.attempts`
+contains the ordinary run and retry history.
 
 ## Verification
 
@@ -90,9 +162,11 @@ attempts and select the terminal statuses eligible for retry.
 |---|---|
 | `attempt.order` | Attempt IDs are unique and strictly increasing. |
 | `attempt.terminal` | Every published attempt has exactly one terminal status. |
-| `attempt.files` | The attempt file list matches the published journal and logs. |
+| `attempt.identity` | Each `ResolvedAttemptRef` retrieves bytes whose digest and byte count match the reference and whose attempt ID matches its canonical path. |
+| `attempt.files` | The attempt references the published journal, metric-verification files, measurements, and logs from the same attempt. |
 | `attempt.failure` | A failed attempt has one failure value consistent with its journal. |
 | `attempt.retry` | A retry uses the same frozen run plan and a greater attempt ID. |
+| `attempt.purpose` | `ResolvedRun.attempts` contain only run attempts; `BenchmarkResult.confirmation` identifies one benchmark-confirmation attempt. |
 
 ## Propagation
 
@@ -100,7 +174,7 @@ attempts and select the terminal statuses eligible for retry.
 |---|---|
 | Workspace | Allocate attempt IDs while holding the run lock. |
 | Journal | Record allocation and every state transition before the corresponding side effect. |
-| Runner | Close and publish attempts on success, failure, cancellation, or preemption. |
+| Runner | Close every attempt, publish its immutable attempt document, and add its `ResolvedAttemptRef` to the terminal run. |
 | Application | Add explicit retry. |
 | Verification | Check attempt ordering, terminal state, failure identity, and preserved files. |
 | Tests | Exercise a failed first attempt followed by a successful retry. |
@@ -108,9 +182,9 @@ attempts and select the terminal statuses eligible for retry.
 ## Acceptance case
 
 A two-stage run completes `download` and fails during `train`. VIPER publishes
-attempt `1` as `failed`, including the download snapshot and failure log. An
-explicit retry creates attempt `2`, completes both stages, and publishes the
-terminal run with both attempts.
+attempt `1` as `failed`, including the download snapshot, journal, and failure
+log. An explicit retry creates attempt `2`, completes both stages, and publishes
+the terminal run with two `ResolvedAttemptRef` values.
 
 Changing attempt `1` after attempt `2` has been published fails file-identity
 verification.
@@ -119,7 +193,8 @@ verification.
 
 1. Replace the stale-file lock with an operating-system-managed advisory lock.
 2. Reconcile an abandoned nonterminal journal after lock acquisition.
-3. Allocate successive attempt IDs from persisted attempt history.
+3. Add immutable attempt documents and allocate successive IDs from their
+   persisted references.
 4. Close and publish failed attempts with their journals and logs.
 5. Add explicit retry through the Python API and JSON CLI.
 6. Add attempt-order and terminal-state verifier rules.

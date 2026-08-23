@@ -26,7 +26,7 @@ Users currently assemble the confirmation and benchmark result themselves.
 class ExecuteBenchmarkRequest(ProtocolModel):
     resolved_run: Path
     benchmark_spec: Path
-    backend: ExecutionBackend
+    repository_root: Path
     timeout_seconds: float | None = Field(default=None, gt=0)
 
 
@@ -36,11 +36,19 @@ class ExecuteBenchmarkSuccess(ProtocolModel):
 ```
 
 The selected `BenchmarkSpec` fixes the evaluation identity, input
-selection, metric criteria, and required confirmation count.
+selection, metric criteria, and required execution count. VIPER 0.1 fixes:
+
+```python
+class BenchmarkSpec(ProtocolModel):
+    execution_count: Literal[2] = 2
+```
+
+The count includes the selected candidate execution and one independent
+confirmation. The field replaces the current `confirmation_count` name.
 
 ## Execution
 
-For each required confirmation, VIPER performs this sequence:
+VIPER performs this sequence for the one required confirmation:
 
 ```text
 verify the candidate run
@@ -54,19 +62,63 @@ verify the candidate run
 ```
 
 The confirmation uses the same frozen plan. It receives a new attempt ID and
-new execution evidence.
+new execution evidence. Its `RunAttempt.purpose` is
+`benchmark_confirmation`; the candidate run history continues to contain only
+ordinary run and retry attempts.
 
 ## Persisted evidence
 
-The benchmark result identifies the candidate run, confirmation attempt,
-benchmark specification, compared artifact files, recomputed measurements,
-comparator outcomes, and final status.
+The benchmark result stores these comparison receipts:
+
+```python
+class ArtifactComparisonReceipt(ProtocolModel):
+    artifact: StageArtifactRef
+    candidate_stage: ResolvedStageRef
+    confirmation_stage: ResolvedStageRef
+    candidate_digest: SHA256
+    confirmation_digest: SHA256
+    passed: bool
+
+
+class MetricCriterionReceipt(ProtocolModel):
+    metric_id: MetricId
+    candidate_verification: ResolvedFileRef
+    confirmation_verification: ResolvedFileRef
+    comparison: Literal["ge", "le"]
+    threshold: float = Field(allow_inf_nan=False)
+    passed: bool
+
+
+class BenchmarkResult(ProtocolModel):
+    schema_version: Literal[1] = 1
+    benchmark: ResolvedBenchmarkSpecRef
+    run: ResolvedRunRef
+    confirmation: ResolvedAttemptRef
+    artifacts: tuple[ArtifactComparisonReceipt, ...] = Field(min_length=2)
+    metrics: tuple[MetricCriterionReceipt, ...] = Field(min_length=1)
+    status: Literal["passed", "failed"]
+    completed_at: AwareDatetime
+```
+
+Each artifact digest hashes the canonical `ResolvedArtifact` description from
+the selected stage snapshot. The two required artifact receipts select
+`parameters` and `predictions`. Each metric receipt references the immutable
+`MetricVerificationReceipt` files produced for the candidate and confirmation
+attempts.
+
+`BenchmarkResult.artifacts` contains exactly those two receipts. Its metric IDs
+equal the IDs in `BenchmarkSpec.metrics`. Every referenced
+`MetricVerificationReceipt.passed` value is true before the threshold is
+applied.
 
 ## Verification
 
-`execute_benchmark()` must return only after `verify_benchmark_result()` accepts
-the newly constructed result. Existing benchmark verifier rules remain the
-authority for parity and criteria.
+`execute_benchmark()` returns after `verify_benchmark_result()` accepts the
+newly constructed result. The verifier reconstructs every artifact digest,
+loads every metric-verification receipt, applies every threshold, and derives
+the expected final status. It also requires the confirmation attempt ID to
+exceed every candidate run attempt ID and its purpose to equal
+`benchmark_confirmation`.
 
 ## Propagation
 
@@ -76,7 +128,7 @@ authority for parity and criteria.
 | CLI | Add `viper execute-benchmark` with human and JSON output. |
 | Runner | Execute the confirmation through the selected backend. |
 | Metrics | Recompute every benchmark metric from its declared dependencies. |
-| Persistence | Publish the immutable benchmark result and its referenced evidence. |
+| Persistence | Publish the immutable benchmark result, confirmation attempt, artifact-comparison receipts, and metric-criterion receipts. |
 | Tests | Execute one passing confirmation and reject one altered artifact. |
 
 ## Acceptance case

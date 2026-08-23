@@ -73,13 +73,18 @@ parsing values. `HttpRequestSpec` holds the network request that VIPER executes.
 ### Frozen request
 
 ```python
+class EnvironmentSecretRef(ProtocolModel):
+    kind: Literal["environment"] = "environment"
+    variable: NonEmptyStr
+
+
 class HttpRequestSpec(ProtocolModel):
     kind: Literal["http"] = "http"
     method: Literal["GET"] = "GET"
     url: HttpUrl
     headers: dict[HttpHeaderName, NonEmptyStr] = Field(default_factory=dict)
     version: NonEmptyStr
-    credentials: SecretRef | None = None
+    credentials: EnvironmentSecretRef | None = None
 ```
 
 The authoring API may accept a URL template, path values, and query values. The
@@ -88,8 +93,9 @@ equivalence rules in [RFC 3986, Section 6](https://www.rfc-editor.org/rfc/rfc398
 
 `headers` contains fields that select or describe the requested
 representation. VIPER rejects literal authorization credentials, cookies, and
-proxy credentials. `SecretRef` identifies a runtime credential provider; the
-secret value stays outside the run plan and resolved result.
+proxy credentials. `EnvironmentSecretRef.variable` names an environment
+variable available to the controlled retrieval process. Its value stays
+outside the run plan and resolved result.
 
 HTTP defines a request through its method, target, and fields, and defines a
 response through its status, fields, and content. The model follows those
@@ -99,13 +105,14 @@ message components from [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#s
 
 ```python
 class ResolvedHttpExchange(ProtocolModel):
-    request_index: int = Field(ge=0)
+    input_name: InputName
+    exchange_index: int = Field(ge=0)
+    cause: Literal["initial", "redirect", "follow_up"]
     request: HttpRequestSpec
-    final_url: HttpUrl
+    response_url: HttpUrl
     status: int = Field(ge=100, le=599)
     response_headers: dict[HttpHeaderName, str]
-    content_sha256: SHA256
-    content_bytes: int = Field(ge=0)
+    body: ResolvedFileRef
     completed_at: AwareDatetime
 
 
@@ -114,15 +121,35 @@ class ResolvedDownloadSpec(ResolvedBaseSpec):
     exchanges: tuple[ResolvedHttpExchange, ...] = Field(min_length=1)
 ```
 
+`input_name` joins each exchange to one key in `DownloadSpec.inputs`.
+`exchange_index` starts at `0` for each input and records the request order for
+redirects, pagination, and follow-up retrievals.
+
 `response_headers` records the allowlisted fields needed to interpret or
 validate the representation, including content type, content encoding, entity
 tag, last-modified time, and content length when supplied. RFC 9110 defines
 content as representation data interpreted through its representation
 metadata.
 
-The response body enters the immutable stage snapshot or a content-addressed
-retrieval cache. `content_sha256` and `content_bytes` identify the exact stored
-bytes.
+`body` identifies the immutable response file through its storage location,
+SHA-256 digest, and byte count. The runner retrieves each file when it
+constructs the ordered response handles for that input.
+
+The initial exchange for each input satisfies:
+
+```text
+ResolvedHttpExchange.input_name
+-> DownloadSpec.inputs[input_name]
+
+ResolvedHttpExchange.exchange_index
+== 0
+
+ResolvedHttpExchange.cause
+== initial
+
+ResolvedHttpExchange.request
+== DownloadSpec.inputs[input_name]
+```
 
 ## Execution
 
@@ -152,16 +179,50 @@ invoke the exact project implementation
 publish declared artifacts
 ```
 
-The stage context exposes verified response bodies by input name. Project code
+The download context extends `StageContext` with:
+
+```python
+class HttpResponseHandle(ProtocolModel):
+    exchange_index: int = Field(ge=0)
+    cause: Literal["initial", "redirect", "follow_up"]
+    response_url: HttpUrl
+    status: int = Field(ge=100, le=599)
+    response_headers: dict[HttpHeaderName, str]
+    body: Path
+
+
+class ControlledHttpClient(Protocol):
+    def get(
+        self,
+        input_name: InputName,
+        url: HttpUrl,
+        *,
+        headers: Mapping[HttpHeaderName, str] | None = None,
+    ) -> HttpResponseHandle:
+        ...
+
+
+class DownloadContext(StageContext[DownloadParams]):
+    responses: dict[InputName, tuple[HttpResponseHandle, ...]]
+    http: ControlledHttpClient
+```
+
+Each tuple follows `exchange_index` order. Each `body` path contains the bytes
+identified by the corresponding `ResolvedHttpExchange.body`. Project code
 receives `DownloadParams` as its validated project-defined type.
+`ControlledHttpClient.get()` accepts an input name already declared by the
+stage, inherits that input's version and credential reference, applies the
+network policy, and appends the resulting exchange to that input's sequence.
+The final accepted response for one input is the last handle in its tuple.
 
 ### Pagination and scraping
 
-A project-defined download procedure may request additional pages through the
-same controlled client. Each request produces one ordered
-`ResolvedHttpExchange`. The frozen parameters define pagination limits,
-selectors, and termination rules. The execution policy limits permitted
-schemes, hosts, ports, request count, response size, and elapsed time.
+A project-defined download procedure may request additional pages through
+`DownloadContext.http`. Each request produces one `ResolvedHttpExchange` with
+the same `input_name` and the next contiguous `exchange_index`. The frozen
+parameters define pagination limits, selectors, and termination rules. The
+execution policy limits permitted schemes, hosts, ports, request count,
+response size, and elapsed time.
 
 The resolved exchange sequence preserves every realized request target and
 response identity used by the stage invocation.
@@ -172,31 +233,39 @@ The verifier performs these named checks:
 
 | Check | Rule |
 |---|---|
-| `http.request` | The first resolved request equals the frozen request for that input. |
+| `http.input` | Every exchange names one key in `DownloadSpec.inputs`. |
+| `http.request` | Exchange `0` for each input equals `DownloadSpec.inputs[input_name]`. |
 | `http.policy` | Every realized target satisfies the stage network policy. |
 | `http.status` | Every recorded status satisfies the declared success policy. |
-| `http.content` | Stored response bytes match `content_sha256` and `content_bytes`. |
-| `http.order` | Request indices are unique, contiguous, and ordered. |
+| `http.content` | The bytes retrieved through `body.stored_at` match `body.sha256` and `body.bytes`. |
+| `http.order` | Exchange indices are unique, contiguous, and ordered within each input. |
+| `http.cause` | Exchange `0` is initial; each redirect follows the prior response's redirect target; each follow-up was issued through `DownloadContext.http`. |
+| `http.delivery` | Each response handle matches one exchange for its input, in exchange-index order, and its body path contains the verified body bytes. |
 | `parameter_model.identity` | Download parameter-model bytes match the frozen source identity. |
 | `parameter_model.validation` | Frozen download parameters validate through the selected class. |
 | `stage.source` | The executed download implementation matches the frozen source identity. |
 | `artifact.files` | Published artifact bytes match the resolved artifact identities. |
 
-These checks support a precise provenance statement: the identified stage
-implementation received the identified HTTP response bytes and produced the
-identified artifact files during one recorded invocation.
+These checks support a precise 0.1 provenance statement: the identified stage
+implementation received the identified response files from VIPER's controlled
+client and produced the identified artifact files during one recorded
+invocation.
+
+VIPER 0.1 trusts project source to use the delivered response handles for
+network input. The future confinement contract will restrict direct outbound
+network access and support a complete network-input claim.
 
 ## Propagation
 
 | Surface | Required change |
 |---|---|
-| Protocol | Add `HttpRequestSpec`, `SecretRef`, `ResolvedHttpExchange`, and the revised `ResolvedDownloadSpec`. |
+| Protocol | Add `HttpRequestSpec`, `EnvironmentSecretRef`, `ResolvedHttpExchange`, and the revised `ResolvedDownloadSpec`. |
 | Authoring | Expand URL templates; freeze the final request; reject literal credentials. |
 | Variant binding | Include `DownloadVariantStageParams` in the selected stage-parameter mapping. |
 | Preflight | Validate request policy, parameter identity, secret availability, and retrieval limits. |
 | Runner | Execute HTTP through the controlled client and store response bodies before stage invocation. |
 | Stage interface | Extend `StageContext` as `DownloadContext`, carrying typed `DownloadParams` and verified response handles. |
-| Isolation | Deny direct stage network access and route retrieval through the controlled client. |
+| Trust boundary | Treat project source as trusted in 0.1 and record every request made through the controlled client. |
 | Resolved result | Publish the complete ordered exchange sequence and response identities. |
 | Verifier | Apply the named HTTP, parameter, source, and artifact checks. |
 | Tests | Exercise one static request, one redirect, one paginated source, one secret reference, and each rejection rule. |

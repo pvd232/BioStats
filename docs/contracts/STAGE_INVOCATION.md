@@ -31,7 +31,7 @@ source:
 class StageImplementationRef(ProtocolModel):
     path: PythonRepoRelPath
     symbol: PythonSymbol
-    sha256: Sha256
+    sha256: SHA256
     bytes: int = Field(gt=0)
 ```
 
@@ -50,6 +50,7 @@ class StageContext(ProtocolModel, Generic[ParamsT]):
     params: ParamsT
     inputs: dict[InputName, Path]
     artifacts: dict[ArtifactName, Path]
+    metrics: dict[MetricId, DuringStageMetricHandle]
 ```
 
 `StageImplementationRef` identifies the callable invoked for the stage. At
@@ -73,6 +74,7 @@ StageContext[TrainParameters]
 ├── params: TrainParameters(epochs=3)
 ├── inputs: materialized input paths
 ├── artifacts: writable output paths
+├── metrics: runner-owned metric handles
 ├── run_id
 ├── attempt_id
 └── stage_id
@@ -93,6 +95,7 @@ context = StageContext[TrainParameters](
     params=params,
     inputs=materialized_inputs,
     artifacts=writable_artifact_paths,
+    metrics=bound_metric_handles,
 )
 
 train(context)
@@ -160,19 +163,44 @@ attempt.
 `ResolvedBaseSpec` stores a `StageInvocationReceipt` containing:
 
 ```python
+class StageContextBinding(ProtocolModel):
+    schema_version: Literal[1] = 1
+    run_id: RunId
+    attempt_id: int = Field(ge=1)
+    stage_id: StageId
+    parameter_model: ParameterModelRef
+    parameter_digest: SHA256
+    inputs: dict[InputName, RepoRelPath]
+    artifacts: dict[ArtifactName, RepoRelPath]
+    metric_ids: tuple[MetricId, ...]
+
+
 class StageInvocationReceipt(ProtocolModel):
     implementation: StageImplementationRef
-    parameter_model: ParameterModelRef
-    parameter_digest: Sha256
-    context_digest: Sha256
+    context: StageContextBinding
+    context_digest: SHA256
     started_at: AwareDatetime
     completed_at: AwareDatetime
     outcome: Literal["succeeded", "failed"]
 ```
 
-The canonical context replaces each absolute workspace path with its logical
-input or artifact path before hashing. Absolute paths exist only in the runtime
-`StageContext`.
+The coordinator constructs `StageContextBinding` before launching the child.
+Each input value is the repository-relative materialization path declared by
+the stage. Each artifact value is the repository-relative output path declared
+by the stage. `metric_ids` identifies the runner-owned handles placed in the
+runtime context. Absolute workspace paths exist only in `StageContext`.
+
+The canonical digest is:
+
+```python
+context_digest = sha256(serialize_document(context)).hexdigest()
+parameter_digest = sha256(serialize_document(stage.params)).hexdigest()
+```
+
+`serialize_document()` is VIPER's deterministic protocol encoder. The child
+receives the same binding, resolves each logical path beneath its attempt
+workspace, constructs `StageContext`, and records the binding and digest in the
+receipt.
 
 ## Verification
 
@@ -180,9 +208,9 @@ input or artifact path before hashing. Absolute paths exist only in the runtime
 |---|---|
 | `stage.implementation` | The receipt identifies the callable frozen by the stage spec and run source. |
 | `stage.decorator` | The callable's decorator kind and parameter-model class agree with the frozen stage. |
-| `parameter_model.identity` | The receipt identifies the frozen parameter model. |
-| `parameter.value` | The delivered parameter digest equals the canonical digest of `stage.params`. |
-| `stage.context` | The receipt context digest equals the binding reconstructed from the resolved inputs and artifacts. |
+| `parameter_model.identity` | `receipt.context.parameter_model` equals the frozen parameter model. |
+| `parameter.value` | `receipt.context.parameter_digest` equals the canonical digest of `stage.params`. |
+| `stage.context` | `receipt.context` equals the binding reconstructed from the run, attempt, stage, resolved inputs, and declared artifacts; its serialized bytes match `context_digest`. |
 | `stage.outcome` | A successful resolved stage has one successful invocation receipt. |
 
 These checks establish typed delivery to the callable. Project tests establish
@@ -192,7 +220,7 @@ how the callable uses each field while producing its scientific result.
 
 | Surface | Required change |
 |---|---|
-| Protocol | Add `StageImplementationRef` and `StageInvocationReceipt`; replace `BaseSpec.script` on parameterized stages. |
+| Protocol | Add `StageImplementationRef`, `StageContextBinding`, and `StageInvocationReceipt`; replace `BaseSpec.script` on parameterized stages. |
 | Decorators | Add one decorator for each stage kind and expose its frozen metadata. |
 | Authoring | Resolve the top-level callable and freeze its exact identity. |
 | Runtime | Add typed contexts and invoke the callable with the validated project parameter object. |

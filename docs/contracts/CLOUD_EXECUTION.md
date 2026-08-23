@@ -75,7 +75,22 @@ class GCEBootImageRef(ProtocolModel):
     project: NonEmptyStr
     name: NonEmptyStr
     id: NonEmptyStr
+
+
+class PythonDistributionSpec(ProtocolModel):
+    name: NormalizedDistributionName
+    version: NonEmptyStr
+
+
+class PythonEnvironmentSpec(ProtocolModel):
+    python_version: NonEmptyStr
+    distributions: tuple[PythonDistributionSpec, ...] = Field(min_length=1)
 ```
+
+Distribution names use lowercase form with each run of `.`, `_`, or `-`
+replaced by `-`. The distribution tuple is sorted by name and contains one
+entry per name. This follows the Python packaging name-normalization rule:
+[Name normalization](https://packaging.python.org/en/latest/specifications/name-normalization/).
 
 `GCEEnvironmentSpec.boot_image` and
 `ResolvedGCEEnvironment.boot_image` carry this value. Plan freezing resolves
@@ -84,6 +99,17 @@ image name from VM metadata, then retrieves the server-defined image ID through
 the Compute Engine `images.get` operation. That operation returns the image
 resource and requires `compute.images.get`:
 [Compute Engine `images.get`](https://docs.cloud.google.com/compute/docs/reference/rest/v1/images/get).
+
+`GCEEnvironmentSpec.python_environment` stores the exact Python version and
+the sorted installed-distribution mapping selected by the author. Plan freezing
+captures this value from the prepared environment or validates an authored
+value. The child reconstructs the same mapping through Python package metadata
+and stores it as `ResolvedGCEEnvironment.python_environment`.
+
+The lockfile reference identifies the environment-construction input. The
+Python environment value constrains the distributions that actually execute
+the stage. `ExecutionContext.numerical_runtime` continues to record PyTorch,
+NumPy, BLAS, LAPACK, CUDA, and thread-pool facts used by numerical execution.
 
 For each stage, the stage environment override supplies the selected
 environment when present. `RunSpec.environment` supplies the selected
@@ -101,15 +127,19 @@ ResolvedGCEEnvironment
 ├── immutable boot-image identity
 ├── machine type
 ├── CPU or CUDA compute request
-└── resolved lockfile identity
+├── resolved lockfile identity
+└── resolved Python environment
 
 ExecutionContext
 ├── GCEHostContext
 ├── CPUContext
 ├── CPUBackendContext or CUDABackendContext
-├── NumericalRuntimeContext
-├── RandomnessContext
-└── applied reproducibility controls
+└── NumericalRuntimeContext
+
+ProcessStartupReceipt
+├── applied startup environment
+├── queried reproducibility controls
+└── initialized generator-state digests
 ```
 
 The [process-startup contract](PROCESS_STARTUP.md) applies the run-wide controls
@@ -135,6 +165,7 @@ to durable object storage while preserving the execution contract.
 | `gce.machine_type` | The resolved environment and observed host report the requested machine type. |
 | `gce.compute` | The observed backend kind, CUDA model, and device count satisfy the frozen compute request. |
 | `gce.lockfile` | The resolved lockfile points to the exact lockfile selected by the effective environment. |
+| `gce.python` | The Python version and installed-distribution mapping observed by the child equal the frozen `python_environment`. |
 | `runtime.controls` | The execution context records the run-wide determinism, precision, parallelism, and randomness controls. |
 | `run.result` | The terminal result passes ordinary run verification. |
 
@@ -142,14 +173,14 @@ to durable object storage while preserving the execution contract.
 
 | Surface | Required change |
 |---|---|
-| Protocol | Replace `GCEMachineImageRef` with immutable `GCEBootImageRef`; consume the `ComputeSpec` startup contract for GCE stages. |
+| Protocol | Replace `GCEMachineImageRef` with immutable `GCEBootImageRef`; add `PythonEnvironmentSpec`; consume the `ComputeSpec` startup contract for GCE stages. |
 | Coordinator | Replace the local-environment gate with selection of the effective environment for each stage. |
 | Preflight | Accept `LocalEnvironmentSpec` and `GCEEnvironmentSpec`; check the active host against the selected kind. |
 | Runtime | Reuse the process-startup compute observer and add the GCE host observer. |
 | Application | Expose one `run` operation for execution on the active host. |
 | Python interface | Route `viper.run(stage_callable)` through the same coordinator and process-startup contract. |
 | CLI | Route `viper run` through the application `run` operation. |
-| Verification | Apply the seven checks above before returning a successful run result. |
+| Verification | Apply the eight checks above before returning a successful run result. |
 | Tests | Exercise local CPU, local CUDA when available, deterministic GCE fixtures, and one live GCE smoke profile. |
 
 ## Acceptance case
@@ -161,7 +192,8 @@ run on that VM, records the GCE and CUDA evidence, publishes the terminal run,
 and verifies every environment relationship.
 
 A second case executes the same plan on a VM with another machine type. The
-`gce.machine_type` check rejects the resolved stage.
+`gce.machine_type` check rejects the resolved stage. A third case changes one
+installed distribution version and fails `gce.python`.
 
 ## Release boundary
 

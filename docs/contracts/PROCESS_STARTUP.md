@@ -142,12 +142,57 @@ execution_context = ExecutionContext(
     cpu=observe_cpu(),
     backend=backend,
     numerical_runtime=observe_numerical_runtime(),
-    randomness=observe_randomness(),
-    determinism=run.reproducibility.determinism,
-    precision=run.reproducibility.precision,
-    parallelism=run.reproducibility.parallelism,
 )
 ```
+
+The child records the controls it applied:
+
+```python
+class GeneratorInitializationReceipt(ProtocolModel):
+    family: Literal[
+        "python",
+        "numpy_generator",
+        "numpy_legacy",
+        "torch_cpu",
+        "torch_cuda",
+    ]
+    seed: RNGSeed
+    name: HumanId | None = None
+    device_index: int | None = Field(default=None, ge=0)
+    state_sha256: SHA256
+
+
+StartupVariable = Literal[
+    "CUBLAS_WORKSPACE_CONFIG",
+    "CUDA_VISIBLE_DEVICES",
+    "MKL_NUM_THREADS",
+    "OMP_NUM_THREADS",
+    "PYTHONHASHSEED",
+]
+
+
+class ProcessStartupReceipt(ProtocolModel):
+    environment: dict[StartupVariable, str]
+    reproducibility: ReproducibilitySpec
+    generators: tuple[GeneratorInitializationReceipt, ...]
+```
+
+`environment` contains the allowlisted startup variables derived by
+`process_environment()`. The child reads those values from its own environment.
+After `apply_reproducibility()` returns, the child queries the supported
+PyTorch controls and thread counts and records them in `reproducibility`. Each
+generator receipt contains the frozen run seed and a digest of that generator's
+state immediately after initialization.
+
+Each configured NumPy generator produces one `numpy_generator` receipt whose
+`name` equals its key in `NumPyRandomnessSpec.generators`. The optional legacy
+global generator produces one `numpy_legacy` receipt. A CUDA generator receipt
+uses `device_index`. `name` is present exactly for `numpy_generator`, and
+`device_index` is present exactly for `torch_cuda`.
+
+The DataLoader state enters the training `resume_state` artifact at a checkpoint
+boundary. A future runner-owned DataLoader construction contract can add a
+startup receipt for a dedicated loader generator.
 
 For a CUDA stage, the coordinator selects one device whose model satisfies the
 frozen `CUDAComputeSpec`. `CUDA_VISIBLE_DEVICES` exposes that device to the
@@ -187,7 +232,8 @@ project stage module.
 
 ## Persisted evidence
 
-`ResolvedBaseSpec` stores the stage invocation receipt defined by
+`ResolvedBaseSpec` stores `ProcessStartupReceipt` and the stage invocation
+receipt defined by
 [Stage invocation](STAGE_INVOCATION.md). The resolved stage also stores the
 `ExecutionContext` observed inside the child process.
 
@@ -202,7 +248,9 @@ versions active in the child.
 | Check | Rule |
 |---|---|
 | `startup.plan` | The child context identifies the frozen run and selected stage. |
-| `startup.environment` | The child receives the canonical start-time environment derived from the run controls and effective stage environment. |
+| `startup.environment` | The values read by the child equal the canonical allowlisted mapping derived from the run controls and effective stage environment. |
+| `startup.controls` | The controls queried after application equal `RunSpec.reproducibility`. |
+| `startup.randomness` | The receipt set matches every configured generator; each receipt contains `RunSpec.seed` and its initialized state digest. |
 | `startup.callable` | The child invokes the exact decorated callable frozen by the stage spec. |
 | `startup.context` | The callable receives the typed context bound to the selected stage. |
 | `startup.runtime` | The resolved stage contains the host CPU and numerical runtime observed inside the child. |
@@ -219,8 +267,8 @@ versions active in the child.
 | Worker | Load the frozen callable and invoke it with the typed context. |
 | Stage execution | Use the same child-process startup path for Python and CLI callers. |
 | Runtime | Select the compute backend from the effective environment and observe the host CPU plus the selected CPU or CUDA backend. |
-| Persistence | Store the startup, invocation, CPU, compute-backend, and numerical-runtime evidence on the resolved stage. |
-| Verification | Apply the eight startup checks above. |
+| Persistence | Store the applied startup receipt, invocation receipt, CPU, compute-backend, and numerical-runtime evidence on the resolved stage. |
+| Verification | Apply the ten startup checks above. |
 | Tests | Exercise direct Python execution, CLI execution, start-time controls, one invocation, CPU execution on a GPU-capable host, one CUDA device, and a multi-device rejection. |
 
 ## Acceptance case
