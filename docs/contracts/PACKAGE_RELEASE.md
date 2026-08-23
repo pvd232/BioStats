@@ -31,7 +31,7 @@ The public project interface includes the stage decorators, typed stage
 contexts, and `viper.run(stage_callable)`. The CLI delegates execution to the
 same application coordinator.
 
-## Optional project scaffold
+## Project scaffold
 
 `viper init PATH --package PROJECT_PACKAGE` creates a small runnable project:
 

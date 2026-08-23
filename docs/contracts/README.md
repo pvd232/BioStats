@@ -32,6 +32,6 @@ Each contract uses one status:
 | [Cloud execution](CLOUD_EXECUTION.md) | Approved | Execution on a pre-provisioned GCE instance |
 | [Package release](PACKAGE_RELEASE.md) | Approved | Installed-distribution and publication acceptance |
 
-The [publication roadmap](../PUBLICATION_TODO.md) orders these contracts. The
+The [master execution checklist](../PUBLICATION_TODO.md) orders these contracts. The
 [protocol](../ProvenanceS1_v3.md) remains the authority for serialized VIPER
 documents.

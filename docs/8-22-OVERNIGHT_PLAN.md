@@ -4,10 +4,11 @@
 
 **Time budget:** six hours
 
-**Authority:** [VIPER 0.1 release roadmap](PUBLICATION_TODO.md)
+**Authority:** [VIPER 0.1 master execution checklist](PUBLICATION_TODO.md)
 
 This session delivers the first complete local VIPER execution path. The
-release roadmap remains the source of truth for the complete 0.1 scope.
+master execution checklist remains the source of truth for the complete 0.1
+scope.
 
 ## Session outcome
 
@@ -113,10 +114,10 @@ Use recovered slack in this order:
 2. Add immutable plan-diff and upstream-lineage inspection.
 3. Add an OCI worker spike behind the frozen execution-policy interface.
 
-## Deferred release work
+## Deferred follow-up work
 
-The [release roadmap](PUBLICATION_TODO.md) retains these release gates for
-later sessions:
+The [master execution checklist](PUBLICATION_TODO.md) records the current
+release or post-alpha placement of these workstreams:
 
 - hardened OCI execution on a pre-provisioned GCE host;
 - the full crash, preemption, cancellation, and publication-recovery matrix;
@@ -170,7 +171,7 @@ state unchanged.
 
 All four operations are implemented. `status()` reads one local durable
 attempt journal. The coordinator identity, access policy, and mutation dry-run
-contracts remain in the release roadmap.
+contracts remain in the master execution checklist.
 
 ## Checklist audit
 
@@ -191,5 +192,5 @@ The final cross-platform pass found that the repository-wide `build/` ignore
 rule excluded the canonical build-stage examples from Git. The ignore rule now
 targets the root package-build directory, and the example documents are
 tracked. Pyright now receives the active Python interpreter explicitly, which
-removes the former machine-specific Conda paths. Remote CI passed all four
-advertised Python versions on commit `21fa542`.
+removes machine-specific Conda paths from interpreter discovery. Remote CI
+passed all four advertised Python versions on commit `21fa542`.
