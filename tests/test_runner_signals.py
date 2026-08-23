@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -26,10 +27,13 @@ from tests.fixtures import (
 from viper.authoring import RunPlanDraft, StageDraft, freeze_run_plan
 from viper.journal import DurableJournal
 from viper.local_store import LocalArtifactStore
+from viper.preflight import preflight_local_plan
 from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
     ArtifactLoaderRef,
+    CPUComputeSpec,
+    CUDAComputeSpec,
     DownloadParams,
     DownloadSpec,
     DownloadVariantStageParams,
@@ -41,6 +45,7 @@ from viper.protocol import (
     ParameterModelRef,
     ReplicateSpec,
     ResolvedRun,
+    ResolvedStageInvocationRef,
     RunSpec,
     SingleFileArtifactSpec,
     StageArtifactRef,
@@ -52,10 +57,13 @@ from viper.protocol import (
     VariantSpec,
 )
 from viper.runner import RunFetcher
-from viper.serialization import parse_yaml_bytes, serialize_document
+from viper.serialization import document_digest, parse_yaml_bytes, serialize_document
 from viper.verifier import (
+    VerificationError,
     VerificationPolicy,
+    _verify_stage_invocation,
     read_attempt_reference,
+    verify_attempt_stages,
     verify_run_result,
 )
 
@@ -107,8 +115,30 @@ def _git(root: Path, *arguments: str) -> str:
     ).stdout.strip()
 
 
-def _write_source_files(root: Path) -> dict[str, bytes]:
+def _write_source_files(root: Path, *, blocking: bool = True) -> dict[str, bytes]:
     """Write the two stage callables and their supporting project code."""
+    train_operation = (
+        b"    output_root = context.artifacts['parameters'].parent\n"
+        b"    output_root.mkdir(parents=True, exist_ok=True)\n"
+        b"    child = subprocess.Popen(\n"
+        b"        [sys.executable, '-c', 'import time; time.sleep(300)']\n"
+        b"    )\n"
+        b"    (output_root / 'worker-pids.txt').write_text(\n"
+        b"        f'{os.getpid()}\\n{child.pid}\\n', encoding='utf-8'\n"
+        b"    )\n"
+        b"    print('blocking train started', flush=True)\n"
+        b"    while True:\n"
+        b"        time.sleep(1)\n"
+        if blocking
+        else (
+            b"    assert context.inputs['prior'].read_bytes() == b'prior'\n"
+            b"    context.artifacts['parameters'].parent.mkdir(\n"
+            b"        parents=True, exist_ok=True\n"
+            b"    )\n"
+            b"    context.artifacts['parameters'].write_bytes(b'parameters')\n"
+            b"    context.artifacts['resume_state'].write_bytes(b'resume')\n"
+        )
+    )
     source_files = {
         "environment.yml": b"name: viper-signal-test\n",
         "project/loaders/bytes_file.py": (
@@ -143,20 +173,12 @@ def _write_source_files(root: Path) -> dict[str, bytes]:
             b"import sys\n"
             b"import time\n\n"
             b"from project.parameters.train import SignalTrainParameters\n"
-            b"from viper import train_stage\n\n"
+            b"from viper import run, train_stage\n\n"
             b"@train_stage(parameter_model=SignalTrainParameters)\n"
             b"def train(context):\n"
-            b"    output_root = context.artifacts['parameters'].parent\n"
-            b"    output_root.mkdir(parents=True, exist_ok=True)\n"
-            b"    child = subprocess.Popen(\n"
-            b"        [sys.executable, '-c', 'import time; time.sleep(300)']\n"
-            b"    )\n"
-            b"    (output_root / 'worker-pids.txt').write_text(\n"
-            b"        f'{os.getpid()}\\n{child.pid}\\n', encoding='utf-8'\n"
-            b"    )\n"
-            b"    print('blocking train started', flush=True)\n"
-            b"    while True:\n"
-            b"        time.sleep(1)\n"
+            + train_operation
+            + b"\nif __name__ == '__main__':\n"
+            b"    run(train)\n"
         ),
     }
     for relative_path, raw in source_files.items():
@@ -171,6 +193,8 @@ def _freeze_signal_plan(
     source_files: dict[str, bytes],
     host: str,
     port: int,
+    *,
+    compute: CPUComputeSpec | CUDAComputeSpec | None = None,
 ) -> Path:
     """Freeze one download-then-blocking-train plan for a real coordinator."""
     experiment = ExperimentSpec(
@@ -206,6 +230,7 @@ def _freeze_signal_plan(
         {"repository": REPOSITORY, "commit": source_commit}
     )
     environment = LocalEnvironmentSpec(
+        compute=CPUComputeSpec() if compute is None else compute,
         lockfile=GitFileRef.model_validate(
             {
                 "repository": REPOSITORY,
@@ -458,3 +483,245 @@ def test_signal_closes_attempt_with_active_stage_evidence(
         fetcher=fetcher,
     )
     assert verified.attempts[-1] == attempt
+
+
+def test_python_adapter_and_cli_share_verification_boundary(
+    tmp_path: Path,
+    signal_http_source: tuple[str, int],
+) -> None:
+    """Execute one frozen plan through both public coordinator interfaces."""
+    python_root = tmp_path / "python-project"
+    python_root.mkdir()
+    _git(python_root, "init", "--quiet")
+    _git(python_root, "config", "user.email", "viper@example.com")
+    _git(python_root, "config", "user.name", "VIPER Test")
+    _git(python_root, "remote", "add", "origin", REPOSITORY)
+    source_files = _write_source_files(python_root, blocking=False)
+    python_run_path = _freeze_signal_plan(
+        python_root,
+        source_files,
+        *signal_http_source,
+    )
+    cli_root = tmp_path / "cli-project"
+    shutil.copytree(python_root, cli_root)
+    cli_run_path = cli_root / python_run_path.relative_to(python_root)
+    python_environment = os.environ.copy()
+    package_root = Path(__file__).resolve().parents[1]
+    current_python_path = python_environment.get("PYTHONPATH")
+    python_path_parts = [str(python_root), str(package_root)]
+    if current_python_path is not None:
+        python_path_parts.append(current_python_path)
+    python_environment["PYTHONPATH"] = os.pathsep.join(python_path_parts)
+
+    python_process = subprocess.run(
+        (
+            sys.executable,
+            str(python_root / "jobs/train.py"),
+            "--run",
+            str(python_run_path),
+            "--stage",
+            "train",
+            "--repository-root",
+            str(python_root),
+        ),
+        cwd=package_root,
+        env=python_environment,
+        check=False,
+        capture_output=True,
+    )
+    cli_process = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "viper.cli",
+            "--json",
+            "run",
+            str(cli_run_path),
+            "--repository-root",
+            str(cli_root),
+        ),
+        cwd=package_root,
+        check=False,
+        capture_output=True,
+    )
+
+    assert python_process.returncode == 0, python_process.stderr.decode()
+    assert cli_process.returncode == 0, cli_process.stdout.decode()
+    assert json.loads(cli_process.stdout)["status"] == "ok"
+    verified_runs = []
+    for root in (python_root, cli_root):
+        resolved = ResolvedRun.model_validate(
+            parse_yaml_bytes((root / RUN_ROOT / "resolved.yaml").read_bytes())
+        )
+        store = LocalArtifactStore(root)
+        verified_runs.append(
+            verify_run_result(
+                resolved,
+                policy=VerificationPolicy(
+                    trusted_source_repositories=frozenset({REPOSITORY})
+                ),
+                fetcher=RunFetcher(root, store, REPOSITORY),
+            )
+        )
+    assert verified_runs[0].plan.run == verified_runs[1].plan.run
+    assert (
+        verified_runs[0].result.status
+        == verified_runs[1].result.status
+        == "succeeded"
+    )
+    assert set(verified_runs[0].resolved_stages) == {"download", "train"}
+    assert set(verified_runs[1].resolved_stages) == {"download", "train"}
+    assert (
+        verified_runs[0].resolved_stages["train"].artifacts
+        == verified_runs[1].resolved_stages["train"].artifacts
+    )
+
+    verified = verified_runs[0]
+    attempt = verified.attempts[-1]
+    stage = verified.plan.stages["train"]
+    assert isinstance(stage, TrainSpec)
+    original_reference = attempt.invocations[-1]
+    original_receipt = StageInvocationReceipt.model_validate(
+        parse_yaml_bytes(
+            LocalArtifactStore(python_root).fetch(original_reference.stored_at)
+        )
+    )
+    fetcher = RunFetcher(
+        python_root,
+        LocalArtifactStore(python_root),
+        REPOSITORY,
+    )
+
+    def publish_receipt(
+        receipt: StageInvocationReceipt,
+    ) -> ResolvedStageInvocationRef:
+        """Publish one changed receipt at the canonical path for rejection."""
+        reference = LocalArtifactStore(python_root).resolved_files(
+            {
+                original_reference.stored_at.path: serialize_document(receipt),
+            }
+        )[0]
+        return ResolvedStageInvocationRef(
+            sha256=reference.sha256,
+            bytes=reference.bytes,
+            stored_at=reference.stored_at,
+        )
+
+    changed_implementation = original_receipt.model_copy(
+        update={
+            "implementation": original_receipt.implementation.model_copy(
+                update={"sha256": "f" * 64}
+            )
+        }
+    )
+    with pytest.raises(VerificationError, match="different implementation"):
+        _verify_stage_invocation(
+            publish_receipt(changed_implementation),
+            attempt=attempt,
+            run=verified.plan.run,
+            stage_id="train",
+            stage=stage,
+            stage_specs=verified.plan.stages,
+            resolved_stage=verified.resolved_stages["train"],
+            fetcher=fetcher,
+        )
+
+    changed_parameter_binding = original_receipt.context.model_copy(
+        update={"parameter_digest": "f" * 64}
+    )
+    changed_parameters = original_receipt.model_copy(
+        update={
+            "context": changed_parameter_binding,
+            "context_digest": document_digest(changed_parameter_binding),
+        }
+    )
+    with pytest.raises(VerificationError, match="context differs"):
+        _verify_stage_invocation(
+            publish_receipt(changed_parameters),
+            attempt=attempt,
+            run=verified.plan.run,
+            stage_id="train",
+            stage=stage,
+            stage_specs=verified.plan.stages,
+            resolved_stage=verified.resolved_stages["train"],
+            fetcher=fetcher,
+        )
+
+    changed_context_binding = original_receipt.context.model_copy(
+        update={"stage_id": "download"}
+    )
+    changed_context = original_receipt.model_copy(
+        update={
+            "context": changed_context_binding,
+            "context_digest": document_digest(changed_context_binding),
+        }
+    )
+    with pytest.raises(VerificationError, match="context differs"):
+        _verify_stage_invocation(
+            publish_receipt(changed_context),
+            attempt=attempt,
+            run=verified.plan.run,
+            stage_id="train",
+            stage=stage,
+            stage_specs=verified.plan.stages,
+            resolved_stage=verified.resolved_stages["train"],
+            fetcher=fetcher,
+        )
+
+    duplicate_attempt = attempt.model_copy(
+        update={
+            "invocations": (*attempt.invocations, attempt.invocations[-1]),
+        }
+    )
+    with pytest.raises(VerificationError, match="more invocations than planned"):
+        verify_attempt_stages(
+            duplicate_attempt,
+            verified.plan.run,
+            verified.plan.stages,
+            require_complete=True,
+            policy=VerificationPolicy(
+                trusted_source_repositories=frozenset({REPOSITORY})
+            ),
+            fetcher=fetcher,
+        )
+
+
+@pytest.mark.parametrize(
+    ("compute", "expected_code"),
+    (
+        (
+            CUDAComputeSpec(model="VIPER unavailable test device", count=1),
+            "startup.compute",
+        ),
+        (
+            CUDAComputeSpec(model="VIPER unavailable test device", count=2),
+            "startup.distributed",
+        ),
+    ),
+    ids=("unavailable-cuda", "multi-gpu"),
+)
+def test_preflight_rejects_unsupported_cuda_requests(
+    tmp_path: Path,
+    signal_http_source: tuple[str, int],
+    compute: CUDAComputeSpec,
+    expected_code: str,
+) -> None:
+    """Reject unavailable and multi-device requests through named checks."""
+    root = tmp_path / "project"
+    root.mkdir()
+    _git(root, "init", "--quiet")
+    _git(root, "config", "user.email", "viper@example.com")
+    _git(root, "config", "user.name", "VIPER Test")
+    _git(root, "remote", "add", "origin", REPOSITORY)
+    source_files = _write_source_files(root, blocking=False)
+    run_path = _freeze_signal_plan(
+        root,
+        source_files,
+        *signal_http_source,
+        compute=compute,
+    )
+
+    report = preflight_local_plan(root, run_path)
+
+    failures = {check.code for check in report.checks if check.status == "failure"}
+    assert expected_code in failures

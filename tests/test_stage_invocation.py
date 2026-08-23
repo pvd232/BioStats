@@ -85,3 +85,6 @@ def test_stage_loader_requires_exact_decorated_top_level_callable(
             reference.model_copy(update={"bytes": len(raw) + 1}),
             import_root=tmp_path,
         )
+    path.write_bytes(raw.replace(b"return None", b"return 3   "))
+    with pytest.raises(StageDefinitionError, match="SHA-256"):
+        load_stage_callable(path, reference, import_root=tmp_path)
