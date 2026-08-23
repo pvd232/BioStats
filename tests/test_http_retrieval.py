@@ -3,7 +3,7 @@
 import hashlib
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -93,6 +93,13 @@ def local_http_server() -> Iterator[tuple[str, int, list[tuple[str, str | None]]
                 except BrokenPipeError:
                     pass
                 return
+            if self.path == "/large":
+                body = b"x" * 32
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             self.send_error(404)
 
         def log_message(self, format: str, *args: object) -> None:
@@ -107,6 +114,226 @@ def local_http_server() -> Iterator[tuple[str, int, list[tuple[str, str | None]]
         server.shutdown()
         thread.join()
         server.server_close()
+
+
+TransportFactory = Callable[[Path], ResolvedHttpTransport]
+
+
+@pytest.fixture(params=("builtin", "project"))
+def conforming_transport(request: pytest.FixtureRequest) -> TransportFactory:
+    """Return each transport implementation subject to the shared contract."""
+    if request.param == "builtin":
+        return lambda root: resolve_transport(root, BuiltinHttpTransportSpec())
+
+    parameter_raw = (
+        b"from viper.protocol import HttpTransportParams\n\n"
+        b"class ConformingTransportParams(HttpTransportParams):\n"
+        b'    """Validate the conformance transport parameters."""\n'
+    )
+    implementation_raw = (
+        b"import httpx\n"
+        b"from project.transport_params import ConformingTransportParams\n"
+        b"from viper import HttpTransportResult, http_transport\n"
+        b"from viper.http import HttpRetrievalError\n"
+        b"from viper.protocol import ObservedHttpResponse\n\n"
+        b"@http_transport(transport_id='conforming', "
+        b"parameter_model=ConformingTransportParams)\n"
+        b"def transfer(context):\n"
+        b"    try:\n"
+        b"        response = httpx.get(\n"
+        b"            str(context.request.url),\n"
+        b"            follow_redirects=True,\n"
+        b"            timeout=context.policy.timeout_seconds,\n"
+        b"            trust_env=False,\n"
+        b"        )\n"
+        b"    except httpx.TimeoutException as exc:\n"
+        b"        raise HttpRetrievalError(\n"
+        b"            'HTTP retrieval exceeded its timeout'\n"
+        b"        ) from exc\n"
+        b"    context.destination.parent.mkdir(parents=True, exist_ok=True)\n"
+        b"    context.destination.write_bytes(response.content)\n"
+        b"    headers = {}\n"
+        b"    if 'content-length' in response.headers:\n"
+        b"        headers['content-length'] = response.headers['content-length']\n"
+        b"    return HttpTransportResult(\n"
+        b"        body=context.destination,\n"
+        b"        response=ObservedHttpResponse(\n"
+        b"            response_url=str(response.url),\n"
+        b"            status=response.status_code,\n"
+        b"            response_headers=headers,\n"
+        b"        ),\n"
+        b"    )\n"
+    )
+
+    def create(root: Path) -> ResolvedHttpTransport:
+        """Write and resolve one exact project-owned transport."""
+        parameter_path = root / "project/transport_params.py"
+        implementation_path = root / "project/conforming_transport.py"
+        parameter_path.parent.mkdir(parents=True, exist_ok=True)
+        parameter_path.write_bytes(parameter_raw)
+        implementation_path.write_bytes(implementation_raw)
+        return resolve_transport(
+            root,
+            ProjectHttpTransportSpec(
+                transport_id="conforming",
+                implementation=HttpTransportImplementationRef(
+                    path="project/conforming_transport.py",
+                    symbol="transfer",
+                    sha256=hashlib.sha256(implementation_raw).hexdigest(),
+                    bytes=len(implementation_raw),
+                ),
+                parameter_model=ParameterModelRef(
+                    path="project/transport_params.py",
+                    symbol="ConformingTransportParams",
+                    sha256=hashlib.sha256(parameter_raw).hexdigest(),
+                    bytes=len(parameter_raw),
+                ),
+                params=HttpTransportParams(),
+            ),
+        )
+
+    return create
+
+
+def _invoke_conforming_transport(
+    root: Path,
+    factory: TransportFactory,
+    request: HttpRequestSpec,
+    policy: HttpRetrievalPolicy,
+    *,
+    destination: Path | None = None,
+) -> bytes:
+    """Invoke either transport through the same contract boundary."""
+    workspace = root / "retrieval"
+    selected_destination = workspace / "body" if destination is None else destination
+    result = invoke_transport(
+        root,
+        factory(root),
+        request,
+        policy,
+        workspace,
+        selected_destination,
+    )
+    return result.body.read_bytes()
+
+
+def test_transport_conformance_accepts_exact_response_body(
+    tmp_path: Path,
+    local_http_server: tuple[str, int, list[tuple[str, str | None]]],
+    conforming_transport: TransportFactory,
+) -> None:
+    """Accept one exact body through built-in and project transports."""
+    host, port, _ = local_http_server
+    body = b"verified response"
+
+    received = _invoke_conforming_transport(
+        tmp_path,
+        conforming_transport,
+        _request(
+            url=f"http://{host}:{port}/body",
+            expected_body_sha256=hashlib.sha256(body).hexdigest(),
+            expected_body_bytes=len(body),
+        ),
+        _policy(host=host, port=port),
+    )
+
+    assert received == body
+
+
+@pytest.mark.parametrize(
+    ("path", "request_updates", "policy_updates", "message"),
+    (
+        ("missing", {}, {}, "status"),
+        (
+            "body",
+            {"expected_body_bytes": len(b"verified response") - 1},
+            {},
+            "byte count",
+        ),
+        (
+            "body",
+            {"expected_body_sha256": "b" * 64},
+            {},
+            "SHA-256",
+        ),
+        (
+            "large",
+            {"expected_body_bytes": 16},
+            {"max_body_bytes": 16},
+            "exceeds",
+        ),
+        (
+            "redirect",
+            {
+                "expected_body_sha256": hashlib.sha256(
+                    b"verified response"
+                ).hexdigest(),
+                "expected_body_bytes": len(b"verified response"),
+            },
+            {},
+            "host",
+        ),
+        (
+            "slow",
+            {
+                "expected_body_sha256": hashlib.sha256(b"x").hexdigest(),
+                "expected_body_bytes": 1,
+            },
+            {"timeout_seconds": 0.01},
+            "timeout",
+        ),
+    ),
+    ids=("status", "bytes", "sha256", "size", "origin", "timeout"),
+)
+def test_transport_conformance_rejects_response_contract_violations(
+    tmp_path: Path,
+    local_http_server: tuple[str, int, list[tuple[str, str | None]]],
+    conforming_transport: TransportFactory,
+    path: str,
+    request_updates: dict[str, object],
+    policy_updates: dict[str, object],
+    message: str,
+) -> None:
+    """Apply every response-boundary rejection to both transport kinds."""
+    host, port, _ = local_http_server
+    values: dict[str, object] = {
+        "url": f"http://{host}:{port}/{path}",
+        "expected_body_sha256": hashlib.sha256(b"verified response").hexdigest(),
+        "expected_body_bytes": len(b"verified response"),
+    }
+    values.update(request_updates)
+    policy = _policy(host=host, port=port).model_copy(update=policy_updates)
+
+    with pytest.raises(HttpRetrievalError, match=message):
+        _invoke_conforming_transport(
+            tmp_path,
+            conforming_transport,
+            _request(**values),
+            policy,
+        )
+
+
+def test_transport_conformance_rejects_destination_escape(
+    tmp_path: Path,
+    local_http_server: tuple[str, int, list[tuple[str, str | None]]],
+    conforming_transport: TransportFactory,
+) -> None:
+    """Keep both transport kinds inside the assigned retrieval workspace."""
+    host, port, _ = local_http_server
+    body = b"verified response"
+
+    with pytest.raises(HttpRetrievalError, match="destination escapes"):
+        _invoke_conforming_transport(
+            tmp_path,
+            conforming_transport,
+            _request(
+                url=f"http://{host}:{port}/body",
+                expected_body_sha256=hashlib.sha256(body).hexdigest(),
+                expected_body_bytes=len(body),
+            ),
+            _policy(host=host, port=port),
+            destination=tmp_path / "escaped-body",
+        )
 
 
 def test_request_rejects_literal_and_unauthorized_credentials() -> None:
