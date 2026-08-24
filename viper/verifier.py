@@ -52,7 +52,9 @@ from .protocol import (
     DataRole,
     DownloadSpec,
     EmbedSpec,
+    EnvironmentSpec,
     EvaluateSpec,
+    ExecutionContext,
     ExperimentSpec,
     FloatComparator,
     FutureInputRef,
@@ -63,6 +65,7 @@ from .protocol import (
     HuggingFaceFileRef,
     InternalSpec,
     LocalFileRef,
+    LocalHostContext,
     LocalStageResultSnapshotRef,
     Measurement,
     MetricExecutionReceipt,
@@ -76,6 +79,7 @@ from .protocol import (
     ResolvedBaseSpec,
     ResolvedBundleArtifact,
     ResolvedDownloadSpec,
+    ResolvedEnvironment,
     ResolvedFileRef,
     ResolvedFutureInputRef,
     ResolvedGCEEnvironment,
@@ -1608,6 +1612,64 @@ def _verify_startup_backend(
         )
 
 
+def _verify_effective_environment(
+    stage_id: StageId,
+    requested: EnvironmentSpec,
+    resolved: ResolvedEnvironment,
+    context: ExecutionContext,
+) -> None:
+    """Join the frozen environment to its resolved and observed evidence."""
+    if resolved.kind != requested.kind:
+        raise VerificationError(
+            f"environment.kind: stage {stage_id!r} realized another host kind"
+        )
+    if resolved.compute != requested.compute:
+        raise VerificationError(
+            f"environment.compute: stage {stage_id!r} realized another compute request"
+        )
+    if resolved.lockfile.stored_at != requested.lockfile:
+        raise VerificationError(
+            f"environment.lockfile: stage {stage_id!r} resolved another lockfile"
+        )
+    if resolved.python_environment != requested.python_environment:
+        raise VerificationError(
+            f"environment.python: stage {stage_id!r} observed another Python "
+            "environment"
+        )
+    if context.host.provider != requested.kind:
+        raise VerificationError(
+            f"environment.host: stage {stage_id!r} ran on another host kind"
+        )
+    if isinstance(requested, GCEEnvironmentSpec):
+        if not isinstance(resolved, ResolvedGCEEnvironment):
+            raise VerificationError(
+                f"gce.environment: stage {stage_id!r} omitted its GCE environment"
+            )
+        if not isinstance(context.host, GCEHostContext):
+            raise VerificationError(
+                f"gce.host: stage {stage_id!r} omitted its GCE host evidence"
+            )
+        if (
+            resolved.provisioning != requested.provisioning
+            or context.host.provisioning != requested.provisioning
+        ):
+            raise VerificationError(
+                f"gce.provisioning: stage {stage_id!r} used another provisioning source"
+            )
+        if (
+            resolved.machine_type != requested.machine_type
+            or context.host.machine_type != requested.machine_type
+        ):
+            raise VerificationError(
+                f"gce.machine_type: stage {stage_id!r} used another machine type"
+            )
+    elif not isinstance(context.host, LocalHostContext):
+        raise VerificationError(
+            f"environment.host: stage {stage_id!r} omitted its local host evidence"
+        )
+    _verify_startup_backend(stage_id, requested.compute, context.backend)
+
+
 def _verify_unresolved_stage_invocation(
     reference: ResolvedStageInvocationRef,
     *,
@@ -1923,29 +1985,12 @@ def verify_attempt_stages(
 
         requested_environment = stage_spec.environment or run.environment
         resolved_environment = resolved_spec.environment
-        environment_differs = (
-            resolved_environment.kind != requested_environment.kind
-            or resolved_environment.compute != requested_environment.compute
-            or resolved_environment.lockfile.stored_at != requested_environment.lockfile
-        )
-        if isinstance(resolved_environment, ResolvedGCEEnvironment) and isinstance(
+        _verify_effective_environment(
+            stage_reference.stage_id,
             requested_environment,
-            GCEEnvironmentSpec,
-        ):
-            environment_differs = environment_differs or (
-                resolved_environment.provisioning != requested_environment.provisioning
-                or resolved_environment.machine_type
-                != requested_environment.machine_type
-            )
-        environment_differs = environment_differs or (
-            resolved_environment.python_environment
-            != requested_environment.python_environment
+            resolved_environment,
+            resolved_spec.execution_context,
         )
-        if environment_differs:
-            raise VerificationError(
-                f"stage {stage_reference.stage_id!r} realized a different "
-                "environment than requested"
-            )
 
         expected_command = (
             "python",

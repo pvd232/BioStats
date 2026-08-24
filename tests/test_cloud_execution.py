@@ -10,15 +10,23 @@ from pydantic import ValidationError
 from viper.protocol import (
     CPUBackendContext,
     CPUComputeSpec,
+    GCEBootImageRef,
+    GCEEnvironmentSpec,
     GCEHostContext,
+    GitFileRef,
     PythonDistributionSpec,
     PythonEnvironmentSpec,
+    ResolvedGCEEnvironment,
+    ResolvedGitFileRef,
 )
 from viper.runtime import (
     observe_gce_execution,
     observe_gce_provisioning,
     observe_python_environment,
 )
+from viper.verifier import VerificationError, _verify_effective_environment
+
+REPOSITORY = "https://github.com/example/viper-project"
 
 
 def _metadata(path: str) -> str:
@@ -116,3 +124,139 @@ def test_gce_machine_image_requires_matching_provisioning_attestation() -> None:
 
     assert source.kind == "machine_image"
     assert source.id == "4030260845309136958"
+
+
+def test_gce_environment_joins_requested_resolved_and_observed_evidence() -> None:
+    """Accept one complete GCE environment evidence chain."""
+    provisioning = GCEBootImageRef(
+        project="ubuntu-os-cloud",
+        name="ubuntu-2404-v1",
+        id="987654321",
+    )
+    lockfile = GitFileRef.model_validate(
+        {
+            "repository": REPOSITORY,
+            "commit": "a" * 40,
+            "path": "uv.lock",
+        }
+    )
+    python = observe_python_environment()
+    requested = GCEEnvironmentSpec(
+        provisioning=provisioning,
+        machine_type="g2-standard-12",
+        compute=CPUComputeSpec(),
+        lockfile=lockfile,
+        python_environment=python,
+    )
+    resolved = ResolvedGCEEnvironment(
+        provisioning=provisioning,
+        machine_type="g2-standard-12",
+        compute=CPUComputeSpec(),
+        lockfile=ResolvedGitFileRef(
+            sha256="0" * 64,
+            bytes=4,
+            stored_at=lockfile,
+        ),
+        python_environment=python,
+    )
+    context = observe_gce_execution(
+        CPUComputeSpec(),
+        metadata_get=_metadata,
+        provisioning_id_get=_provisioning_id,
+    )
+
+    _verify_effective_environment("train", requested, resolved, context)
+
+
+def test_gce_environment_rejects_each_changed_identity() -> None:
+    """Reject changed provisioning, machine, lockfile, and Python evidence."""
+    provisioning = GCEBootImageRef(
+        project="ubuntu-os-cloud",
+        name="ubuntu-2404-v1",
+        id="987654321",
+    )
+    lockfile = GitFileRef.model_validate(
+        {
+            "repository": REPOSITORY,
+            "commit": "a" * 40,
+            "path": "uv.lock",
+        }
+    )
+    python = observe_python_environment()
+    requested = GCEEnvironmentSpec(
+        provisioning=provisioning,
+        machine_type="g2-standard-12",
+        compute=CPUComputeSpec(),
+        lockfile=lockfile,
+        python_environment=python,
+    )
+    resolved = ResolvedGCEEnvironment(
+        provisioning=provisioning,
+        machine_type="g2-standard-12",
+        compute=CPUComputeSpec(),
+        lockfile=ResolvedGitFileRef(
+            sha256="0" * 64,
+            bytes=4,
+            stored_at=lockfile,
+        ),
+        python_environment=python,
+    )
+    context = observe_gce_execution(
+        CPUComputeSpec(),
+        metadata_get=_metadata,
+        provisioning_id_get=_provisioning_id,
+    )
+    changed_provisioning = provisioning.model_copy(update={"id": "111111111"})
+    changed_python = python.model_copy(update={"python_version": "0.0.0"})
+    assert isinstance(context.host, GCEHostContext)
+    cases = (
+        (
+            resolved.model_copy(update={"provisioning": changed_provisioning}),
+            context,
+            "gce.provisioning",
+        ),
+        (
+            resolved,
+            context.model_copy(
+                update={
+                    "host": context.host.model_copy(
+                        update={"provisioning": changed_provisioning}
+                    )
+                }
+            ),
+            "gce.provisioning",
+        ),
+        (
+            resolved.model_copy(update={"machine_type": "a2-highgpu-1g"}),
+            context,
+            "gce.machine_type",
+        ),
+        (
+            resolved.model_copy(
+                update={
+                    "lockfile": resolved.lockfile.model_copy(
+                        update={
+                            "stored_at": lockfile.model_copy(
+                                update={"commit": "b" * 40}
+                            )
+                        }
+                    )
+                }
+            ),
+            context,
+            "environment.lockfile",
+        ),
+        (
+            resolved.model_copy(update={"python_environment": changed_python}),
+            context,
+            "environment.python",
+        ),
+    )
+    for changed_resolved, changed_context, message in cases:
+        with pytest.raises(VerificationError, match=message):
+            _verify_effective_environment(
+                "train",
+                requested,
+                changed_resolved,
+                changed_context,
+            )

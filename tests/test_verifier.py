@@ -1205,6 +1205,50 @@ class RunAndStageVerificationTests(unittest.TestCase):
 
         self.assertEqual(verified["train"], resolved)
 
+        changed_precision = run.reproducibility.precision.model_copy(
+            update={"float32_matmul_precision": "high"}
+        )
+        changed_controls = run.reproducibility.model_copy(
+            update={"precision": changed_precision}
+        )
+        changed_resolved = resolved.model_copy(
+            update={
+                "startup": resolved.startup.model_copy(
+                    update={"reproducibility": changed_controls}
+                )
+            }
+        )
+        changed_resolved_raw = yaml_bytes(changed_resolved)
+        changed_stage = stage.model_copy(
+            update={
+                "resolved_spec": stage.resolved_spec.model_copy(
+                    update={
+                        "sha256": sha256(changed_resolved_raw),
+                        "bytes": len(changed_resolved_raw),
+                    }
+                )
+            }
+        )
+        changed_attempt = attempt.model_copy(
+            update={"resolved_stages": (changed_stage,)}
+        )
+        changed_attempt_ref, changed_attempt_raw = attempt_reference(changed_attempt)
+        changed_record = record.model_copy(update={"attempts": (changed_attempt_ref,)})
+        changed_documents = dict(documents)
+        changed_documents[f"{RUN_ROOT}/stages/train/resolved.yaml"] = (
+            changed_resolved_raw
+        )
+        changed_documents[changed_attempt_ref.stored_at.path] = changed_attempt_raw
+
+        with self.assertRaisesRegex(VerificationError, "startup controls differ"):
+            verify_resolved_stages(
+                changed_record,
+                run,
+                {"train": spec},
+                policy=POLICY,
+                fetcher=lambda location: changed_documents[location.path],
+            )
+
     def test_attempt_measurements_and_logs_are_verified(self) -> None:
         """Verify that attempt measurements and logs are verified."""
         spec = train_spec().model_copy(update={"metric_ids": ("training_loss",)})

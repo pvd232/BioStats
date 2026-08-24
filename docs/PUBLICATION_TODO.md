@@ -578,7 +578,7 @@ python -m pytest tests/test_benchmark_execution.py \
 
 - [x] Exercise deterministic local CPU, local CUDA, GCE CPU, and GCE CUDA
   fixtures.
-- [ ] Reject provisioning-source, machine-type, accelerator, lockfile, Python
+- [x] Reject provisioning-source, machine-type, accelerator, lockfile, Python
   environment, and numerical-control mismatches.
 - [x] Build and install the Phase 7 wheel on the designated L4 VM.
 - [ ] Execute the maintained acceptance project from the existing SSH terminal with
