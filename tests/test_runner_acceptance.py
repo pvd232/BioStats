@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 import threading
 from collections.abc import Iterator
@@ -31,12 +32,14 @@ from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
     ArtifactLoaderRef,
+    CUDAComputeSpec,
     DownloadParams,
     DownloadSpec,
     DownloadVariantStageParams,
     ExperimentSpec,
     FloatComparator,
     FutureInputRef,
+    GCEEnvironmentSpec,
     GitFileRef,
     GitSource,
     HuggingFaceFileRef,
@@ -60,6 +63,7 @@ from viper.protocol import (
 )
 from viper.runner import RunError, RunFetcher, execute_benchmark_confirmation
 from viper.runner import run as execute_run
+from viper.runtime import observe_gce_provisioning
 from viper.serialization import parse_yaml_bytes, serialize_document
 from viper.stage_execution import StageExecutionError, execute_stage_process
 from viper.stages import load_stage_callable
@@ -300,16 +304,26 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     source = GitSource.model_validate(
         {"repository": REPOSITORY, "commit": source_commit}
     )
-    environment = LocalEnvironmentSpec(
-        lockfile=GitFileRef.model_validate(
-            {
-                "repository": REPOSITORY,
-                "commit": source_commit,
-                "path": "environment.yml",
-            }
-        ),
-        python_environment=python_environment(),
+    lockfile = GitFileRef.model_validate(
+        {
+            "repository": REPOSITORY,
+            "commit": source_commit,
+            "path": "environment.yml",
+        }
     )
+    if os.environ.get("VIPER_LIVE_GCE") == "1":
+        environment = GCEEnvironmentSpec(
+            provisioning=observe_gce_provisioning(),
+            machine_type="g2-standard-12",
+            compute=CUDAComputeSpec(model="NVIDIA L4", count=1),
+            lockfile=lockfile,
+            python_environment=python_environment(),
+        )
+    else:
+        environment = LocalEnvironmentSpec(
+            lockfile=lockfile,
+            python_environment=python_environment(),
+        )
     host, port = http_source
     download = DownloadSpec(
         implementation=StageImplementationRef(
