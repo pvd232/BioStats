@@ -622,17 +622,19 @@ python -m pytest tests/test_runtime.py tests/test_cloud_execution.py \
 
 - [x] Implement `viper init PATH --package PROJECT_PACKAGE` for an absent or
   empty target directory.
-- [ ] Generate one five-stage example whose repository-relative spec paths
-  work with any project package name and directory layout:
+- [x] Generate one five-stage example whose repository-relative implementation
+  paths work with any project package name and directory layout:
 
   ```text
   download -> build -> embed -> train -> evaluate
   ```
 
-  The example includes project parameter models, one evaluation metric,
-  artifact loaders, one experiment, one benchmark, and focused project tests.
-- [ ] Make the generated project freeze, preflight, run, benchmark, and verify
-  immediately after creation.
+  The scaffold includes project parameter models, one evaluation metric,
+  artifact loaders, and focused project tests. The maintained acceptance driver
+  authors one experiment and benchmark after the generated repository receives
+  its first source commit.
+- [x] Make the generated source freeze, preflight, run, benchmark, and verify
+  without editing any generated implementation file.
 - [x] Add concise guides for stage callables, parameter models, HTTP downloads,
   metrics, artifact loaders, retries, benchmarks, and GCE execution.
 - [ ] Reconcile README, protocol, application API, public API, contract index,

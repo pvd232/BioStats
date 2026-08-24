@@ -16,11 +16,10 @@ and receive equivalent verified results outside the source checkout.
 ## Current gap
 
 The package builds as `0.1.0a1`, both distributions pass `twine check`, and the
-application exposes project initialization. The release metadata still needs
-its final license and authors. The generated project exercises every decorated
-stage kind; its complete frozen-plan and benchmark execution gate remains open.
-Clean-interpreter validation, final candidate-wheel GCE execution, and
-TestPyPI publication also remain pending.
+application exposes project initialization. The generated source completed the
+acquisition, five-stage candidate, and benchmark-confirmation path. The release
+metadata still needs its final license and authors. Final candidate build
+validation, GCE execution, remote CI, and TestPyPI publication remain.
 
 ## Public surface
 
@@ -53,8 +52,9 @@ The generated layout is an example. VIPER accepts every project implementation
 through repository-relative paths stored in its specs. The protocol remains
 source-layout agnostic.
 
-The generated project must freeze, preflight, execute, and verify one complete
-run as generated.
+The generated implementation files must freeze, preflight, execute, and verify
+without source edits. The acceptance driver initializes Git before it authors
+the source-bound experiment, benchmark, stage, and run documents.
 
 The runnable example has two plans. The acquisition plan publishes the fixed
 evaluation dataset and split, then writes their promoted artifact pointers.
