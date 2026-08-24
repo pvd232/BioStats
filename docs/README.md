@@ -8,6 +8,8 @@ superseded implementations live in the [archive](../archive/).
 
 | File | Role |
 |---|---|
+| [PROJECT_BRIEFING.md](PROJECT_BRIEFING.md) | Current deployment position, next release action, and capability unlocked by publication |
+| [VIPER_TECHNICAL_OVERVIEW.md](VIPER_TECHNICAL_OVERVIEW.md) | Self-contained explanation of VIPER's execution, evidence, verification, and deployment model |
 | [ProvenanceS1_v3.md](ProvenanceS1_v3.md) | Active formal protocol and record contract |
 | [PUBLICATION_TODO.md](PUBLICATION_TODO.md) | Remaining implementation and release work |
 | [VERSIONING.md](VERSIONING.md) | Package and serialized-schema versioning policy |

@@ -12,6 +12,8 @@ both named `viper`.
 
 | File or directory | Role | Principal interface |
 |---|---|---|
+| [project briefing](docs/PROJECT_BRIEFING.md) | States the verified deployment position and immediate publication gate | Release evidence and next owner action |
+| [technical overview](docs/VIPER_TECHNICAL_OVERVIEW.md) | Explains VIPER from frozen plan through execution, evidence, verification, and deployment | Complete system mechanism and guarantee boundary |
 | [v3 protocol](docs/ProvenanceS1_v3.md) | Defines the active formal and protocol contract | Sections 1–23 |
 | [application API](docs/APPLICATION_API.md) | Defines the typed Python, CLI, and agent-facing operation contract | Operations, parameters, results, errors, and discovery |
 | [getting started](docs/GETTING_STARTED.md) | Shows the installed project, stage, run, retry, benchmark, and GCE path | `viper init`, decorators, Python execution, and CLI execution |
