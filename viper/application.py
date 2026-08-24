@@ -37,6 +37,7 @@ from .inspection import lineage as build_lineage
 from .inspection import plan_diff as compare_frozen_plans
 from .journal import AttemptState
 from .preflight import PreflightCheck, preflight_plan
+from .project_init import ProjectInitializationError, initialize_project
 from .protocol import (
     ArtifactPointer,
     BenchmarkResult,
@@ -77,6 +78,7 @@ OperationName = Literal[
     "verify_pointer",
     "get_schema",
     "get_capabilities",
+    "init_project",
 ]
 FailureOrigin = Literal["request", "application", "cli", "internal"]
 ErrorCode = Literal[
@@ -449,6 +451,21 @@ class CapabilitiesSuccess(SuccessModel):
     execution_backends: tuple[str, ...]
 
 
+class InitProjectRequest(ApplicationModel):
+    """Select an absent or empty project root and its import package name."""
+
+    path: Path
+    package: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+
+
+class InitProjectSuccess(SuccessModel):
+    """Report the root and files written for one starter project."""
+
+    operation: Literal["init_project"] = "init_project"  # pyright: ignore[reportIncompatibleVariableOverride]
+    project_root: Path
+    files: tuple[Path, ...]
+
+
 SCHEMA_REGISTRY: dict[str, Any] = {
     "ArtifactPointer": ArtifactPointer,
     "BenchmarkResult": BenchmarkResult,
@@ -460,6 +477,8 @@ SCHEMA_REGISTRY: dict[str, Any] = {
     "ExecuteBenchmarkSuccess": ExecuteBenchmarkSuccess,
     "FreezeRunRequest": FreezeRunRequest,
     "FreezeRunSuccess": FreezeRunSuccess,
+    "InitProjectRequest": InitProjectRequest,
+    "InitProjectSuccess": InitProjectSuccess,
     "LineageRequest": LineageRequest,
     "LineageSuccess": LineageSuccess,
     "CompareRunsRequest": CompareRunsRequest,
@@ -513,6 +532,7 @@ OPERATIONS: tuple[OperationName, ...] = (
     "verify_pointer",
     "get_schema",
     "get_capabilities",
+    "init_project",
 )
 
 
@@ -1043,6 +1063,30 @@ def get_capabilities(request: CapabilitiesRequest) -> CapabilitiesSuccess:
     )
 
 
+def init_project(request: InitProjectRequest) -> InitProjectSuccess:
+    """Generate one runnable five-stage starter project."""
+    try:
+        files = initialize_project(request.path, request.package)
+    except ProjectInitializationError as exc:
+        occupied = request.path.exists() and (
+            not request.path.is_dir() or any(request.path.iterdir())
+        )
+        code: ErrorCode = "write_conflict" if occupied else "io_failed"
+        raise ViperError(
+            ViperFailure(
+                operation="init_project",
+                origin="application",
+                code=code,
+                message=str(exc),
+                details={"path": request.path.as_posix()},
+            )
+        ) from exc
+    return InitProjectSuccess(
+        project_root=request.path.resolve(),
+        files=files,
+    )
+
+
 RequestType = type[ApplicationModel]
 Handler = Callable[[Any], SuccessModel]
 
@@ -1065,6 +1109,7 @@ REQUEST_REGISTRY: dict[OperationName, RequestType] = {
     "verify_pointer": VerifyPointerRequest,
     "get_schema": SchemaRequest,
     "get_capabilities": CapabilitiesRequest,
+    "init_project": InitProjectRequest,
 }
 
 HANDLER_REGISTRY: dict[OperationName, Handler] = {
@@ -1086,6 +1131,7 @@ HANDLER_REGISTRY: dict[OperationName, Handler] = {
     "verify_pointer": verify_pointer,
     "get_schema": get_schema,
     "get_capabilities": get_capabilities,
+    "init_project": init_project,
 }
 
 
@@ -1126,6 +1172,7 @@ def dispatch(
 
 def result_json_bytes(result: ApplicationModel) -> bytes:
     """Encode one application result as deterministic UTF-8 JSON."""
+
     def normalize(value: Any) -> Any:
         """Convert public values into one canonical JSON-compatible form."""
         if isinstance(value, BaseModel):
@@ -1181,6 +1228,8 @@ __all__ = [
     "ExecuteBenchmarkSuccess",
     "FreezeRunRequest",
     "FreezeRunSuccess",
+    "InitProjectRequest",
+    "InitProjectSuccess",
     "LineageRequest",
     "LineageSuccess",
     "PlanDiffRequest",
@@ -1215,6 +1264,7 @@ __all__ = [
     "execute_benchmark",
     "freeze_run",
     "get_capabilities",
+    "init_project",
     "get_schema",
     "lineage",
     "plan_diff",

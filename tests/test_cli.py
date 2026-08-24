@@ -115,3 +115,27 @@ class CommandLineTests(unittest.TestCase):
         result = json.loads(process.stdout)
         self.assertEqual(result["state"], "allocated")
         self.assertEqual(result["next_states"], ["preflighting", "terminal"])
+
+    def test_init_command_generates_project(self) -> None:
+        """Generate the starter project through the installed command surface."""
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "starter"
+            process = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "viper.cli",
+                    "--json",
+                    "init",
+                    str(target),
+                    "--package",
+                    "sample_project",
+                ],
+                check=False,
+                capture_output=True,
+            )
+
+            self.assertEqual(process.returncode, 0)
+            result = json.loads(process.stdout)
+            self.assertEqual(result["operation"], "init_project")
+            self.assertTrue((target / "src/sample_project/stages/train.py").is_file())

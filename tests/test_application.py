@@ -31,6 +31,7 @@ def test_application_schema_and_capability_discovery() -> None:
     assert "preflight" in capabilities.operations
     assert "run" in capabilities.operations
     assert "execute_benchmark" in capabilities.operations
+    assert "init_project" in capabilities.operations
     assert "plan_diff" in capabilities.operations
     assert "lineage" in capabilities.operations
     assert "status" in capabilities.operations
@@ -38,6 +39,7 @@ def test_application_schema_and_capability_discovery() -> None:
     assert "RunSpec" in capabilities.schemas
     assert "CompareRunsRequest" in capabilities.schemas
     assert "ExecuteBenchmarkRequest" in capabilities.schemas
+    assert "InitProjectRequest" in capabilities.schemas
     assert capabilities.execution_backends == ("trusted_local",)
 
 
