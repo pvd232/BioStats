@@ -85,9 +85,9 @@ An evaluation measures one candidate. A benchmark standardizes that evaluation
 across candidates and requires a reproducible, threshold-qualified result.
 `EvaluateSpec` binds the candidate parameters, evaluation inputs, metrics,
 execution parameters, and outputs. `BenchmarkSpec` repeats the evaluation ID,
-dataset, splits, and metric IDs, then adds metric thresholds and a confirmation
-count. The verifier requires the repeated values to match, which allows one
-benchmark to govern multiple candidate run plans.
+dataset, splits, and metric IDs, then adds metric thresholds and a fixed
+execution count. The verifier requires the repeated values to match, which
+allows one benchmark to govern multiple candidate run plans.
 
 Every stored input and produced artifact declares a data-use role: `training`,
 `validation`, `evaluation`, or `benchmark`. The verifier confirms stored-input

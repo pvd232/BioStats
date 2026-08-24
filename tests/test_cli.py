@@ -75,6 +75,27 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["ready"], False)
 
+    def test_execute_benchmark_command_routes_to_application(self) -> None:
+        """Return one typed document failure for missing benchmark inputs."""
+        process = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "viper.cli",
+                "--json",
+                "execute-benchmark",
+                "missing/resolved.yaml",
+                "missing/benchmark.yaml",
+            ],
+            check=False,
+            capture_output=True,
+        )
+
+        self.assertEqual(process.returncode, 1)
+        result = json.loads(process.stdout)
+        self.assertEqual(result["operation"], "execute_benchmark")
+        self.assertEqual(result["code"], "not_found")
+
     def test_status_command_reads_attempt_journal(self) -> None:
         """Return one attempt's latest durable state through the JSON command."""
         with tempfile.TemporaryDirectory() as directory:

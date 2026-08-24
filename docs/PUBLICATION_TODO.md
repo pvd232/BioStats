@@ -103,7 +103,7 @@ Every implementation contract appears once in the execution sequence.
 | [Artifact validation](contracts/ARTIFACT_VALIDATION.md) | Implemented | Phase 3 | The verifier reports representation identity, loadability, or reserved semantic validity at its established level. |
 | [Metric provenance](contracts/METRIC_PROVENANCE.md) | Implemented | Phase 4 | Recomputed metrics bind exact dependencies and two run-owned worker executions; live metrics bind a controlled metric handle and measurement sink. |
 | [Attempt execution](contracts/ATTEMPT_EXECUTION.md) | Implemented | Phase 5 | VIPER publishes canonical attempt documents, references them immutably, retries the same frozen plan, and closes real cancellation and preemption signals with active-stage evidence. |
-| [Benchmark execution](contracts/BENCHMARK_EXECUTION.md) | Approved | Phase 6 | `execute_benchmark()` produces one independent confirmation and persists the artifact and metric comparison receipts accepted by `verify_benchmark()`. |
+| [Benchmark execution](contracts/BENCHMARK_EXECUTION.md) | Implemented | Phase 6 | `execute_benchmark()` produces one independent confirmation and persists the artifact and metric comparison receipts accepted by `verify_benchmark()`. |
 | [Cloud execution](contracts/CLOUD_EXECUTION.md) | Approved | Phase 7 | The installed wheel executes in place on GCE and verifies the host, backend, and exact Python environment. |
 | [Package release](contracts/PACKAGE_RELEASE.md) | Approved | Phases 8–10 | Clean installations complete the documented project path from TestPyPI and PyPI. |
 
@@ -518,24 +518,24 @@ python -m pytest tests/test_worker.py tests/test_runner_acceptance.py \
 
 **Contract:** [Benchmark execution](contracts/BENCHMARK_EXECUTION.md).
 
-- [ ] Add `ExecuteBenchmarkRequest`, `ExecuteBenchmarkSuccess`, and the
+- [x] Add `ExecuteBenchmarkRequest`, `ExecuteBenchmarkSuccess`, and the
   `execute_benchmark()` application operation.
-- [ ] Replace `BenchmarkSpec.confirmation_count` with
+- [x] Replace `BenchmarkSpec.confirmation_count` with
   `execution_count: Literal[2]`; the count covers one candidate and one
   confirmation.
-- [ ] Add typed artifact-comparison and metric-criterion receipts to
+- [x] Add typed artifact-comparison and metric-criterion receipts to
   `BenchmarkResult`.
-- [ ] Add the `viper execute-benchmark` command with human and JSON output.
-- [ ] Verify the candidate run before allocating confirmation attempts.
-- [ ] Execute the same frozen plan for the one confirmation required by
+- [x] Add the `viper execute-benchmark` command with human and JSON output.
+- [x] Verify the candidate run before allocating confirmation attempts.
+- [x] Execute the same frozen plan for the one confirmation required by
   `BenchmarkSpec.execution_count`.
-- [ ] Preserve distinct stage snapshots and attempt-file snapshots for each
+- [x] Preserve distinct stage snapshots and attempt-file snapshots for each
   confirmation.
-- [ ] Recompute every benchmark metric through its Phase 4 dependency contract.
-- [ ] Compare complete `parameters` and `predictions` artifact descriptions.
-- [ ] Apply every metric threshold after recomputation and parity checks.
-- [ ] Construct, publish, and verify `BenchmarkResult` before returning success.
-- [ ] Exercise passing confirmation, threshold failure, metric mismatch,
+- [x] Recompute every benchmark metric through its Phase 4 dependency contract.
+- [x] Compare complete `parameters` and `predictions` artifact descriptions.
+- [x] Apply every metric threshold after recomputation and parity checks.
+- [x] Construct, publish, and verify `BenchmarkResult` before returning success.
+- [x] Exercise passing confirmation, threshold failure, metric mismatch,
   parameter mismatch, prediction mismatch, source mismatch, and reused-attempt
   rejection.
 

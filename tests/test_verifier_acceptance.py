@@ -32,7 +32,9 @@ from tests.fixtures import (
 from viper.paths import retrieval_body_path
 from viper.protocol import (
     PARAMETERS,
+    PREDICTIONS,
     RESUME_STATE,
+    ArtifactComparisonReceipt,
     ArtifactLoaderRef,
     ArtifactPointer,
     ArtifactPointerRef,
@@ -71,6 +73,7 @@ from viper.protocol import (
     LocalStageResultSnapshotRef,
     Measurement,
     MetricCriterion,
+    MetricCriterionReceipt,
     MetricExecutionReceipt,
     MetricSpec,
     MetricVerificationReceipt,
@@ -256,9 +259,7 @@ class DocumentStore:
                 str(snapshot.repository),
                 snapshot.commit,
             )
-        return tuple(
-            sorted(key[3] for key in self.documents if key[:3] == prefix)
-        )
+        return tuple(sorted(key[3] for key in self.documents if key[:3] == prefix))
 
 
 def git_file(commit: str, path: str) -> GitFileRef:
@@ -605,9 +606,7 @@ def publish_attempt(
 
 def fetch_attempt(store: DocumentStore, reference: ResolvedAttemptRef) -> RunAttempt:
     """Load one attempt fixture through its immutable reference."""
-    return RunAttempt.model_validate(
-        yaml.safe_load(store.fetch(reference.stored_at))
-    )
+    return RunAttempt.model_validate(yaml.safe_load(store.fetch(reference.stored_at)))
 
 
 def replace_run_attempts(
@@ -1177,6 +1176,7 @@ def publish_producer_run(
 def build_complete_fixture(
     *,
     benchmark_enabled: bool = False,
+    benchmark_threshold: float = 0.9,
     producer_evaluation_role: DataRole | None = None,
 ) -> tuple[
     ResolvedRun,
@@ -1352,7 +1352,7 @@ def build_complete_fixture(
                 MetricCriterion(
                     metric_id="pearson_correlation",
                     comparison="ge",
-                    threshold=0.9,
+                    threshold=benchmark_threshold,
                 ),
             ),
         )
@@ -1661,13 +1661,19 @@ def copy_snapshot_files(
             store.put(hf_file(target_commit, path), raw)
 
 
-def build_benchmark_fixture() -> tuple[
+def build_benchmark_fixture(
+    *,
+    threshold: float = 0.9,
+) -> tuple[
     BenchmarkResult,
     ResolvedRun,
     DocumentStore,
 ]:
     """Publish a strict benchmark and its independent confirmation run."""
-    resolved_run, store, _ = build_complete_fixture(benchmark_enabled=True)
+    resolved_run, store, _ = build_complete_fixture(
+        benchmark_enabled=True,
+        benchmark_threshold=threshold,
+    )
     selected_attempt = fetch_attempt(store, resolved_run.attempts[-1])
     run_root = str(resolved_run.spec.stored_at.path).removesuffix("/spec.yaml")
     run = RunSpec.model_validate(
@@ -1721,6 +1727,7 @@ def build_benchmark_fixture() -> tuple[
             )
         )
     )
+    candidate_parameters = resolved_train.artifacts[PARAMETERS]
     resolved_train = resolved_train.model_copy(
         update={
             "inputs": {"prior": ResolvedFutureInputRef(producer=confirmation_build)}
@@ -1757,6 +1764,7 @@ def build_benchmark_fixture() -> tuple[
             )
         )
     )
+    candidate_predictions = resolved_evaluate.artifacts[PREDICTIONS]
     resolved_evaluate = resolved_evaluate.model_copy(
         update={
             "inputs": {
@@ -1887,7 +1895,42 @@ def build_benchmark_fixture() -> tuple[
             attempt=confirmation,
             commit="f" * 40,
         ),
-        status="passed",
+        artifacts=(
+            ArtifactComparisonReceipt(
+                artifact=run.estimator,
+                candidate_stage=original_train,
+                confirmation_stage=confirmation_train,
+                candidate_digest=document_digest(candidate_parameters),
+                confirmation_digest=document_digest(
+                    resolved_train.artifacts[PARAMETERS]
+                ),
+                passed=True,
+            ),
+            ArtifactComparisonReceipt(
+                artifact=StageArtifactRef(
+                    stage_id="evaluate",
+                    artifact_name=PREDICTIONS,
+                ),
+                candidate_stage=original_evaluate,
+                confirmation_stage=confirmation_evaluate,
+                candidate_digest=document_digest(candidate_predictions),
+                confirmation_digest=document_digest(
+                    resolved_evaluate.artifacts[PREDICTIONS]
+                ),
+                passed=True,
+            ),
+        ),
+        metrics=(
+            MetricCriterionReceipt(
+                metric_id="pearson_correlation",
+                candidate_verification=selected_attempt.metric_verification_files[0],
+                confirmation_verification=metric_verification_reference,
+                comparison="ge",
+                threshold=threshold,
+                passed=0.91 >= threshold,
+            ),
+        ),
+        status="passed" if 0.91 >= threshold else "failed",
         completed_at=datetime(2026, 8, 20, 21, 50, tzinfo=UTC),
     )
     return result, resolved_run, store
@@ -2090,6 +2133,104 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         self.assertEqual(verified.result.status, "passed")
         self.assertEqual(verified.confirmation_measurements[0].value, 0.91)
 
+    def test_strict_benchmark_records_a_threshold_failure(self) -> None:
+        """Accept a failed result when both recomputed values miss the threshold."""
+        result, _, store = build_benchmark_fixture(threshold=0.95)
+
+        verified = verify_benchmark_result(
+            result,
+            policy=POLICY,
+            fetcher=store.fetch,
+        )
+
+        self.assertEqual(verified.result.status, "failed")
+        self.assertFalse(verified.result.metrics[0].passed)
+
+    def test_strict_benchmark_rejects_an_artifact_receipt_mismatch(self) -> None:
+        """Reject a comparison receipt whose digest differs from the artifact."""
+        result, _, store = build_benchmark_fixture()
+        changed_receipt = result.artifacts[0].model_copy(
+            update={
+                "confirmation_digest": "0" * 64,
+                "passed": False,
+            }
+        )
+        changed_result = result.model_copy(
+            update={
+                "artifacts": (changed_receipt, result.artifacts[1]),
+                "status": "failed",
+            }
+        )
+
+        with self.assertRaisesRegex(VerificationError, "artifact comparison receipt"):
+            verify_benchmark_result(
+                changed_result,
+                policy=POLICY,
+                fetcher=store.fetch,
+            )
+
+    def test_strict_benchmark_rejects_a_prediction_receipt_mismatch(self) -> None:
+        """Reject a changed prediction digest in the comparison receipt."""
+        result, _, store = build_benchmark_fixture()
+        changed_receipt = result.artifacts[1].model_copy(
+            update={
+                "confirmation_digest": "0" * 64,
+                "passed": False,
+            }
+        )
+        changed_result = result.model_copy(
+            update={
+                "artifacts": (result.artifacts[0], changed_receipt),
+                "status": "failed",
+            }
+        )
+
+        with self.assertRaisesRegex(VerificationError, "artifact comparison receipt"):
+            verify_benchmark_result(
+                changed_result,
+                policy=POLICY,
+                fetcher=store.fetch,
+            )
+
+    def test_strict_benchmark_rejects_a_source_mismatch(self) -> None:
+        """Reject a benchmark specification selected from another source commit."""
+        result, _, store = build_benchmark_fixture()
+        changed_location = result.benchmark.stored_at.model_copy(
+            update={"commit": "9" * 40}
+        )
+        store.put(changed_location, store.fetch(result.benchmark.stored_at))
+        changed_result = result.model_copy(
+            update={
+                "benchmark": result.benchmark.model_copy(
+                    update={"stored_at": changed_location}
+                )
+            }
+        )
+
+        with self.assertRaisesRegex(VerificationError, "run source snapshot"):
+            verify_benchmark_result(
+                changed_result,
+                policy=POLICY,
+                fetcher=store.fetch,
+            )
+
+    def test_strict_benchmark_rejects_a_metric_receipt_mismatch(self) -> None:
+        """Reject a criterion receipt that references the wrong execution."""
+        result, _, store = build_benchmark_fixture()
+        changed_metric = result.metrics[0].model_copy(
+            update={
+                "candidate_verification": result.metrics[0].confirmation_verification
+            }
+        )
+        changed_result = result.model_copy(update={"metrics": (changed_metric,)})
+
+        with self.assertRaisesRegex(VerificationError, "metric criterion receipt"):
+            verify_benchmark_result(
+                changed_result,
+                policy=POLICY,
+                fetcher=store.fetch,
+            )
+
     def test_strict_benchmark_rejects_reused_stage_snapshots(self) -> None:
         """Verify that strict benchmark rejects reused stage snapshots."""
         result, resolved_run, store = build_benchmark_fixture()
@@ -2134,9 +2275,7 @@ class CompleteProvenanceAcceptanceTests(unittest.TestCase):
         reused_snapshot_measurement = measurement.model_copy(
             update={
                 "stored_at": measurement.stored_at.model_copy(
-                    update={
-                        "commit": confirmation.resolved_stages[0].snapshot.commit
-                    }
+                    update={"commit": confirmation.resolved_stages[0].snapshot.commit}
                 )
             }
         )

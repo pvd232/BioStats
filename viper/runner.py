@@ -26,6 +26,7 @@ from .protocol import (
     ArtifactPointer,
     AttemptFailure,
     AttemptJournalRef,
+    AttemptPurpose,
     BaseSpec,
     DownloadSpec,
     ExperimentSpec,
@@ -98,6 +99,17 @@ class RunResult(BaseModel):
 
     resolved_run: ResolvedRun
     resolved_run_path: Path
+    journal_path: Path
+
+
+class ConfirmationRunResult(BaseModel):
+    """Return one independently executed benchmark-confirmation attempt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    attempt: RunAttempt
+    attempt_reference: ResolvedAttemptRef
+    attempt_path: Path
     journal_path: Path
 
 
@@ -252,9 +264,7 @@ def _write_attempt_document(
     path = root / run_root / "attempts" / str(attempt.attempt_id) / "resolved.yaml"
     raw = serialize_document(attempt)
     _write_synchronized(path, raw)
-    reference = store.resolved_files(
-        {path.relative_to(root).as_posix(): raw}
-    )[0]
+    reference = store.resolved_files({path.relative_to(root).as_posix(): raw})[0]
     return ResolvedAttemptRef(
         sha256=reference.sha256,
         bytes=reference.bytes,
@@ -319,17 +329,15 @@ def _reconcile_abandoned_attempts(
             )
         else:
             lost_at = entries[-1].recorded_at
-        journal_reference, measurements, metric_receipts, logs = (
-            _publish_attempt_files(
-                store,
-                root,
-                run_root,
-                attempt_id,
-                journal,
-                {},
-                [],
-                [],
-            )
+        journal_reference, measurements, metric_receipts, logs = _publish_attempt_files(
+            store,
+            root,
+            run_root,
+            attempt_id,
+            journal,
+            {},
+            [],
+            [],
         )
         recovered_attempt = RunAttempt(
             attempt_id=attempt_id,
@@ -711,14 +719,15 @@ def _resolved_stage(
     return ResolvedEvaluateSpec(**common, inputs=inputs)
 
 
-def run(
+def _execute_attempt(
     repository_root: Path,
     run_spec_path: Path,
     *,
     timeout_seconds: float | None = None,
     retry: bool = False,
-) -> RunResult:
-    """Execute one frozen plan locally and verify its terminal resolved run."""
+    purpose: AttemptPurpose = "run",
+) -> RunResult | ConfirmationRunResult:
+    """Execute one ordinary or benchmark-confirmation attempt."""
     root = repository_root.resolve()
     run_path = run_spec_path.resolve()
     run_raw = run_path.read_bytes()
@@ -760,12 +769,19 @@ def run(
         previous_run = ResolvedRun.model_validate(
             parse_yaml_bytes(terminal_path.read_bytes())
         )
-        if not retry:
+        if purpose == "run" and not retry:
             run_lock.release()
             raise RunError("run already has terminal attempt history; use retry")
-        if previous_run.status == "succeeded":
+        if purpose == "run" and previous_run.status == "succeeded":
             run_lock.release()
             raise RunError("a successful run cannot be retried")
+    elif purpose == "benchmark_confirmation":
+        run_lock.release()
+        raise RunError("benchmark confirmation requires a terminal candidate run")
+    if purpose == "benchmark_confirmation" and previous_run is not None:
+        if previous_run.status != "succeeded":
+            run_lock.release()
+            raise RunError("benchmark confirmation requires a successful candidate run")
     known_attempts = (
         ()
         if previous_run is None
@@ -893,12 +909,12 @@ def run(
                 )
             except (StageExecutionError, StageProcessInterrupted) as exc:
                 run_log_root = f"{run_root}/attempts/{attempt_id}/logs"
-                log_files[
-                    f"{run_log_root}/{stage_reference.stage_id}.stdout.log"
-                ] = exc.stdout
-                log_files[
-                    f"{run_log_root}/{stage_reference.stage_id}.stderr.log"
-                ] = exc.stderr
+                log_files[f"{run_log_root}/{stage_reference.stage_id}.stdout.log"] = (
+                    exc.stdout
+                )
+                log_files[f"{run_log_root}/{stage_reference.stage_id}.stderr.log"] = (
+                    exc.stderr
+                )
                 if exc.invocation is not None:
                     invocation_path = (
                         f"{run_root}/attempts/{attempt_id}/invocations/"
@@ -912,9 +928,7 @@ def run(
                         )
                     )
                 raise
-            metric_specs = {
-                metric.metric_id: metric for metric in experiment.metrics
-            }
+            metric_specs = {metric.metric_id: metric for metric in experiment.metrics}
             for metric_id in stage.metric_ids:
                 if metric_specs[metric_id].mode != "live":
                     continue
@@ -1045,7 +1059,7 @@ def run(
         attempt_completed = datetime.now(UTC)
         attempt = RunAttempt(
             attempt_id=attempt_id,
-            purpose="run",
+            purpose=purpose,
             status="succeeded",
             started_at=attempt_started,
             completed_at=attempt_completed,
@@ -1062,10 +1076,20 @@ def run(
             commit=plan_commit,
             path=relative_run_path,
         )
+        attempt_reference = _write_attempt_document(root, run_root, attempt, store)
+        if purpose == "benchmark_confirmation":
+            return ConfirmationRunResult(
+                attempt=attempt,
+                attempt_reference=attempt_reference,
+                attempt_path=(
+                    root / run_root / "attempts" / str(attempt_id) / "resolved.yaml"
+                ),
+                journal_path=journal.path,
+            )
         attempt_references = tuple(
             _write_attempt_document(root, run_root, value, store)
-            for value in (*previous_attempts, attempt)
-        )
+            for value in previous_attempts
+        ) + (attempt_reference,)
         resolved_run = ResolvedRun(
             spec=ResolvedRunSpecRef(
                 sha256=hashlib.sha256(run_raw).hexdigest(),
@@ -1111,8 +1135,7 @@ def run(
             if status == "cancelled"
             else "preempted"
             if status == "preempted"
-            else
-            "preflight_failed"
+            else "preflight_failed"
             if isinstance(exc, RunError)
             and str(exc).startswith("plan preflight failed")
             else "verification_failed"
@@ -1142,7 +1165,7 @@ def run(
         completed_at = datetime.now(UTC)
         failed_attempt = RunAttempt(
             attempt_id=attempt_id,
-            purpose="run",
+            purpose=purpose,
             status=status,
             started_at=attempt_started,
             completed_at=completed_at,
@@ -1164,10 +1187,24 @@ def run(
             commit=plan_commit,
             path=relative_run_path,
         )
+        failed_attempt_reference = _write_attempt_document(
+            root,
+            run_root,
+            failed_attempt,
+            store,
+        )
+        if purpose == "benchmark_confirmation":
+            failed_attempt_path = (
+                root / run_root / "attempts" / str(attempt_id) / "resolved.yaml"
+            )
+            raise RunError(
+                f"benchmark confirmation attempt {attempt_id} failed; evidence "
+                f"written to {failed_attempt_path}"
+            ) from exc
         attempt_references = tuple(
             _write_attempt_document(root, run_root, value, store)
-            for value in (*previous_attempts, failed_attempt)
-        )
+            for value in previous_attempts
+        ) + (failed_attempt_reference,)
         failed_run = ResolvedRun(
             spec=ResolvedRunSpecRef(
                 sha256=hashlib.sha256(run_raw).hexdigest(),
@@ -1189,3 +1226,39 @@ def run(
         signal.signal(signal.SIGINT, previous_sigint)
         signal.signal(signal.SIGTERM, previous_sigterm)
         run_lock.release()
+
+
+def run(
+    repository_root: Path,
+    run_spec_path: Path,
+    *,
+    timeout_seconds: float | None = None,
+    retry: bool = False,
+) -> RunResult:
+    """Execute one frozen plan and verify its terminal resolved run."""
+    result = _execute_attempt(
+        repository_root,
+        run_spec_path,
+        timeout_seconds=timeout_seconds,
+        retry=retry,
+        purpose="run",
+    )
+    assert isinstance(result, RunResult)
+    return result
+
+
+def execute_benchmark_confirmation(
+    repository_root: Path,
+    run_spec_path: Path,
+    *,
+    timeout_seconds: float | None = None,
+) -> ConfirmationRunResult:
+    """Execute one independent confirmation of a successful frozen run."""
+    result = _execute_attempt(
+        repository_root,
+        run_spec_path,
+        timeout_seconds=timeout_seconds,
+        purpose="benchmark_confirmation",
+    )
+    assert isinstance(result, ConfirmationRunResult)
+    return result

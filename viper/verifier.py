@@ -92,6 +92,7 @@ from .protocol import (
     RunSpec,
     SnapshotFileRef,
     Spec,
+    StageArtifactRef,
     StageContextBinding,
     StageInvocationReceipt,
     StageResultSnapshotRef,
@@ -1657,9 +1658,7 @@ def _verify_unresolved_stage_invocation(
     if receipt.context_digest != document_digest(expected_binding):
         raise VerificationError(f"stage {stage_id!r} invocation context digest differs")
     allowed_outcomes = (
-        {"succeeded", "failed"}
-        if attempt.status == "failed"
-        else {attempt.status}
+        {"succeeded", "failed"} if attempt.status == "failed" else {attempt.status}
     )
     if receipt.outcome not in allowed_outcomes:
         raise VerificationError(
@@ -2047,9 +2046,7 @@ def verify_attempt_journal(
     fetcher: StorageFetcher | None = None,
 ) -> None:
     """Verify one terminal attempt journal and its canonical identity."""
-    expected_path = (
-        f"{run_root(run)}/attempts/{attempt.attempt_id}/journal.jsonl"
-    )
+    expected_path = f"{run_root(run)}/attempts/{attempt.attempt_id}/journal.jsonl"
     if attempt.journal.stored_at.path != expected_path:
         raise VerificationError("attempt journal path is not canonical")
     try:
@@ -2322,9 +2319,7 @@ def verify_recomputed_metrics(
             )
         raw = read_resolved_file(reference, fetcher=fetcher)
         try:
-            receipt = MetricVerificationReceipt.model_validate(
-                parse_yaml_bytes(raw)
-            )
+            receipt = MetricVerificationReceipt.model_validate(parse_yaml_bytes(raw))
         except (yaml.YAMLError, ValueError) as exc:
             raise VerificationError("metric verification receipt is invalid") from exc
         expected_path = (
@@ -2442,12 +2437,10 @@ def verify_recomputed_metrics(
                 strict=True,
             ):
                 received_identities = tuple(
-                    (reference.sha256, reference.bytes)
-                    for reference in received.files
+                    (reference.sha256, reference.bytes) for reference in received.files
                 )
                 expected_identities = tuple(
-                    (reference.sha256, reference.bytes)
-                    for reference in expected.files
+                    (reference.sha256, reference.bytes) for reference in expected.files
                 )
                 if received_identities != expected_identities:
                     raise VerificationError(
@@ -3051,6 +3044,10 @@ def verify_benchmark_result(
     original_attempt_ids = {attempt.attempt_id for attempt in verified_run.attempts}
     if confirmation.attempt_id in original_attempt_ids:
         raise VerificationError("benchmark confirmation must use a new attempt ID")
+    if confirmation.attempt_id <= max(original_attempt_ids):
+        raise VerificationError(
+            "benchmark confirmation attempt ID must follow the candidate history"
+        )
 
     original_snapshots = {
         _snapshot_identity(stage.snapshot)
@@ -3058,8 +3055,7 @@ def verify_benchmark_result(
         for stage in attempt.resolved_stages
     }
     confirmation_snapshots = {
-        _snapshot_identity(stage.snapshot)
-        for stage in confirmation.resolved_stages
+        _snapshot_identity(stage.snapshot) for stage in confirmation.resolved_stages
     }
     if original_snapshots & confirmation_snapshots:
         raise VerificationError(
@@ -3164,41 +3160,134 @@ def verify_benchmark_result(
     ]
     prediction_parity = selected_predictions == confirmation_predictions
 
-    selected_measurements = tuple(
-        measurement
-        for measurement in verified_run.measurements
-        if measurement.attempt_id == selected_attempt.attempt_id
-        and measurement.stage_id == evaluation_stage_id
-    )
-    confirmation_evaluation_measurements = tuple(
-        measurement
-        for measurement in confirmation_measurements
-        if measurement.stage_id == evaluation_stage_id
-    )
-
-    criteria_pass = True
-    for criterion in benchmark.metrics:
-        selected_values = [
-            measurement.value
-            for measurement in selected_measurements
-            if measurement.metric_id == criterion.metric_id
-        ]
-        confirmation_values = [
-            measurement.value
-            for measurement in confirmation_evaluation_measurements
-            if measurement.metric_id == criterion.metric_id
-        ]
-        if len(selected_values) != 1 or len(confirmation_values) != 1:
+    expected_artifacts = {
+        (estimator_ref.stage_id, estimator_ref.artifact_name): (
+            estimator_ref,
+            next(
+                stage
+                for stage in selected_attempt.resolved_stages
+                if stage.stage_id == estimator_ref.stage_id
+            ),
+            next(
+                stage
+                for stage in confirmation.resolved_stages
+                if stage.stage_id == estimator_ref.stage_id
+            ),
+            selected_estimator,
+            confirmation_estimator,
+        ),
+        (evaluation_stage_id, PREDICTIONS): (
+            StageArtifactRef(
+                stage_id=evaluation_stage_id,
+                artifact_name=PREDICTIONS,
+            ),
+            next(
+                stage
+                for stage in selected_attempt.resolved_stages
+                if stage.stage_id == evaluation_stage_id
+            ),
+            next(
+                stage
+                for stage in confirmation.resolved_stages
+                if stage.stage_id == evaluation_stage_id
+            ),
+            selected_predictions,
+            confirmation_predictions,
+        ),
+    }
+    received_artifacts = {
+        (receipt.artifact.stage_id, receipt.artifact.artifact_name): receipt
+        for receipt in result.artifacts
+    }
+    if set(received_artifacts) != set(expected_artifacts):
+        raise VerificationError(
+            "benchmark.artifacts: result must compare parameters and predictions"
+        )
+    for artifact_key, expected in expected_artifacts.items():
+        (
+            artifact_ref,
+            candidate_stage,
+            confirmation_stage,
+            candidate,
+            confirmed,
+        ) = expected
+        receipt = received_artifacts[artifact_key]
+        expected_candidate_digest = document_digest(candidate)
+        expected_confirmation_digest = document_digest(confirmed)
+        if (
+            receipt.candidate_stage != candidate_stage
+            or receipt.confirmation_stage != confirmation_stage
+            or receipt.candidate_digest != expected_candidate_digest
+            or receipt.confirmation_digest != expected_confirmation_digest
+            or receipt.passed
+            != (expected_candidate_digest == expected_confirmation_digest)
+        ):
             raise VerificationError(
-                f"benchmark metric {criterion.metric_id!r} must occur once per "
-                "evaluation execution"
+                "benchmark.artifacts: artifact comparison receipt differs"
             )
 
-        values = (selected_values[0], confirmation_values[0])
-        if criterion.comparison == "ge":
-            criteria_pass &= all(value >= criterion.threshold for value in values)
-        else:
-            criteria_pass &= all(value <= criterion.threshold for value in values)
+    def metric_receipts(
+        attempt: RunAttempt,
+    ) -> dict[str, tuple[ResolvedFileRef, MetricVerificationReceipt]]:
+        """Load the evaluation metric receipts owned by one attempt."""
+        receipts: dict[str, tuple[ResolvedFileRef, MetricVerificationReceipt]] = {}
+        for reference in attempt.metric_verification_files:
+            raw = read_resolved_file(reference, fetcher=fetcher)
+            try:
+                receipt = MetricVerificationReceipt.model_validate(
+                    parse_yaml_bytes(raw)
+                )
+            except (yaml.YAMLError, ValueError) as exc:
+                raise VerificationError(
+                    "benchmark.metrics: metric verification receipt is invalid"
+                ) from exc
+            if receipt.stage_id != evaluation_stage_id:
+                continue
+            receipts[receipt.metric_id] = (reference, receipt)
+        return receipts
+
+    candidate_metric_receipts = metric_receipts(selected_attempt)
+    confirmation_metric_receipts = metric_receipts(confirmation)
+    criteria = {criterion.metric_id: criterion for criterion in benchmark.metrics}
+    received_metrics = {receipt.metric_id: receipt for receipt in result.metrics}
+    if set(received_metrics) != set(criteria):
+        raise VerificationError(
+            "benchmark.metrics: result metric IDs differ from the benchmark"
+        )
+    criteria_pass = True
+    for metric_id, criterion in criteria.items():
+        if (
+            metric_id not in candidate_metric_receipts
+            or metric_id not in confirmation_metric_receipts
+        ):
+            raise VerificationError(
+                f"benchmark.metrics: metric {metric_id!r} lacks verification evidence"
+            )
+        candidate_ref, candidate_receipt = candidate_metric_receipts[metric_id]
+        confirmation_ref, confirmation_receipt = confirmation_metric_receipts[metric_id]
+        values = (
+            candidate_receipt.recomputation.value,
+            confirmation_receipt.recomputation.value,
+        )
+        criterion_passed = (
+            all(value >= criterion.threshold for value in values)
+            if criterion.comparison == "ge"
+            else all(value <= criterion.threshold for value in values)
+        )
+        receipt = received_metrics[metric_id]
+        if (
+            not candidate_receipt.passed
+            or not confirmation_receipt.passed
+            or receipt.candidate_verification != candidate_ref
+            or receipt.confirmation_verification != confirmation_ref
+            or receipt.comparison != criterion.comparison
+            or receipt.threshold != criterion.threshold
+            or receipt.passed != criterion_passed
+        ):
+            raise VerificationError(
+                "benchmark.metrics: metric criterion receipt differs"
+            )
+        criteria_pass &= criterion_passed
 
     passed = estimator_parity and prediction_parity and criteria_pass
     expected_status = "passed" if passed else "failed"

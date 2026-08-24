@@ -2,8 +2,7 @@
 
 ## Status
 
-Benchmark models and verification are implemented. Production of the
-independent confirmation is approved for VIPER 0.1.
+Implemented.
 
 ## Required claim
 
@@ -11,26 +10,26 @@ VIPER can execute the confirmation required by a frozen `BenchmarkSpec`, build
 the resulting `BenchmarkResult`, and verify it through the existing benchmark
 rules.
 
-## Current gap
+## Implementation
 
 [`verify_benchmark_result()`](../../viper/verifier.py) verifies a supplied
 confirmation attempt, estimator parity, prediction parity, metric criteria,
-and benchmark status. Confirmation execution and result assembly remain outside
-the public application surface.
-
-Users currently assemble the confirmation and benchmark result themselves.
+and benchmark status. [`execute_benchmark()`](../../viper/benchmark.py) verifies
+the candidate, executes a new confirmation attempt, constructs every comparison
+receipt, verifies the completed result, and writes `benchmark.result.yaml`.
 
 ## Application operation
 
 ```python
-class ExecuteBenchmarkRequest(ProtocolModel):
+class ExecuteBenchmarkRequest(ApplicationModel):
     resolved_run: Path
     benchmark_spec: Path
     repository_root: Path
     timeout_seconds: float | None = Field(default=None, gt=0)
 
 
-class ExecuteBenchmarkSuccess(ProtocolModel):
+class ExecuteBenchmarkSuccess(SuccessModel):
+    operation: Literal["execute_benchmark"] = "execute_benchmark"
     result: BenchmarkResult
     result_path: Path
 ```
@@ -56,7 +55,7 @@ class BenchmarkSpec(ProtocolModel):
 ```
 
 The count includes the selected candidate execution and one independent
-confirmation. The field replaces the current `confirmation_count` name.
+confirmation.
 
 ## Execution
 
@@ -140,16 +139,16 @@ exceed every candidate run attempt ID and its purpose to equal
 | `benchmark.metrics` | Both executions contain passed metric-verification receipts, and both recomputed values satisfy each frozen criterion. |
 | `benchmark.status` | The recorded status equals the result derived from artifact parity and metric criteria. |
 
-## Propagation
+## Implemented surfaces
 
-| Surface | Required change |
+| Surface | Implemented operation |
 |---|---|
-| Application | Add typed execute-benchmark request, success, and failure results. |
-| CLI | Add `viper execute-benchmark` with human and JSON output. |
-| Runner | Execute the confirmation through the selected backend. |
-| Metrics | Recompute every benchmark metric from its declared dependencies. |
-| Persistence | Publish the immutable benchmark result, confirmation attempt, artifact-comparison receipts, and metric-criterion receipts. |
-| Tests | Execute one passing confirmation and reject one altered artifact. |
+| Application | Typed execute-benchmark request, success, and failure results. |
+| CLI | `viper execute-benchmark` with human and JSON output. |
+| Runner | Confirmation execution through the durable attempt coordinator. |
+| Metrics | Independent recomputation through each declared dependency contract. |
+| Persistence | Immutable confirmation attempt plus artifact and metric receipts in `benchmark.result.yaml`. |
+| Tests | Passing confirmation, failed threshold, altered receipt, reused evidence, and input-lineage rejection. |
 
 ## Acceptance case
 
@@ -160,11 +159,3 @@ pass.
 
 Replacing one prediction file with different bytes of the same length causes
 benchmark verification to fail on its SHA-256 identity.
-
-## Implementation order
-
-1. Add the application operation and result models.
-2. Reuse the attempt allocator and selected execution backend.
-3. Construct benchmark evidence from the verified candidate and confirmation.
-4. Call the existing benchmark verifier before publication.
-5. Add installed-wheel CLI and acceptance coverage.

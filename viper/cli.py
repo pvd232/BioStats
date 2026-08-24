@@ -87,6 +87,19 @@ def build_parser() -> argparse.ArgumentParser:
     retry_command.add_argument("--repository-root", type=Path, default=Path.cwd())
     retry_command.add_argument("--timeout-seconds", type=float)
 
+    benchmark_command = commands.add_parser(
+        "execute-benchmark",
+        help="execute and verify one independent benchmark confirmation",
+    )
+    benchmark_command.add_argument("resolved_run", type=Path)
+    benchmark_command.add_argument("benchmark_spec", type=Path)
+    benchmark_command.add_argument(
+        "--repository-root",
+        type=Path,
+        default=Path.cwd(),
+    )
+    benchmark_command.add_argument("--timeout-seconds", type=float)
+
     plan_diff = commands.add_parser(
         "plan-diff",
         help="compare two complete frozen run plans",
@@ -152,6 +165,7 @@ def _operation_and_payload(
         "execute-stage": "execute_stage",
         "run": "run",
         "retry": "retry",
+        "execute-benchmark": "execute_benchmark",
         "plan-diff": "plan_diff",
         "lineage": "lineage",
         "status": "status",
@@ -203,6 +217,12 @@ def _human_success(result: SuccessModel) -> str:
         return (
             f"completed attempt {getattr(result, 'attempt_id')} for run "
             f"{getattr(result, 'run_id')}"
+        )
+    if result.operation == "execute_benchmark":
+        benchmark = getattr(result, "result")
+        return (
+            f"benchmark {benchmark.status}: confirmation attempt "
+            f"{benchmark.confirmation.stored_at.path}"
         )
     if result.operation == "plan_diff":
         changes = getattr(result, "changes")

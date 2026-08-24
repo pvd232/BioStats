@@ -57,7 +57,7 @@ from viper.protocol import (
     TrainVariantStageParams,
     VariantSpec,
 )
-from viper.runner import RunError, RunFetcher
+from viper.runner import RunError, RunFetcher, execute_benchmark_confirmation
 from viper.runner import run as execute_run
 from viper.serialization import parse_yaml_bytes, serialize_document
 from viper.stage_execution import StageExecutionError, execute_stage_process
@@ -491,9 +491,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             first_train_call = False
             raise StageExecutionError(
                 "transient train failure",
-                invocation=process.invocation.model_copy(
-                    update={"outcome": "failed"}
-                ),
+                invocation=process.invocation.model_copy(update={"outcome": "failed"}),
                 stdout=process.stdout,
                 stderr=b"transient train failure\n",
             )
@@ -505,9 +503,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     failed_run = ResolvedRun.model_validate(
         parse_yaml_bytes((root / RUN_ROOT / "resolved.yaml").read_bytes())
     )
-    run_plan = RunSpec.model_validate(
-        parse_yaml_bytes(frozen.files[-1].read_bytes())
-    )
+    run_plan = RunSpec.model_validate(parse_yaml_bytes(frozen.files[-1].read_bytes()))
     store = LocalArtifactStore(root)
     fetcher = RunFetcher(root, store, REPOSITORY)
     failed_attempts = tuple(
@@ -544,9 +540,9 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     assert (result.journal_path.parent / "preflight.json").is_file()
     metric_runtime = root / ".viper" / "runtime"
     production_result = MetricWorkerResult.model_validate_json(
-        next(metric_runtime.glob("*.parameter_bytes.measurement.result.json")).read_text(
-            encoding="utf-8"
-        )
+        next(
+            metric_runtime.glob("*.parameter_bytes.measurement.result.json")
+        ).read_text(encoding="utf-8")
     )
     assert production_result.receipt is not None
     assert production_result.receipt.purpose == "measurement"
@@ -586,6 +582,21 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     )
     assert comparison.identical is True
     assert comparison.changes == ()
+
+    candidate_run_raw = result.resolved_run_path.read_bytes()
+    confirmation = execute_benchmark_confirmation(root, frozen.files[-1])
+    assert confirmation.attempt.attempt_id == 4
+    assert confirmation.attempt.purpose == "benchmark_confirmation"
+    assert confirmation.attempt.status == "succeeded"
+    assert confirmation.attempt_path.is_file()
+    assert result.resolved_run_path.read_bytes() == candidate_run_raw
+    candidate_snapshots = {
+        stage.snapshot.commit for stage in successful_attempt.resolved_stages
+    }
+    confirmation_snapshots = {
+        stage.snapshot.commit for stage in confirmation.attempt.resolved_stages
+    }
+    assert candidate_snapshots.isdisjoint(confirmation_snapshots)
 
     first_snapshot = attempts[1].resolved_stages[0].snapshot
     assert first_snapshot.kind == "local"

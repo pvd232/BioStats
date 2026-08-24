@@ -5,8 +5,8 @@
 The mechanical audit passes. All ten contracts pass the schema, value-lifecycle,
 traceability, counterexample, and propagation gates. Parameter models, stage
 invocation, process startup, HTTP retrieval, artifact validation, metric
-provenance, and attempt execution are implemented. Benchmark execution, cloud
-execution, and package release are approved for implementation.
+provenance, attempt execution, and benchmark execution are implemented. Cloud
+execution and package release are approved for implementation.
 
 ## Reviewed scope
 
@@ -14,7 +14,7 @@ The review covers the ten contracts indexed by [README.md](README.md), the
 [formal protocol](../ProvenanceS1_v3.md), the
 [application API](../APPLICATION_API.md), the [public API](../PUBLIC_API.md),
 the [master checklist](../PUBLICATION_TODO.md), the active `viper` package, and
-the test suite. The inspected baseline commit is `3397f7c`. The audit result
+the test suite. The inspected baseline commit is `eed13b7`. The audit result
 applies to the complete document set in the Git commit containing this report.
 
 Historical material under `archive/` and reference material under `prior/`
@@ -30,7 +30,7 @@ remain outside the active design state.
 | Python blocks parsed | 73 |
 | Repeated classes compared | 50 |
 | Repeated aliases compared | 7 |
-| Implemented Pydantic schemas generated | 132 |
+| Implemented Pydantic schemas generated | 134 |
 | Named verifier rules traced to the checklist | 63 |
 | Deterministic result | Pass |
 
@@ -110,12 +110,11 @@ constraints expressed through field declarations, and repeated aliases.
 ## Propagation findings
 
 The contract layer, formal protocol, application API, public API, checklist,
-implementation, verifier, and tests agree for Phases 1 through 5. The remaining
+implementation, verifier, and tests agree for Phases 1 through 6. The remaining
 implementation work appears as unchecked items in the master checklist:
 
 | Approved surface | Current implementation |
 |---|---|
-| Benchmark execution | Benchmark verification only |
 | GCE execution | Local-environment gate and CPU observer |
 | Project scaffold and release | Build smoke tests precede the complete installed-project path |
 
@@ -130,7 +129,7 @@ implementation work appears as unchecked items in the master checklist:
 | Artifact validation | Implemented |
 | Metric provenance | Implemented |
 | Attempt execution | Implemented |
-| Benchmark execution | Approved |
+| Benchmark execution | Implemented |
 | Cloud execution | Approved |
 | Package release | Approved |
 

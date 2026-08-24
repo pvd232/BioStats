@@ -12,6 +12,8 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from .authoring import freeze_run_plan, load_run_plan_draft
+from .benchmark import BenchmarkExecutionError
+from .benchmark import execute_benchmark as execute_benchmark_run
 from .ids import RunId, StageId
 from .inspection import (
     InspectionError,
@@ -56,6 +58,7 @@ OperationName = Literal[
     "execute_stage",
     "run",
     "retry",
+    "execute_benchmark",
     "plan_diff",
     "lineage",
     "status",
@@ -241,6 +244,23 @@ class RetrySuccess(SuccessModel):
     journal: Path
 
 
+class ExecuteBenchmarkRequest(ApplicationModel):
+    """Select one candidate run and its frozen benchmark specification."""
+
+    resolved_run: Path
+    benchmark_spec: Path
+    repository_root: Path
+    timeout_seconds: float | None = Field(default=None, gt=0)
+
+
+class ExecuteBenchmarkSuccess(SuccessModel):
+    """Return one independently executed and verified benchmark result."""
+
+    operation: Literal["execute_benchmark"] = "execute_benchmark"  # pyright: ignore[reportIncompatibleVariableOverride]
+    result: BenchmarkResult
+    result_path: Path
+
+
 class PlanDiffRequest(ApplicationModel):
     """Select two complete frozen plans for deterministic comparison."""
 
@@ -390,6 +410,8 @@ SCHEMA_REGISTRY: dict[str, Any] = {
     "CapabilitiesSuccess": CapabilitiesSuccess,
     "ExecuteStageRequest": ExecuteStageRequest,
     "ExecuteStageSuccess": ExecuteStageSuccess,
+    "ExecuteBenchmarkRequest": ExecuteBenchmarkRequest,
+    "ExecuteBenchmarkSuccess": ExecuteBenchmarkSuccess,
     "FreezeRunRequest": FreezeRunRequest,
     "FreezeRunSuccess": FreezeRunSuccess,
     "LineageRequest": LineageRequest,
@@ -435,6 +457,7 @@ OPERATIONS: tuple[OperationName, ...] = (
     "execute_stage",
     "run",
     "retry",
+    "execute_benchmark",
     "plan_diff",
     "lineage",
     "status",
@@ -645,6 +668,52 @@ def retry(request: RetryRequest) -> RetrySuccess:
         attempt_id=attempt_id,
         resolved_run=result.resolved_run_path,
         journal=result.journal_path,
+    )
+
+
+def execute_benchmark(
+    request: ExecuteBenchmarkRequest,
+) -> ExecuteBenchmarkSuccess:
+    """Execute and verify one independent benchmark confirmation."""
+    try:
+        execution = execute_benchmark_run(
+            request.repository_root,
+            request.resolved_run,
+            request.benchmark_spec,
+            timeout_seconds=request.timeout_seconds,
+        )
+    except BenchmarkExecutionError as exc:
+        raise ViperError(
+            ViperFailure(
+                operation="execute_benchmark",
+                origin="application",
+                code="verification_failed",
+                message="benchmark execution failed",
+            )
+        ) from exc
+    except (RunError, StageExecutionError) as exc:
+        raise ViperError(
+            ViperFailure(
+                operation="execute_benchmark",
+                origin="application",
+                code="execution_failed",
+                message="benchmark confirmation failed",
+            )
+        ) from exc
+    except VerificationError as exc:
+        raise ViperError(
+            ViperFailure(
+                operation="execute_benchmark",
+                origin="application",
+                code="verification_failed",
+                message="benchmark verification failed",
+            )
+        ) from exc
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        raise _document_error("execute_benchmark", request.resolved_run, exc) from exc
+    return ExecuteBenchmarkSuccess(
+        result=execution.result,
+        result_path=execution.result_path,
     )
 
 
@@ -931,6 +1000,7 @@ REQUEST_REGISTRY: dict[OperationName, RequestType] = {
     "execute_stage": ExecuteStageRequest,
     "run": RunRequest,
     "retry": RetryRequest,
+    "execute_benchmark": ExecuteBenchmarkRequest,
     "plan_diff": PlanDiffRequest,
     "lineage": LineageRequest,
     "status": StatusRequest,
@@ -951,6 +1021,7 @@ HANDLER_REGISTRY: dict[OperationName, Handler] = {
     "execute_stage": execute_stage,
     "run": run,
     "retry": retry,
+    "execute_benchmark": execute_benchmark,
     "plan_diff": plan_diff,
     "lineage": lineage,
     "status": status,
@@ -1012,6 +1083,8 @@ __all__ = [
     "CompareRunsSuccess",
     "ExecuteStageRequest",
     "ExecuteStageSuccess",
+    "ExecuteBenchmarkRequest",
+    "ExecuteBenchmarkSuccess",
     "FreezeRunRequest",
     "FreezeRunSuccess",
     "LineageRequest",
@@ -1045,6 +1118,7 @@ __all__ = [
     "compare_runs",
     "dispatch",
     "execute_stage",
+    "execute_benchmark",
     "freeze_run",
     "get_capabilities",
     "get_schema",
