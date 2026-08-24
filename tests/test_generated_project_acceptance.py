@@ -41,6 +41,7 @@ from viper.protocol import (
     BuildParams,
     BuildSpec,
     BuildVariantStageParams,
+    CPUComputeSpec,
     DataRole,
     DownloadParams,
     DownloadSpec,
@@ -54,6 +55,7 @@ from viper.protocol import (
     ExperimentSpec,
     FloatComparator,
     FutureInputRef,
+    GCEEnvironmentSpec,
     GitFileRef,
     GitSource,
     LocalEnvironmentSpec,
@@ -75,6 +77,7 @@ from viper.protocol import (
     TrainVariantStageParams,
     VariantSpec,
 )
+from viper.runtime import observe_gce_provisioning
 from viper.serialization import parse_yaml_bytes, serialize_document
 
 ACQUISITION_RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAC"
@@ -138,16 +141,25 @@ def _source(commit: str) -> GitSource:
     return GitSource.model_validate({"repository": REPOSITORY, "commit": commit})
 
 
-def _environment(commit: str) -> LocalEnvironmentSpec:
-    """Bind the current test runtime to the generated project's lockfile."""
+def _environment(commit: str) -> LocalEnvironmentSpec | GCEEnvironmentSpec:
+    """Bind the active local or live GCE host to the generated project."""
+    lockfile = GitFileRef.model_validate(
+        {
+            "repository": REPOSITORY,
+            "commit": commit,
+            "path": "pyproject.toml",
+        }
+    )
+    if os.environ.get("VIPER_LIVE_GCE") == "1":
+        return GCEEnvironmentSpec(
+            provisioning=observe_gce_provisioning(),
+            machine_type="g2-standard-12",
+            compute=CPUComputeSpec(),
+            lockfile=lockfile,
+            python_environment=python_environment(),
+        )
     return LocalEnvironmentSpec(
-        lockfile=GitFileRef.model_validate(
-            {
-                "repository": REPOSITORY,
-                "commit": commit,
-                "path": "pyproject.toml",
-            }
-        ),
+        lockfile=lockfile,
         python_environment=python_environment(),
     )
 
