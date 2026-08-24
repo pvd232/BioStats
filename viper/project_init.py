@@ -126,6 +126,60 @@ def load(path: Path) -> bytes:
     return path.read_bytes()
 '''
         ),
+        f"src/{package}/artifact_loaders/resume_state.py": (
+            '''"""Reconstruct the example terminal training state."""
+
+from pathlib import Path
+
+from viper.protocol import (
+    DataLoaderConfiguration,
+    DataLoaderResumeState,
+    LegacyNumPyRNGState,
+    MainProcessRNGState,
+    NumPyRNGState,
+    PCG64GeneratorState,
+    PCG64InternalState,
+    PythonRNGState,
+    ResumeState,
+)
+
+
+def load(path: Path) -> ResumeState:
+    """Return the example resume state after confirming the file exists."""
+    path.read_bytes()
+    return ResumeState(
+        optimizer_state={"state": {}, "param_groups": []},
+        main_process_rng=MainProcessRNGState(
+            python=PythonRNGState(
+                version=3,
+                internal_state=(1,),
+                gaussian_cache=None,
+            ),
+            numpy=NumPyRNGState(
+                generators={
+                    "training": PCG64GeneratorState(
+                        state=PCG64InternalState(state=1, inc=1),
+                        has_uint32=0,
+                        uinteger=0,
+                    )
+                },
+                legacy_global=LegacyNumPyRNGState(
+                    keys=(0,) * 624,
+                    position=0,
+                    has_gaussian=0,
+                    cached_gaussian=0.0,
+                ),
+            ),
+            torch_cpu=b"torch-cpu",
+            torch_cuda=(),
+        ),
+        dataloader=DataLoaderResumeState(
+            configuration=DataLoaderConfiguration(workers=0),
+            state_dict={"num_yielded": 1},
+        ),
+    )
+'''
+        ),
         f"src/{package}/metrics/__init__.py": (
             '"""Project-owned metric implementations."""\n'
         ),
@@ -179,22 +233,32 @@ def test_stage_kinds() -> None:
         ),
     }
     for stage, (params, decorator, artifact) in stage_definitions.items():
-        input_read = ""
-        if stage != "download":
+        if stage == "download":
+            input_read = ""
+        elif stage == "evaluate":
+            input_read = "    payload = context.inputs['parameters'].read_bytes()\n"
+        else:
             input_read = (
                 "    source = next(iter(context.inputs.values()))\n"
                 "    payload = source.read_bytes()\n"
-            )
-        else:
-            input_read = (
-                "    retrieval = next(iter(context.retrievals.values()))\n"
-                "    payload = retrieval.body.read_bytes()\n"
             )
         extra_artifact = ""
         if stage == "train":
             extra_artifact = (
                 "    context.artifacts['resume_state'].write_bytes(b'resume')\n"
             )
+        if stage == "download":
+            stage_body = """    for name, retrieval in context.retrievals.items():
+        destination = context.artifacts[name]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(retrieval.body.read_bytes())
+"""
+        else:
+            destination_line = f'    destination = context.artifacts["{artifact}"]\n'
+            stage_body = f"""{input_read}{destination_line}\
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(payload)
+{extra_artifact}"""
         files[
             f"src/{package}/stages/{stage}.py"
         ] = f'''"""Execute the example {stage} stage."""
@@ -206,10 +270,7 @@ from viper import {decorator}
 @{decorator}(parameter_model=Project{params})
 def {stage}(context) -> None:
     """Write the declared {artifact} artifact from verified inputs."""
-{input_read}    destination = context.artifacts["{artifact}"]
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(payload)
-{extra_artifact}'''
+{stage_body}'''
     files[f"src/{package}/stages/__init__.py"] = (
         '"""Project-owned decorated stage callables."""\n'
     )

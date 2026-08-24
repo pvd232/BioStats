@@ -219,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         function = load_stage_callable(
             root / stage.implementation.path,
             stage.implementation,
+            import_root=root,
         )
         definition = stage_definition(function)
         if definition.kind != stage.kind:

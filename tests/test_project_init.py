@@ -34,7 +34,7 @@ def test_init_project_generates_importable_five_stage_project(
     )
 
     assert result.project_root == target
-    assert len(result.files) == 18
+    assert len(result.files) == 19
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "1 passed" in completed.stdout
 

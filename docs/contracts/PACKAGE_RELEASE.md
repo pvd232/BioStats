@@ -56,6 +56,16 @@ source-layout agnostic.
 The generated project must freeze, preflight, execute, and verify one complete
 run as generated.
 
+The runnable example has two plans. The acquisition plan publishes the fixed
+evaluation dataset and split, then writes their promoted artifact pointers.
+The candidate plan contains the ordered `download`, `build`, `embed`, `train`,
+and `evaluate` stages. Its evaluation stage selects the promoted evaluation
+inputs and the parameters produced by its training stage. The benchmark
+executes one independent confirmation of the candidate plan.
+
+This sequence preserves the data-use contract: evaluation and benchmark inputs
+exist before the candidate plan is frozen and never enter its training stages.
+
 `PATH` must be absent or empty. The command validates every requested path and
 package name before writing the first file. An occupied path returns a typed
 conflict failure and preserves its contents.
@@ -100,10 +110,12 @@ records the signing identity and the successful signature-verification command.
 
 A clean environment installs the candidate wheel. The command
 `viper init tiny-project --package tiny_project` creates the example. The
-example freezes and preflights one plan. `python train.py` executes its decorated
-stage through `viper.run(stage_callable)`. `viper run` executes the complete
-plan through the same coordinator and emits valid JSON. Both results pass
-terminal verification. The same wheel completes the live GCE smoke case.
+example executes its acquisition plan and promotes the evaluation inputs. It
+then freezes and preflights the candidate plan. `python train.py` executes its
+decorated stage through `viper.run(stage_callable)`. `viper run` executes the
+complete candidate plan through the same coordinator and emits valid JSON. The
+benchmark confirmation passes. The same wheel completes the live GCE smoke
+case.
 
 Deleting one documented public import causes the installed-wheel test to fail.
 
