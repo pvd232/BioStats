@@ -56,6 +56,7 @@ constraints expressed through field declarations, and repeated aliases.
 | Metric worker receipts lacked the run and attempt that owned their measurements. | Both `MetricExecutionReceipt` values now contain the embedded measurement's run and attempt identities. |
 | The benchmark contract showed a one-field class as a complete definition. | The contract now displays the full `BenchmarkSpec`. |
 | Retry eligibility was implicit. | VIPER 0.1 accepts failed and cancelled runs and rejects successful runs. |
+| Stored pointer files were required to contain the commit that would later contain their consuming benchmark. | Each `StoredInputRef` now preserves the pointer file's own immutable commit; source-owned code and lockfiles remain bound to `RunSpec.source.commit`. |
 | Public API prose retained the superseded HTTP and metric interfaces. | Both API documents now use required responses, preflight executables, metric modes, and dedicated workers. |
 
 ## Value lifecycles

@@ -1027,13 +1027,6 @@ def verify_run_plan_relationships(
                 stage.environment.lockfile,
                 f"environment lockfile of stage {stage_id!r}",
             )
-        if isinstance(stage, InternalSpec):
-            for input_name, input_ref in stage.inputs.items():
-                if isinstance(input_ref, StoredInputRef):
-                    require_source_snapshot(
-                        input_ref.pointer,
-                        f"stored input {input_name!r} of stage {stage_id!r}",
-                    )
 
     prior_stages: dict[StageId, BaseSpec] = {}
     prior_stages_by_id: dict[StageId, dict[StageId, BaseSpec]] = {}

@@ -1601,8 +1601,8 @@ class RunPlanRelationshipTests(unittest.TestCase):
                 {"train": train},
             )
 
-    def test_plan_files_belong_to_the_source_snapshot(self) -> None:
-        """Verify that plan files belong to the source snapshot."""
+    def test_environment_lockfiles_belong_to_the_source_snapshot(self) -> None:
+        """Bind environment lockfiles to the implementation source snapshot."""
         train = train_spec()
         run, _ = run_spec([("train", train)])
         experiment = ExperimentSpec(
@@ -1643,25 +1643,48 @@ class RunPlanRelationshipTests(unittest.TestCase):
                 {"train": train},
             )
 
+    def test_stored_pointer_may_precede_the_source_snapshot(self) -> None:
+        """Select a promoted pointer from its own earlier immutable commit."""
+        train = train_spec()
+        run, _ = run_spec([("train", train)])
+        experiment = ExperimentSpec(
+            experiment_id="e001_strand",
+            factors=(),
+            variant_ids=("baseline",),
+            replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
+            metrics=(metric_spec("pearson_correlation", "evaluation"),),
+        )
+        variant = VariantSpec(
+            experiment_id="e001_strand",
+            variant_id="baseline",
+            levels={},
+            stage_params=(
+                TrainVariantStageParams(
+                    kind="train",
+                    stage_id="train",
+                    params=train.params,
+                ),
+            ),
+        )
         input_ref = train.inputs["training_dataset"]
         if not isinstance(input_ref, StoredInputRef):
             self.fail("training_dataset must be a stored input")
-        wrong_input = input_ref.model_copy(
+        earlier_input = input_ref.model_copy(
             update={
                 "pointer": input_ref.pointer.model_copy(update={"commit": "d" * 40})
             }
         )
-        wrong_train = train.model_copy(
-            update={"inputs": {"training_dataset": wrong_input}}
+        selected_train = train.model_copy(
+            update={"inputs": {"training_dataset": earlier_input}}
         )
-        with self.assertRaisesRegex(VerificationError, "source snapshot"):
-            verify_run_plan_relationships(
-                run,
-                experiment,
-                variant,
-                None,
-                {"train": wrong_train},
-            )
+
+        verify_run_plan_relationships(
+            run,
+            experiment,
+            variant,
+            None,
+            {"train": selected_train},
+        )
 
     def test_benchmark_matches_evaluation_inputs_splits_and_metrics(self) -> None:
         """Verify that benchmark matches evaluation inputs splits and metrics."""
