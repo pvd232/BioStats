@@ -39,9 +39,7 @@ def test_metric_receipt_rejects_a_different_recomputed_value() -> None:
     )
     tampered_receipt = receipt.model_copy(
         update={
-            "recomputation": receipt.recomputation.model_copy(
-                update={"value": 0.5}
-            )
+            "recomputation": receipt.recomputation.model_copy(update={"value": 0.5})
         }
     )
     raw = yaml_bytes(tampered_receipt)
@@ -68,9 +66,7 @@ def test_metric_receipt_rejects_worker_ownership_tampering() -> None:
     )
     tampered_receipt = receipt.model_copy(
         update={
-            "recomputation": receipt.recomputation.model_copy(
-                update={"attempt_id": 2}
-            )
+            "recomputation": receipt.recomputation.model_copy(update={"attempt_id": 2})
         }
     )
     raw = yaml_bytes(tampered_receipt)

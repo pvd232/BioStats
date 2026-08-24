@@ -376,9 +376,7 @@ def execute_stage_process(
     except (json.JSONDecodeError, ValueError) as exc:
         raise StageExecutionError("stage worker wrote an invalid result") from exc
     if process.returncode != 0 or worker_result.error is not None:
-        message = (
-            worker_result.error or stderr.decode(errors="replace").strip()
-        )
+        message = worker_result.error or stderr.decode(errors="replace").strip()
         raise StageExecutionError(
             f"stage command exited with status {process.returncode}: {message}",
             invocation=worker_result.invocation,

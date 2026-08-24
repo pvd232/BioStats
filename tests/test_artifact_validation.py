@@ -43,9 +43,7 @@ def test_artifact_worker_result_requires_one_outcome() -> None:
 def test_artifact_validation_names_the_established_guarantee() -> None:
     """Represent generic loadability and reserved semantic validation distinctly."""
     loadability = ArtifactValidationResult(guarantee="artifact.loadability")
-    semantic = ArtifactValidationResult(
-        guarantee="artifact.semantic.resume_state"
-    )
+    semantic = ArtifactValidationResult(guarantee="artifact.semantic.resume_state")
 
     assert loadability.guarantee == "artifact.loadability"
     assert semantic.guarantee == "artifact.semantic.resume_state"

@@ -1549,9 +1549,7 @@ class RunPlanRelationshipTests(unittest.TestCase):
             factors=(),
             variant_ids=("baseline",),
             replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
-            metrics=(
-                metric_spec("pearson_correlation", "evaluation"),
-            ),
+            metrics=(metric_spec("pearson_correlation", "evaluation"),),
         )
         variant = VariantSpec(
             experiment_id="e001_strand",
@@ -1603,9 +1601,7 @@ class RunPlanRelationshipTests(unittest.TestCase):
             factors=(),
             variant_ids=("baseline",),
             replicates=(ReplicateSpec(replicate_id="replicate_01", seed=42),),
-            metrics=(
-                metric_spec("pearson_correlation", "evaluation"),
-            ),
+            metrics=(metric_spec("pearson_correlation", "evaluation"),),
         )
         variant = VariantSpec(
             experiment_id="e001_strand",

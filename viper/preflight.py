@@ -482,8 +482,7 @@ def preflight_local_plan(repository_root: Path, run_spec_path: Path) -> Prefligh
                     not implementation_path.is_file()
                     or len(raw) != implementation.bytes
                     or hashlib.sha256(raw).hexdigest() != implementation.sha256
-                    or raw
-                    != _git_bytes(root, run.source.commit, implementation.path)
+                    or raw != _git_bytes(root, run.source.commit, implementation.path)
                 ):
                     implementations_valid = False
                     continue

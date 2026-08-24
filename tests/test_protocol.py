@@ -112,9 +112,9 @@ def artifact(path: str, loader: str, data_role: DataRole = "training") -> dict:
     return {
         "kind": "file",
         "path": path,
-        "loader": artifact_loader_ref(
-            f"project/loaders/{loader}.py"
-        ).model_dump(mode="json"),
+        "loader": artifact_loader_ref(f"project/loaders/{loader}.py").model_dump(
+            mode="json"
+        ),
         "data_role": data_role,
     }
 
@@ -252,9 +252,7 @@ class RunPlanTests(unittest.TestCase):
                     "journal": {
                         "sha256": SHA_A,
                         "bytes": 1,
-                        "stored_at": git_file(
-                            f"{RUN_ROOT}/attempts/1/journal.jsonl"
-                        ),
+                        "stored_at": git_file(f"{RUN_ROOT}/attempts/1/journal.jsonl"),
                     },
                     "measurement_files": [],
                     "log_files": [],

@@ -56,6 +56,7 @@ class DurableJournal:
         if not self.path.exists():
             return ()
         return parse_journal_bytes(self.path.read_bytes())
+
     def append(
         self,
         state: AttemptState,
