@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -136,7 +137,7 @@ def execute_metric_process(
     environment["VIPER_METRIC_CONTEXT_PATH"] = str(context_path)
 
     completed = subprocess.run(
-        ("python", "-m", "viper.metric_worker"),
+        (sys.executable, "-m", "viper.metric_worker"),
         cwd=root,
         env=environment,
         capture_output=True,

@@ -7,6 +7,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -317,7 +318,7 @@ def execute_stage_process(
     environment["VIPER_CONTEXT_PATH"] = str(context_path)
     started_at = datetime.now(UTC)
     process = subprocess.Popen(
-        command,
+        (sys.executable, *command[1:]),
         cwd=root,
         env=environment,
         stdout=subprocess.PIPE,

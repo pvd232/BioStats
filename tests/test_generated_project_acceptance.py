@@ -214,7 +214,7 @@ def _pointer_ref(commit: str, path: str) -> ArtifactPointerRef:
 
 
 def _child_environment(root: Path) -> dict[str, str]:
-    """Expose generated source and this checkout to acceptance subprocesses."""
+    """Expose generated source while rejecting bare ``python`` worker launches."""
     environment = os.environ.copy()
     existing_python_path = environment.get("PYTHONPATH")
     source_paths = os.pathsep.join((str(root / "src"), str(Path(__file__).parents[1])))
@@ -222,6 +222,14 @@ def _child_environment(root: Path) -> dict[str, str]:
         source_paths
         if existing_python_path is None
         else f"{source_paths}{os.pathsep}{existing_python_path}"
+    )
+    shadow_bin = root / ".viper" / "test-bin"
+    shadow_bin.mkdir(parents=True, exist_ok=True)
+    shadow_python = shadow_bin / "python"
+    shadow_python.write_text("#!/bin/sh\nexit 97\n", encoding="utf-8")
+    shadow_python.chmod(0o755)
+    environment["PATH"] = os.pathsep.join(
+        (str(shadow_bin), environment.get("PATH", ""))
     )
     return environment
 
