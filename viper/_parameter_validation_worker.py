@@ -1,4 +1,4 @@
-"""Execute one project parameter validator in a dedicated worker process."""
+"""Validate project parameters in a dedicated worker process."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from .parameter_models import ParameterValidationContext, validate_parameters
+from ._parameter_validation import ParameterValidationContext, validate_parameters
 from .protocol import ParameterizedSpec
 from .serialization import load_stage_spec
 

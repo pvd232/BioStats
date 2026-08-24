@@ -21,6 +21,7 @@ from tests.fixtures import (
     reproducibility,
     resume_state,
 )
+from viper import parameters
 from viper import run as run_stage
 from viper.application import CompareRunsRequest, RunSuccess
 from viper.application import compare_runs as compare_runs_application
@@ -33,7 +34,6 @@ from viper.protocol import (
     RESUME_STATE,
     ArtifactLoaderRef,
     CUDAComputeSpec,
-    DownloadParams,
     DownloadSpec,
     DownloadVariantStageParams,
     ExperimentSpec,
@@ -47,7 +47,6 @@ from viper.protocol import (
     Measurement,
     MetricDependency,
     MetricImplementationRef,
-    MetricParams,
     MetricSpec,
     ParameterModelRef,
     ReplicateSpec,
@@ -56,7 +55,6 @@ from viper.protocol import (
     SingleFileArtifactSpec,
     StageArtifactRef,
     StageImplementationRef,
-    TrainParams,
     TrainSpec,
     TrainVariantStageParams,
     VariantSpec,
@@ -165,7 +163,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
     _git(root, "config", "user.name", "VIPER Test")
     _git(root, "remote", "add", "origin", REPOSITORY)
 
-    train_params = TrainParams.model_validate(
+    train_params = parameters.Train.model_validate(
         {"epochs": 1, "batch_size": 1, "learning_rate": 0.1}
     )
     metric_source = (
@@ -195,7 +193,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             sha256=hashlib.sha256(metric_source).hexdigest(),
             bytes=len(metric_source),
         ),
-        params=MetricParams(),
+        params=parameters.Metric(),
         mode="recompute",
         dependencies=(
             MetricDependency(
@@ -215,7 +213,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             sha256=hashlib.sha256(live_metric_source).hexdigest(),
             bytes=len(live_metric_source),
         ),
-        params=MetricParams(),
+        params=parameters.Metric(),
         mode="live",
     )
     experiment = ExperimentSpec(
@@ -232,7 +230,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         stage_params=(
             DownloadVariantStageParams(
                 stage_id="download",
-                params=DownloadParams(),
+                params=parameters.Download(),
             ),
             TrainVariantStageParams(stage_id="train", params=train_params),
         ),
@@ -250,15 +248,15 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
         "project/metrics/epoch_mean.py": live_metric_source,
         "project/parameters/train.py": (
             b"from pydantic import Field\n"
-            b"from viper.protocol import TrainParams\n\n"
-            b"class TinyTrainParameters(TrainParams):\n"
+            b"from viper import parameters\n\n"
+            b"class TinyTrainParameters(parameters.Train):\n"
             b"    epochs: int = Field(gt=0)\n"
             b"    batch_size: int = Field(gt=0)\n"
             b"    learning_rate: float = Field(gt=0)\n"
         ),
         "project/parameters/download.py": (
-            b"from viper.protocol import DownloadParams\n\n"
-            b"class TinyDownloadParameters(DownloadParams):\n"
+            b"from viper import parameters\n\n"
+            b"class TinyDownloadParameters(parameters.Download):\n"
             b'    """Validate the download parameters used by this project."""\n'
         ),
         "jobs/download.py": (
@@ -365,7 +363,7 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
                 data_role="training",
             )
         },
-        params=DownloadParams(),
+        params=parameters.Download(),
     )
     train = TrainSpec(
         implementation=StageImplementationRef(

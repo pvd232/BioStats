@@ -13,10 +13,10 @@ from tests.fixtures import (
     http_request,
     python_environment,
 )
+from viper import parameters
 from viper.local_store import LocalArtifactStore
 from viper.paths import retrieval_body_path
 from viper.protocol import (
-    DownloadParams,
     DownloadSpec,
     ObservedHttpResponse,
     ParameterModelRef,
@@ -42,8 +42,8 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
         """Run a download stage and record the exact bytes it produces."""
         artifact_path = f"{RUN_ROOT}/artifacts/datasets/tiny/dataset.bin"
         parameter_source = (
-            b"from viper.protocol import DownloadParams\n\n"
-            b"class TinyDownloadParameters(DownloadParams):\n"
+            b"from viper import parameters\n\n"
+            b"class TinyDownloadParameters(parameters.Download):\n"
             b'    """Validate parameters for the execution fixture."""\n'
         )
         implementation_source = (
@@ -85,7 +85,7 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
                     data_role="training",
                 )
             },
-            params=DownloadParams(),
+            params=parameters.Download(),
         )
 
         with TemporaryDirectory() as directory:

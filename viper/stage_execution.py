@@ -15,7 +15,10 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 
-from .parameter_models import ParameterModelError, validate_stage_parameters
+from ._parameter_validation import (
+    ParameterValidationError,
+    validate_stage_parameters,
+)
 from .protocol import (
     ArtifactName,
     BaseSpec,
@@ -238,7 +241,7 @@ def execute_stage_process(
             parameterized_stage,
             timeout_seconds=timeout_seconds,
         )
-    except ParameterModelError as exc:
+    except ParameterValidationError as exc:
         raise StageExecutionError("stage parameter validation failed") from exc
 
     run_spec_path = (

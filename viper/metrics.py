@@ -16,13 +16,13 @@ from typing import Any, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from . import parameters
 from .ids import MetricId, RunId, StageId
 from .protocol import (
     FloatComparator,
     Measurement,
     MetricKind,
     MetricMode,
-    MetricParams,
     MetricSpec,
 )
 
@@ -38,7 +38,7 @@ class MetricContext(BaseModel):
 
     inputs: Mapping[str, Path] = Field(default_factory=dict)
     artifacts: Mapping[str, Path] = Field(default_factory=dict)
-    params: MetricParams = Field(default_factory=MetricParams)
+    params: parameters.Metric = Field(default_factory=parameters.Metric)
 
 
 @dataclass(frozen=True)

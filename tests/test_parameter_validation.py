@@ -1,4 +1,4 @@
-"""Tests for project-owned stage-parameter model loading and validation."""
+"""Tests for project-owned parameter identity and value validation."""
 
 import hashlib
 from pathlib import Path
@@ -7,8 +7,9 @@ import pytest
 from pydantic import ValidationError
 
 from tests.fixtures import artifact_loader_ref, stage_implementation_ref
-from viper.parameter_models import (
-    ParameterModelError,
+from viper import parameters
+from viper._parameter_validation import (
+    ParameterValidationError,
     load_parameter_model,
     validate_parameters,
     validate_stage_parameters,
@@ -21,7 +22,6 @@ from viper.protocol import (
     ParameterModelRef,
     SingleFileArtifactSpec,
     StoredInputRef,
-    TrainParams,
     TrainSpec,
 )
 from viper.serialization import serialize_document
@@ -31,8 +31,8 @@ def _model_file(tmp_path: Path) -> tuple[Path, bytes]:
     """Write one constrained training-parameter class for focused tests."""
     raw = (
         b"from pydantic import Field\n"
-        b"from viper.protocol import TrainParams\n\n"
-        b"class TinyTrainParams(TrainParams):\n"
+        b"from viper import parameters\n\n"
+        b"class TinyTrainParameters(parameters.Train):\n"
         b"    epochs: int = Field(gt=0)\n"
         b"    learning_rate: float = Field(gt=0)\n"
     )
@@ -45,21 +45,21 @@ def _reference(raw: bytes) -> ParameterModelRef:
     """Identify the exact parameter-model bytes written by the test."""
     return ParameterModelRef(
         path="project/parameters/tiny_train.py",
-        symbol="TinyTrainParams",
+        symbol="TinyTrainParameters",
         sha256=hashlib.sha256(raw).hexdigest(),
         bytes=len(raw),
     )
 
 
 def test_parameter_model_validates_project_fields(tmp_path: Path) -> None:
-    """Validate supplied values through the selected TrainParams subclass."""
+    """Validate supplied values through the selected training category."""
     path, raw = _model_file(tmp_path)
 
     validated = validate_parameters(
         path,
         _reference(raw),
-        TrainParams.model_validate({"epochs": 2, "learning_rate": 0.1}),
-        TrainParams,
+        parameters.Train.model_validate({"epochs": 2, "learning_rate": 0.1}),
+        parameters.Train,
     )
 
     assert validated["epochs"] == 2
@@ -74,16 +74,16 @@ def test_parameter_model_rejects_invalid_project_values(tmp_path: Path) -> None:
         validate_parameters(
             path,
             _reference(raw),
-            TrainParams.model_validate({"epochs": 0, "learning_rate": 0.1}),
-            TrainParams,
+            parameters.Train.model_validate({"epochs": 0, "learning_rate": 0.1}),
+            parameters.Train,
         )
 
 
 def test_parameter_model_rejects_implicit_defaults(tmp_path: Path) -> None:
     """Require every effective project-model value in the frozen mapping."""
     raw = (
-        b"from viper.protocol import TrainParams\n\n"
-        b"class DefaultedTrainParams(TrainParams):\n"
+        b"from viper import parameters\n\n"
+        b"class DefaultedTrainParameters(parameters.Train):\n"
         b"    epochs: int\n"
         b"    dropout: float = 0.1\n"
     )
@@ -91,17 +91,17 @@ def test_parameter_model_rejects_implicit_defaults(tmp_path: Path) -> None:
     path.write_bytes(raw)
     reference = ParameterModelRef(
         path="project/parameters/defaulted.py",
-        symbol="DefaultedTrainParams",
+        symbol="DefaultedTrainParameters",
         sha256=hashlib.sha256(raw).hexdigest(),
         bytes=len(raw),
     )
 
-    with pytest.raises(ParameterModelError, match="every effective"):
+    with pytest.raises(ParameterValidationError, match="every effective"):
         validate_parameters(
             path,
             reference,
-            TrainParams.model_validate({"epochs": 2}),
-            TrainParams,
+            parameters.Train.model_validate({"epochs": 2}),
+            parameters.Train,
         )
 
 
@@ -113,21 +113,21 @@ def test_parameter_model_rejects_type_coercion(tmp_path: Path) -> None:
         validate_parameters(
             path,
             _reference(raw),
-            TrainParams.model_validate({"epochs": "2", "learning_rate": 0.1}),
-            TrainParams,
+            parameters.Train.model_validate({"epochs": "2", "learning_rate": 0.1}),
+            parameters.Train,
         )
 
 
 def test_parameter_model_requires_the_stage_specific_base(tmp_path: Path) -> None:
-    """Reject a selected class that does not specialize TrainParams."""
+    """Reject a selected class outside the training parameter category."""
     path = tmp_path / "wrong.py"
     path.write_text(
-        'class WrongParams:\n    """Does not specialize TrainParams."""\n',
+        'class WrongParameters:\n    """Uses no VIPER parameter category."""\n',
         encoding="utf-8",
     )
 
-    with pytest.raises(ParameterModelError, match="subclass TrainParams"):
-        load_parameter_model(path, "WrongParams", TrainParams)
+    with pytest.raises(ParameterValidationError, match="subclass Train"):
+        load_parameter_model(path, "WrongParameters", parameters.Train)
 
 
 def test_parameter_model_reports_import_failure(tmp_path: Path) -> None:
@@ -138,8 +138,8 @@ def test_parameter_model_reports_import_failure(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(ParameterModelError, match="raised during import"):
-        load_parameter_model(path, "BrokenParams", TrainParams)
+    with pytest.raises(ParameterValidationError, match="raised during import"):
+        load_parameter_model(path, "BrokenParams", parameters.Train)
 
 
 def test_parameter_model_rejects_tampered_bytes(tmp_path: Path) -> None:
@@ -147,7 +147,7 @@ def test_parameter_model_rejects_tampered_bytes(tmp_path: Path) -> None:
     _, raw = _model_file(tmp_path)
     reference = _reference(raw)
 
-    with pytest.raises(ParameterModelError, match="byte count"):
+    with pytest.raises(ParameterValidationError, match="byte count"):
         verify_parameter_model_bytes(reference, raw + b"# changed\n")
 
 
@@ -174,7 +174,7 @@ def test_stage_parameter_validation_runs_in_a_worker(tmp_path: Path) -> None:
                 data_role="training",
             )
         },
-        params=TrainParams.model_validate({"epochs": 2, "learning_rate": 0.1}),
+        params=parameters.Train.model_validate({"epochs": 2, "learning_rate": 0.1}),
         artifacts={
             PARAMETERS: SingleFileArtifactSpec(
                 path="experiments/example/runs/baseline/"
@@ -201,9 +201,11 @@ def test_stage_parameter_validation_runs_in_a_worker(tmp_path: Path) -> None:
 
     invalid_stage = stage.model_copy(
         update={
-            "params": TrainParams.model_validate({"epochs": 0, "learning_rate": 0.1})
+            "params": parameters.Train.model_validate(
+                {"epochs": 0, "learning_rate": 0.1}
+            )
         }
     )
     stage_path.write_bytes(serialize_document(invalid_stage))
-    with pytest.raises(ParameterModelError, match="worker failed"):
+    with pytest.raises(ParameterValidationError, match="worker failed"):
         validate_stage_parameters(tmp_path, stage_path, invalid_stage)

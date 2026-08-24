@@ -14,21 +14,16 @@ from typing import Any, Generic, TypeVar, cast
 
 import numpy as np
 
+from . import parameters
 from .ids import HumanId, InputName, MetricId, RunId, StageId
 from .metrics import MetricHandle
 from .protocol import (
     ArtifactName,
-    BuildParams,
-    DownloadParams,
-    EmbedParams,
-    EvaluateParams,
     ParameterizedSpec,
-    ParameterSet,
     StageImplementationRef,
-    TrainParams,
 )
 
-ParamsT = TypeVar("ParamsT", bound=ParameterSet)
+ParamsT = TypeVar("ParamsT", bound=parameters.ParameterSet)
 DecoratedStage = TypeVar("DecoratedStage", bound=Callable[..., None])
 
 
@@ -63,7 +58,7 @@ def _stage_decorator(
     parameter_model: type[ParamsT],
 ) -> Callable[[DecoratedStage], DecoratedStage]:
     """Create one stage decorator with fixed authoring metadata."""
-    if not issubclass(parameter_model, ParameterSet):
+    if not issubclass(parameter_model, parameters.ParameterSet):
         raise TypeError("stage parameter model must subclass ParameterSet")
 
     definition = StageDefinition(kind=kind, parameter_model=parameter_model)
@@ -80,35 +75,35 @@ def _stage_decorator(
 
 
 def download_stage(
-    *, parameter_model: type[DownloadParams]
+    *, parameter_model: type[parameters.Download]
 ) -> Callable[[DecoratedStage], DecoratedStage]:
     """Declare one download-stage callable."""
     return _stage_decorator("download", parameter_model)
 
 
 def build_stage(
-    *, parameter_model: type[BuildParams]
+    *, parameter_model: type[parameters.Build]
 ) -> Callable[[DecoratedStage], DecoratedStage]:
     """Declare one build-stage callable."""
     return _stage_decorator("build", parameter_model)
 
 
 def embed_stage(
-    *, parameter_model: type[EmbedParams]
+    *, parameter_model: type[parameters.Embed]
 ) -> Callable[[DecoratedStage], DecoratedStage]:
     """Declare one embedding-stage callable."""
     return _stage_decorator("embed", parameter_model)
 
 
 def train_stage(
-    *, parameter_model: type[TrainParams]
+    *, parameter_model: type[parameters.Train]
 ) -> Callable[[DecoratedStage], DecoratedStage]:
     """Declare one training-stage callable."""
     return _stage_decorator("train", parameter_model)
 
 
 def evaluate_stage(
-    *, parameter_model: type[EvaluateParams]
+    *, parameter_model: type[parameters.Evaluate]
 ) -> Callable[[DecoratedStage], DecoratedStage]:
     """Declare one evaluation-stage callable."""
     return _stage_decorator("evaluate", parameter_model)

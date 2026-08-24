@@ -1,4 +1,4 @@
-"""Load and invoke project-owned Pydantic stage-parameter models."""
+"""Verify project parameter classes and validate frozen parameter values."""
 
 from __future__ import annotations
 
@@ -13,13 +13,14 @@ from typing import cast
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
-from .protocol import ParameterizedSpec, ParameterModelRef, ParameterSet
+from . import parameters
+from .protocol import ParameterizedSpec, ParameterModelRef
 from .serialization import load_stage_spec
 from .worker import ExecutionPolicy, WorkerRequest, execute_worker
 
 
-class ParameterModelError(RuntimeError):
-    """Report an invalid parameter-model identity, class, or parameter value."""
+class ParameterValidationError(RuntimeError):
+    """Report an invalid parameter identity, class, or value."""
 
 
 class ParameterValidationContext(BaseModel):
@@ -37,43 +38,45 @@ def verify_parameter_model_bytes(
 ) -> None:
     """Compare retrieved parameter-model bytes with their frozen identity."""
     if len(raw) != reference.bytes:
-        raise ParameterModelError(
+        raise ParameterValidationError(
             "parameter model byte count differs from its reference"
         )
     if hashlib.sha256(raw).hexdigest() != reference.sha256:
-        raise ParameterModelError("parameter model SHA-256 differs from its reference")
+        raise ParameterValidationError(
+            "parameter model SHA-256 differs from its reference"
+        )
 
 
 def load_parameter_model(
     path: Path,
     symbol: str,
-    expected_base: type[ParameterSet],
-) -> type[ParameterSet]:
+    expected_base: type[parameters.ParameterSet],
+) -> type[parameters.ParameterSet]:
     """Load one top-level Pydantic class and enforce its stage-specific base."""
     module_name = f"_viper_parameter_model_{path.stem}_{abs(hash(path.resolve()))}"
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
-        raise ParameterModelError("parameter model module could not be loaded")
+        raise ParameterValidationError("parameter model module could not be loaded")
     module = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(module)
     except Exception as exc:
-        raise ParameterModelError(
+        raise ParameterValidationError(
             "parameter model module raised during import"
         ) from exc
     value = getattr(module, symbol, None)
     if not isinstance(value, type) or not issubclass(value, expected_base):
-        raise ParameterModelError(
+        raise ParameterValidationError(
             f"parameter model must subclass {expected_base.__name__}"
         )
-    return cast(type[ParameterSet], value)
+    return cast(type[parameters.ParameterSet], value)
 
 
 def validate_parameters(
     path: Path,
     reference: ParameterModelRef,
-    params: ParameterSet,
-    expected_base: type[ParameterSet],
+    params: parameters.ParameterSet,
+    expected_base: type[parameters.ParameterSet],
 ) -> dict[str, JsonValue]:
     """Validate one frozen parameter mapping with its selected project class."""
     raw = path.read_bytes()
@@ -83,7 +86,7 @@ def validate_parameters(
     validated = model.model_validate(frozen, strict=True)
     effective = cast(dict[str, JsonValue], validated.model_dump(mode="json"))
     if effective != frozen:
-        raise ParameterModelError(
+        raise ParameterValidationError(
             "frozen parameters must contain every effective project-model value"
         )
     return effective
@@ -92,9 +95,9 @@ def validate_parameters(
 def instantiate_parameters(
     path: Path,
     reference: ParameterModelRef,
-    params: ParameterSet,
-    expected_base: type[ParameterSet],
-) -> ParameterSet:
+    params: parameters.ParameterSet,
+    expected_base: type[parameters.ParameterSet],
+) -> parameters.ParameterSet:
     """Construct the exact project parameter class from one frozen mapping."""
     raw = path.read_bytes()
     verify_parameter_model_bytes(reference, raw)
@@ -103,7 +106,7 @@ def instantiate_parameters(
     validated = model.model_validate(frozen, strict=True)
     effective = cast(dict[str, JsonValue], validated.model_dump(mode="json"))
     if effective != frozen:
-        raise ParameterModelError(
+        raise ParameterValidationError(
             "frozen parameters must contain every effective project-model value"
         )
     return validated
@@ -144,18 +147,28 @@ def validate_stage_parameters(
                     workspace_root=root,
                     working_directory=root,
                     context_path=context_path,
-                    command=(sys.executable, "-m", "viper.parameter_worker"),
+                    command=(
+                        sys.executable,
+                        "-m",
+                        "viper._parameter_validation_worker",
+                    ),
                     environment={"PYTHONPATH": python_path},
                     policy=ExecutionPolicy(timeout_seconds=timeout_seconds),
                 )
             )
         except Exception as exc:
-            raise ParameterModelError("parameter validation worker failed") from exc
+            raise ParameterValidationError(
+                "parameter validation worker failed"
+            ) from exc
         if not result_path.is_file():
-            raise ParameterModelError("parameter validation worker wrote no result")
+            raise ParameterValidationError(
+                "parameter validation worker wrote no result"
+            )
         value = json.loads(result_path.read_text(encoding="utf-8"))
         if not isinstance(value, dict):
-            raise ParameterModelError("parameter validation worker returned no mapping")
+            raise ParameterValidationError(
+                "parameter validation worker returned no mapping"
+            )
         return cast(dict[str, JsonValue], value)
 
 
@@ -168,7 +181,9 @@ def validate_loaded_stage_parameters(
     """Load one stage specification and validate its selected parameter class."""
     stage = load_stage_spec(stage_spec_path)
     if not isinstance(stage, ParameterizedSpec):
-        raise ParameterModelError("parameter validation requires a parameterized stage")
+        raise ParameterValidationError(
+            "parameter validation requires a parameterized stage"
+        )
     return validate_stage_parameters(
         repository_root,
         stage_spec_path,

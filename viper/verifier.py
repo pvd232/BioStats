@@ -19,6 +19,10 @@ import yaml
 from huggingface_hub import HfApi, RepoFile, hf_hub_download
 from pydantic import TypeAdapter
 
+from ._parameter_validation import (
+    ParameterValidationError,
+    verify_parameter_model_bytes,
+)
 from .artifact_loaders import (
     ArtifactLoaderError,
     ArtifactValidationResult,
@@ -30,7 +34,6 @@ from .http import HttpRetrievalError, validate_request_policy
 from .ids import InputName, StageId
 from .journal import parse_journal_bytes
 from .metrics import compare_metric_values
-from .parameter_models import ParameterModelError, verify_parameter_model_bytes
 from .paths import retrieval_body_path
 from .protocol import (
     PARAMETERS,
@@ -1211,7 +1214,7 @@ def verify_parameter_model_references(
             raw = retrieve(location)
             verify_parameter_model_bytes(reference, raw)
             tree = ast.parse(raw, filename=reference.path)
-        except (KeyError, OSError, SyntaxError, ParameterModelError) as exc:
+        except (KeyError, OSError, SyntaxError, ParameterValidationError) as exc:
             raise VerificationError(
                 f"parameter model of stage {stage_id!r} failed source verification"
             ) from exc
@@ -1817,7 +1820,7 @@ def _verify_download_retrievals(
             )
             try:
                 verify_parameter_model_bytes(parameter_reference, parameter_raw)
-            except ParameterModelError as exc:
+            except ParameterValidationError as exc:
                 raise VerificationError(
                     f"HTTP retrieval {input_name!r} transport parameter model differs"
                 ) from exc

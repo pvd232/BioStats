@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from viper import parameters
 from viper.metrics import (
     MeasurementSink,
     MetricContext,
@@ -20,7 +21,6 @@ from viper.protocol import (
     FloatComparator,
     MetricDependency,
     MetricImplementationRef,
-    MetricParams,
     MetricSpec,
 )
 
@@ -69,7 +69,7 @@ def test_metric_loader_invokes_top_level_symbol(tmp_path: Path) -> None:
     )
     loaded = load_metric(implementation, "compute")
     context = MetricContext(
-        params=MetricParams.model_validate({"schema_version": 1, "value": 4.5})
+        params=parameters.Metric.model_validate({"schema_version": 1, "value": 4.5})
     )
 
     assert loaded(context) == 4.5
@@ -94,7 +94,7 @@ def test_frozen_metric_matches_decorator_metadata(tmp_path: Path) -> None:
             sha256=hashlib.sha256(source).hexdigest(),
             bytes=len(source),
         ),
-        params=MetricParams(),
+        params=parameters.Metric(),
         mode="recompute",
         dependencies=(
             MetricDependency(

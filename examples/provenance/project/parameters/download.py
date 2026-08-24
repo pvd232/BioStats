@@ -1,7 +1,7 @@
 """Validate download parameters for the provenance example."""
 
-from viper.protocol import DownloadParams
+import viper
 
 
-class DownloadParameters(DownloadParams):
+class DownloadParameters(viper.parameters.Download):
     """Accept the download parameters frozen by the example stage."""

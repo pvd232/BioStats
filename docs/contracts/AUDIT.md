@@ -3,7 +3,7 @@
 ## Decision
 
 The mechanical audit passes. All ten contracts pass the schema, value-lifecycle,
-traceability, counterexample, and propagation gates. Parameter models, stage
+traceability, counterexample, and propagation gates. Parameters, stage
 invocation, process startup, HTTP retrieval, artifact validation, metric
 provenance, attempt execution, benchmark execution, and cloud execution are
 implemented. Package release remains approved for implementation.
@@ -28,7 +28,7 @@ remain outside the active design state.
 |---|---:|
 | Active contracts | 10 |
 | Python blocks parsed | 73 |
-| Repeated classes compared | 51 |
+| Repeated classes compared | 49 |
 | Repeated aliases compared | 8 |
 | Implemented Pydantic schemas generated | 136 |
 | Named verifier rules traced to the checklist | 63 |
@@ -82,7 +82,7 @@ constraints expressed through field declarations, and repeated aliases.
 
 | Contract | Declaring input | Runtime operation | Persisted evidence | Verification | Acceptance |
 |---|---|---|---|---|---|
-| Parameter models | `ParameterModelRef` and stage params | Load exact class and validate strictly | Frozen refs and parameter mapping | `parameter_model.identity`, `parameter_model.validation` | Reject changed class bytes and invalid fields |
+| Parameters | `ParameterModelRef` and stage params | Load exact class and validate strictly | Frozen refs and parameter mapping | `parameter_model.identity`, `parameter_model.validation` | Reject changed class bytes and invalid fields |
 | Stage invocation | `StageImplementationRef` and `StageContextBinding` | Invoke the exact callable once | Invocation receipt and references | Six `stage.*` and parameter checks | Deliver `epochs=3`; reject a changed binding |
 | Process startup | Run controls and effective environment | Launch child, apply controls, and deliver named generators | Startup receipt, context binding, and execution context | Ten `startup.*` checks | Exercise generator delivery, CPU, one CUDA device, and distributed rejection |
 | HTTP retrieval | Request, policy, transport, expected body | Invoke selected transport | Resolved retrieval and body | Fourteen HTTP, parameter, stage, and artifact checks | Exercise HTTPX, project transport, redirect, credential, and tamper cases |
@@ -97,7 +97,7 @@ constraints expressed through field declarations, and repeated aliases.
 
 | Contract | Smallest false-positive execution | Rejecting check after completion |
 |---|---|---|
-| Parameter models | The stage mapping validates through a different class with the same symbol. | `parameter_model.identity` |
+| Parameters | The stage mapping validates through a different class with the same symbol. | `parameter_model.identity` |
 | Stage invocation | The callable receives `epochs=2` while the frozen stage contains `epochs=3`. | `parameter.value` |
 | Process startup | The binding names `augmentation`, while the callable receives an empty NumPy generator mapping. | `startup.context` |
 | HTTP retrieval | The endpoint returns same-length bytes with a different digest. | `http.content` |
@@ -124,7 +124,7 @@ release work appears as unchecked items in the master checklist:
 
 | Contract | Decision |
 |---|---|
-| Parameter models | Implemented |
+| Parameters | Implemented |
 | Stage invocation | Implemented |
 | Process startup | Implemented |
 | HTTP retrieval | Implemented |

@@ -38,15 +38,15 @@ extraction and parsing code.
 
 ## Original gap
 
-The former `RemoteFileRef` stored a URL and a project-supplied version.
+`RemoteFileRef` stored a URL and a project-supplied version.
 `DownloadSpec` passed that declaration to a project script, which could ignore
 the declared URL. `ResolvedDownloadSpec` stored the authored input and one
 timestamp. The verifier established artifact identity after execution while
 leaving retrieval unobserved.
 
 The earlier draft also assigned transfer execution directly to one VIPER HTTP
-client. The single-client boundary left the transport implementation implicit and
-coupled the protocol to one client. It also treated one logical retrieval as
+client. The single-client boundary left the transport implementation implicit
+and coupled the protocol to one client. It also treated one logical retrieval as
 one HTTP exchange. A segmented downloader can issue several range requests to
 produce one file, so the logical retrieval is the stable protocol unit.
 
@@ -59,13 +59,9 @@ Every stage inherits the same project-parameter contract:
 ```python
 class ParameterizedSpec(BaseSpec):
     parameter_model: ParameterModelRef
-
-
-class DownloadParams(ParameterSet):
-    """Parameters consumed by one project-defined download procedure."""
 ```
 
-`DownloadParams` holds extraction, archive, and parsing values.
+`viper.parameters.Download` holds extraction, archive, and parsing values.
 The transport has its own parameter model because transfer settings belong to
 the transport implementation.
 
@@ -153,10 +149,6 @@ VIPER supplies one built-in HTTPX transport. A project may select an exact
 decorated transport callable for a different transfer engine.
 
 ```python
-class HttpTransportParams(ParameterSet):
-    """Parameters consumed by one HTTP transport implementation."""
-
-
 class HttpTransportImplementationRef(ProtocolModel):
     path: PythonRepoRelPath
     symbol: PythonSymbol
@@ -181,7 +173,7 @@ class ProjectHttpTransportSpec(ProtocolModel):
     transport_id: HumanId
     implementation: HttpTransportImplementationRef
     parameter_model: ParameterModelRef
-    params: HttpTransportParams
+    params: viper.parameters.HttpTransport
     executables: tuple[ExternalExecutableSpec, ...] = ()
 
 
@@ -216,7 +208,7 @@ class DownloadSpec(ParameterizedSpec):
     inputs: dict[InputName, HttpRequestSpec] = Field(min_length=1)
     transport: HttpTransportSpec
     policy: HttpRetrievalPolicy
-    params: DownloadParams
+    params: viper.parameters.Download
 ```
 
 One transport governs every retrieval initiated by that stage. A plan that
@@ -228,7 +220,7 @@ transport identity per stage result.
 A project transport is an ordinary decorated top-level callable:
 
 ```python
-class Aria2TransportParams(HttpTransportParams):
+class Aria2Parameters(viper.parameters.HttpTransport):
     connections: int = Field(gt=0)
     split: int = Field(gt=0)
     continue_partial: bool = True
@@ -236,10 +228,10 @@ class Aria2TransportParams(HttpTransportParams):
 
 @viper.http_transport(
     transport_id="aria2c",
-    parameter_model=Aria2TransportParams,
+    parameter_model=Aria2Parameters,
 )
 def aria2c_transport(
-    context: HttpTransportContext[Aria2TransportParams],
+    context: HttpTransportContext[Aria2Parameters],
 ) -> HttpTransportResult:
     ...
 ```
@@ -250,7 +242,10 @@ parameter class into `ProjectHttpTransportSpec`.
 The runner constructs one context for each logical retrieval:
 
 ```python
-TransportParamsT = TypeVar("TransportParamsT", bound=HttpTransportParams)
+TransportParamsT = TypeVar(
+    "TransportParamsT",
+    bound=viper.parameters.HttpTransport,
+)
 
 
 @dataclass(frozen=True)
@@ -410,7 +405,7 @@ class HttpRetrievalHandle:
 
 
 @dataclass(frozen=True)
-class DownloadContext(StageContext[DownloadParams]):
+class DownloadContext(StageContext[viper.parameters.Download]):
     retrievals: Mapping[InputName, HttpRetrievalHandle]
 ```
 

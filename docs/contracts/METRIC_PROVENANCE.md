@@ -64,7 +64,7 @@ class MetricSpec(ProtocolModel):
     metric_id: MetricId
     kind: MetricKind
     implementation: MetricImplementationRef
-    params: MetricParams
+    params: viper.parameters.Metric
     mode: MetricMode
     dependencies: tuple[MetricDependency, ...] = ()
     comparator: FloatComparator | None = None
@@ -117,7 +117,7 @@ and frozen parameters:
 class MetricContext:
     inputs: Mapping[InputName, Path]
     artifacts: Mapping[ArtifactName, Path]
-    params: MetricParams
+    params: viper.parameters.Metric
 ```
 
 A live metric can use a function or a stateful class:
@@ -211,7 +211,7 @@ class MetricExecutionReceipt(ProtocolModel):
     stage_id: StageId
     purpose: Literal["measurement", "verification"]
     implementation: MetricImplementationRef
-    params: MetricParams
+    params: viper.parameters.Metric
     dependencies: tuple[ResolvedMetricDependency, ...] = Field(min_length=1)
     startup: ProcessStartupReceipt
     execution_context: ExecutionContext

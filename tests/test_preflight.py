@@ -11,20 +11,18 @@ from tests.fixtures import (
     parameter_model_ref,
     stage_implementation_ref,
 )
+from viper import parameters
 from viper.materialization import future_input_paths
 from viper.preflight import preflight_plan
 from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
-    BuildParams,
     BuildSpec,
-    DownloadParams,
     DownloadSpec,
     FutureInputRef,
     RunSpec,
     RunStageRef,
     SingleFileArtifactSpec,
-    TrainParams,
     TrainSpec,
 )
 from viper.serialization import serialize_document
@@ -57,7 +55,7 @@ def test_preflight_reports_all_plan_failures(tmp_path: Path) -> None:
                 f"{run_root}/artifacts/models/main/resume_state.bin"
             ),
         },
-        params=TrainParams(),
+        params=parameters.Train(),
     )
     stage_path = f"{run_root}/stages/train/spec.yaml"
     raw = serialize_document(stage)
@@ -179,7 +177,7 @@ def test_future_input_uses_canonical_producer_path(tmp_path: Path) -> None:
                 "artifacts/datasets/main/data.bin"
             )
         },
-        params=DownloadParams(),
+        params=parameters.Download(),
     )
     consumer = BuildSpec(
         implementation=stage_implementation_ref("project/build.py"),
@@ -196,7 +194,7 @@ def test_future_input_uses_canonical_producer_path(tmp_path: Path) -> None:
                 "artifacts/priors/main/prior.bin"
             )
         },
-        params=BuildParams(),
+        params=parameters.Build(),
     )
     path = tmp_path / producer.artifacts["dataset"].path
     path.parent.mkdir(parents=True)

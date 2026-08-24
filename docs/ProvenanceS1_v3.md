@@ -1001,7 +1001,20 @@ class ParameterSet(BaseModel):
     model_config = ConfigDict(extra="allow", frozen=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     schema_version: Literal[1] = 1
+
+
+class Download(ParameterSet): ...
+class Build(ParameterSet): ...
+class Embed(ParameterSet): ...
+class Train(ParameterSet): ...
+class Evaluate(ParameterSet): ...
+class Metric(ParameterSet): ...
+class HttpTransport(ParameterSet): ...
 ```
+
+`ParameterSet` and its seven public categories belong to
+`viper.parameters`. Project code specializes the category that matches the
+consumer of its values.
 
 The records below use these shared types:
 
@@ -2175,10 +2188,6 @@ MetricKind = Literal["training", "evaluation", "diagnostic"]
 MetricMode = Literal["recompute", "live"]
 
 
-class MetricParams(ParameterSet):
-    """Metric-specific values preserved by the protocol."""
-
-
 class FloatComparator(ProtocolModel):
     mode: Literal["exact", "absolute", "relative"] = "exact"
     tolerance: float = Field(default=0.0, ge=0, allow_inf_nan=False)
@@ -2202,7 +2211,7 @@ class MetricSpec(ProtocolModel):
     metric_id: MetricId
     kind: MetricKind
     implementation: MetricImplementationRef
-    params: MetricParams
+    params: viper.parameters.Metric
     mode: MetricMode
     dependencies: tuple[MetricDependency, ...] = ()
     comparator: FloatComparator | None = None
@@ -2267,31 +2276,31 @@ files.
 class DownloadVariantStageParams(ProtocolModel):
     kind: Literal["download"] = "download"
     stage_id: StageId
-    params: DownloadParams
+    params: viper.parameters.Download
 
 
 class BuildVariantStageParams(ProtocolModel):
     kind: Literal["build"] = "build"
     stage_id: StageId
-    params: BuildParams
+    params: viper.parameters.Build
 
 
 class EmbedVariantStageParams(ProtocolModel):
     kind: Literal["embed"] = "embed"
     stage_id: StageId
-    params: EmbedParams
+    params: viper.parameters.Embed
 
 
 class TrainVariantStageParams(ProtocolModel):
     kind: Literal["train"] = "train"
     stage_id: StageId
-    params: TrainParams
+    params: viper.parameters.Train
 
 
 class EvaluateVariantStageParams(ProtocolModel):
     kind: Literal["evaluate"] = "evaluate"
     stage_id: StageId
-    params: EvaluateParams
+    params: viper.parameters.Evaluate
 
 
 VariantStageParams = Annotated[
@@ -2375,7 +2384,7 @@ class MetricExecutionReceipt(ProtocolModel):
     stage_id: StageId
     purpose: Literal["measurement", "verification"]
     implementation: MetricImplementationRef
-    params: MetricParams
+    params: viper.parameters.Metric
     dependencies: tuple[ResolvedMetricDependency, ...] = Field(min_length=1)
     startup: ProcessStartupReceipt
     execution_context: ExecutionContext
@@ -2506,10 +2515,6 @@ class HttpRetrievalPolicy(ProtocolModel):
     timeout_seconds: float = Field(gt=0, allow_inf_nan=False)
 
 
-class HttpTransportParams(ParameterSet):
-    """Parameters consumed by one HTTP transport implementation."""
-
-
 class HttpTransportImplementationRef(ProtocolModel):
     path: PythonRepoRelPath
     symbol: PythonSymbol
@@ -2534,7 +2539,7 @@ class ProjectHttpTransportSpec(ProtocolModel):
     transport_id: HumanId
     implementation: HttpTransportImplementationRef
     parameter_model: ParameterModelRef
-    params: HttpTransportParams
+    params: viper.parameters.HttpTransport
     executables: tuple[ExternalExecutableSpec, ...] = ()
 
 
@@ -2577,7 +2582,7 @@ and external executable requirements.
 ### Stage specifications
 
 ```python
-ParamsT = TypeVar("ParamsT", bound=ParameterSet)
+ParamsT = TypeVar("ParamsT", bound=viper.parameters.ParameterSet)
 
 
 @dataclass(frozen=True)
@@ -2596,16 +2601,12 @@ class ParameterizedSpec(BaseSpec):
     parameter_model: ParameterModelRef
 
 
-class DownloadParams(ParameterSet):
-    """Parameters consumed by one project-defined download procedure."""
-
-
 class DownloadSpec(ParameterizedSpec):
     kind: Literal["download"] = "download"
     inputs: dict[InputName, HttpRequestSpec] = Field(min_length=1)
     transport: HttpTransportSpec
     policy: HttpRetrievalPolicy
-    params: DownloadParams
+    params: viper.parameters.Download
 
 
 class ObservedHttpResponse(ProtocolModel):
@@ -2614,7 +2615,10 @@ class ObservedHttpResponse(ProtocolModel):
     response_headers: dict[HttpHeaderName, str]
 
 
-TransportParamsT = TypeVar("TransportParamsT", bound=HttpTransportParams)
+TransportParamsT = TypeVar(
+    "TransportParamsT",
+    bound=viper.parameters.HttpTransport,
+)
 
 
 @dataclass(frozen=True)
@@ -2648,7 +2652,7 @@ class HttpRetrievalHandle:
 
 
 @dataclass(frozen=True)
-class DownloadContext(StageContext[DownloadParams]):
+class DownloadContext(StageContext[viper.parameters.Download]):
     retrievals: Mapping[InputName, HttpRetrievalHandle]
 
 
@@ -2656,35 +2660,19 @@ class InternalSpec(ParameterizedSpec):
     inputs: dict[InputName, InternalInputRef] = Field(min_length=1)
 
 
-class BuildParams(ParameterSet):
-    """Parameters consumed by one project-defined prior builder."""
-
-
-class EmbedParams(ParameterSet):
-    """Parameters consumed by one project-defined embedding stage."""
-
-
-class TrainParams(ParameterSet):
-    """Parameters consumed by one project-defined training procedure."""
-
-
 class BuildSpec(InternalSpec):
     kind: Literal["build"] = "build"
-    params: BuildParams
+    params: viper.parameters.Build
 
 
 class EmbedSpec(InternalSpec):
     kind: Literal["embed"] = "embed"
-    params: EmbedParams
+    params: viper.parameters.Embed
 
 
 class TrainSpec(InternalSpec):
     kind: Literal["train"] = "train"
-    params: TrainParams
-
-
-class EvaluateParams(ParameterSet):
-    """Model-specific parameters outside the shared evaluation contract."""
+    params: viper.parameters.Train
 
 
 class EvaluateSpec(InternalSpec):
@@ -2692,7 +2680,7 @@ class EvaluateSpec(InternalSpec):
     evaluation_id: EvaluationId
     metric_ids: tuple[MetricId, ...] = Field(min_length=1)
     split_inputs: tuple[InputName, ...] = Field(min_length=1)
-    params: EvaluateParams
+    params: viper.parameters.Evaluate
 
 
 Spec = Annotated[

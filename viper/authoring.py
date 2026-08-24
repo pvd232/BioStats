@@ -15,13 +15,13 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, TypeAdapter
 
-from .http import resolve_transport, validate_request_policy
-from .ids import ExperimentId, ReplicateId, RunId, StageId, VariantId
-from .parameter_models import (
-    ParameterModelError,
+from ._parameter_validation import (
+    ParameterValidationError,
     validate_stage_parameters,
     verify_parameter_model_bytes,
 )
+from .http import resolve_transport, validate_request_policy
+from .ids import ExperimentId, ReplicateId, RunId, StageId, VariantId
 from .protocol import (
     BenchmarkId,
     BenchmarkSpec,
@@ -250,11 +250,11 @@ def freeze_run_plan(
                     capture_output=True,
                 ).stdout
             except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-                raise ParameterModelError(
+                raise ParameterValidationError(
                     "parameter model is absent from the frozen source commit"
                 ) from exc
             if model_raw != committed_model_raw:
-                raise ParameterModelError(
+                raise ParameterValidationError(
                     "parameter model differs from the frozen source commit"
                 )
             validate_stage_parameters(root, source, spec)

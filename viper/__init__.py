@@ -10,7 +10,7 @@ from . import (
     local_store,
     materialization,
     metrics,
-    parameter_models,
+    parameters,
     preflight,
     protocol,
     resume,
@@ -31,7 +31,7 @@ __all__ = [
     "local_store",
     "materialization",
     "metrics",
-    "parameter_models",
+    "parameters",
     "preflight",
     "protocol",
     "runner",
@@ -50,7 +50,6 @@ from .http import (
     HttpTransportResult,
     http_transport,
 )
-from .protocol import HttpTransportParams
 from .stages import (
     StageContext,
     build_stage,
@@ -65,7 +64,6 @@ __all__ += [
     "DownloadContext",
     "HttpRetrievalHandle",
     "HttpTransportContext",
-    "HttpTransportParams",
     "HttpTransportResult",
     "build_stage",
     "download_stage",

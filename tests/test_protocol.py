@@ -15,25 +15,23 @@ from tests.fixtures import (
     parameter_model_ref,
     stage_implementation_ref,
 )
+from viper import parameters
 from viper.protocol import (
     PARAMETERS,
     PREDICTIONS,
     RESUME_STATE,
     CUDABackendContext,
     DataRole,
-    EvaluateParams,
     EvaluateSpec,
     FloatComparator,
     FutureInputRef,
     GCEEnvironmentSpec,
     MetricDependency,
     MetricImplementationRef,
-    MetricParams,
     MetricSpec,
     ResolvedBundleArtifact,
     RunAttempt,
     RunSpec,
-    TrainParams,
     TrainSpec,
     VariantSpec,
 )
@@ -310,7 +308,7 @@ class ParameterContractTests(unittest.TestCase):
 
     def test_training_parameters_preserve_project_defined_json_fields(self) -> None:
         """Preserve project-defined values without a VIPER plugin registration."""
-        params = TrainParams.model_validate(
+        params = parameters.Train.model_validate(
             {
                 "schema_version": 1,
                 "epochs": 10,
@@ -327,7 +325,7 @@ class ParameterContractTests(unittest.TestCase):
     def test_evaluation_parameters_reject_shared_evaluation_fields(self) -> None:
         """Keep metrics and split identities on EvaluateSpec."""
         with self.assertRaisesRegex(ValidationError, "belong directly"):
-            EvaluateParams.model_validate(
+            parameters.Evaluate.model_validate(
                 {
                     "schema_version": 1,
                     "metric_ids": ["pearson_correlation"],
@@ -346,7 +344,7 @@ class ParameterContractTests(unittest.TestCase):
                 sha256=hashlib.sha256(source).hexdigest(),
                 bytes=len(source),
             ),
-            params=MetricParams.model_validate({"dim": 1}),
+            params=parameters.Metric.model_validate({"dim": 1}),
             mode="recompute",
             dependencies=(
                 MetricDependency(
@@ -372,7 +370,7 @@ class ParameterContractTests(unittest.TestCase):
                     sha256="a" * 64,
                     bytes=1,
                 ),
-                params=MetricParams(),
+                params=parameters.Metric(),
                 mode="recompute",
                 dependencies=(
                     MetricDependency(

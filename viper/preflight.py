@@ -10,14 +10,14 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from .http import HttpRetrievalError, resolve_transport, validate_request_policy
-from .ids import StageId
-from .metrics import MetricError, validate_metric_definition
-from .parameter_models import (
-    ParameterModelError,
+from ._parameter_validation import (
+    ParameterValidationError,
     validate_stage_parameters,
     verify_parameter_model_bytes,
 )
+from .http import HttpRetrievalError, resolve_transport, validate_request_policy
+from .ids import StageId
+from .metrics import MetricError, validate_metric_definition
 from .protocol import (
     BaseSpec,
     DownloadSpec,
@@ -358,14 +358,14 @@ def preflight_plan(repository_root: Path, run_spec_path: Path) -> PreflightRepor
             except (
                 OSError,
                 subprocess.CalledProcessError,
-                ParameterModelError,
+                ParameterValidationError,
             ):
                 parameter_identity_valid = False
             if parameter_identity_valid:
                 try:
                     validate_stage_parameters(root, target, stage)
                     parameter_validation_valid = True
-                except (ParameterModelError, OSError):
+                except (ParameterValidationError, OSError):
                     parameter_validation_valid = False
             checks.append(
                 _check(

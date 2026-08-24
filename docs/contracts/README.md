@@ -22,7 +22,7 @@ Each contract uses one status:
 
 | Contract | Status | Release gate |
 |---|---|---|
-| [Parameter models](PARAMETER_MODELS.md) | Implemented | Project parameter identity and validation |
+| [Parameters](PARAMETERS.md) | Implemented | Project parameter identity and validation |
 | [Stage invocation](STAGE_INVOCATION.md) | Implemented | Typed delivery of validated stage parameters and paths |
 | [Process startup](PROCESS_STARTUP.md) | Implemented | Run-wide controls applied before each stage callable executes |
 | [HTTP retrieval](HTTP_RETRIEVAL.md) | Implemented | Selectable transport delivery of verified retrieved files |

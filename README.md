@@ -34,6 +34,7 @@ both named `viper`.
 | [identifiers](viper/ids.py) | Defines run and human-readable identifier types | `RunId`, `HumanId` |
 | [inspection](viper/inspection.py) | Reads durable attempt state and compares frozen plans, verified runs, and lineage through stable machine-readable paths | `attempt_status()`, `plan_diff()`, `compare_runs()`, `lineage()` |
 | [metrics](viper/metrics.py) | Defines project metric decorators, stateful metrics, comparison, and measurement output | `metric()`, `StatefulMetric`, `MeasurementSink` |
+| [parameters](viper/parameters.py) | Defines the public parameter categories that projects specialize | `Download`, `Build`, `Embed`, `Train`, `Evaluate`, `Metric`, `HttpTransport` |
 | [worker](viper/worker.py) | Executes one project command through an execution backend | `WorkerRequest`, `execute_worker()` |
 | [workspace](viper/workspace.py) | Creates bounded attempt directories and exclusive run ownership | `AttemptWorkspace` |
 | [journal](viper/journal.py) | Persists synchronized attempt transitions | `DurableJournal` |

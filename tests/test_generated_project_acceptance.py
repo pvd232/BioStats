@@ -18,6 +18,7 @@ from tests.fixtures import (
 )
 from tests.test_runner_acceptance import REPOSITORY, _git
 from tests.test_runner_acceptance import http_source as runner_http_source
+from viper import parameters
 from viper.authoring import (
     RunPlanDraft,
     StageDraft,
@@ -38,18 +39,14 @@ from viper.protocol import (
     BaseSpec,
     BenchmarkResult,
     BenchmarkSpec,
-    BuildParams,
     BuildSpec,
     BuildVariantStageParams,
     CPUComputeSpec,
     DataRole,
-    DownloadParams,
     DownloadSpec,
     DownloadVariantStageParams,
-    EmbedParams,
     EmbedSpec,
     EmbedVariantStageParams,
-    EvaluateParams,
     EvaluateSpec,
     EvaluateVariantStageParams,
     ExperimentSpec,
@@ -62,7 +59,6 @@ from viper.protocol import (
     MetricCriterion,
     MetricDependency,
     MetricImplementationRef,
-    MetricParams,
     MetricSpec,
     ParameterModelRef,
     ReplicateSpec,
@@ -72,7 +68,6 @@ from viper.protocol import (
     StageArtifactRef,
     StageImplementationRef,
     StoredInputRef,
-    TrainParams,
     TrainSpec,
     TrainVariantStageParams,
     VariantSpec,
@@ -247,8 +242,8 @@ def test_generated_project_executes_five_stage_benchmark(
     _git(root, "remote", "add", "origin", REPOSITORY)
     host, port = http_source
 
-    download_params = DownloadParams.model_validate({"media_type": "text/plain"})
-    train_params = TrainParams.model_validate({"epochs": 1})
+    download_params = parameters.Download.model_validate({"media_type": "text/plain"})
+    train_params = parameters.Train.model_validate({"epochs": 1})
     write_experiment_spec(
         root,
         ExperimentSpec(
@@ -280,7 +275,7 @@ def test_generated_project_executes_five_stage_benchmark(
     acquisition_root = f"experiments/acquisition/runs/baseline/{ACQUISITION_RUN_ID}"
     acquisition_download = DownloadSpec(
         implementation=_stage_implementation(root, "download"),
-        parameter_model=_parameter_model(root, "ProjectDownloadParams"),
+        parameter_model=_parameter_model(root, "DownloadParameters"),
         inputs={
             name: http_request(
                 url=f"http://{host}:{port}/prior",
@@ -312,7 +307,7 @@ def test_generated_project_executes_five_stage_benchmark(
     )
     acquisition_train = TrainSpec(
         implementation=_stage_implementation(root, "train"),
-        parameter_model=_parameter_model(root, "ProjectTrainParams"),
+        parameter_model=_parameter_model(root, "TrainParameters"),
         inputs={
             "dataset": FutureInputRef(
                 producer_stage_id="download",
@@ -410,7 +405,7 @@ def test_generated_project_executes_five_stage_benchmark(
             sha256=hashlib.sha256(metric_raw).hexdigest(),
             bytes=len(metric_raw),
         ),
-        params=MetricParams(),
+        params=parameters.Metric(),
         mode="recompute",
         dependencies=(
             MetricDependency(
@@ -421,9 +416,9 @@ def test_generated_project_executes_five_stage_benchmark(
         ),
         comparator=FloatComparator(),
     )
-    build_params = BuildParams.model_validate({"delimiter": ","})
-    embed_params = EmbedParams.model_validate({"dimensions": 2})
-    evaluate_params = EvaluateParams.model_validate({"label": "baseline"})
+    build_params = parameters.Build.model_validate({"delimiter": ","})
+    embed_params = parameters.Embed.model_validate({"dimensions": 2})
+    evaluate_params = parameters.Evaluate.model_validate({"label": "baseline"})
     write_experiment_spec(
         root,
         ExperimentSpec(
@@ -477,7 +472,7 @@ def test_generated_project_executes_five_stage_benchmark(
     candidate_root = f"experiments/starter/runs/baseline/{CANDIDATE_RUN_ID}"
     candidate_download = DownloadSpec(
         implementation=_stage_implementation(root, "download"),
-        parameter_model=_parameter_model(root, "ProjectDownloadParams"),
+        parameter_model=_parameter_model(root, "DownloadParameters"),
         inputs={
             "dataset": http_request(
                 url=f"http://{host}:{port}/prior",
@@ -498,7 +493,7 @@ def test_generated_project_executes_five_stage_benchmark(
     )
     candidate_build = BuildSpec(
         implementation=_stage_implementation(root, "build"),
-        parameter_model=_parameter_model(root, "ProjectBuildParams"),
+        parameter_model=_parameter_model(root, "BuildParameters"),
         inputs={
             "dataset": FutureInputRef(
                 producer_stage_id="download",
@@ -516,7 +511,7 @@ def test_generated_project_executes_five_stage_benchmark(
     )
     candidate_embed = EmbedSpec(
         implementation=_stage_implementation(root, "embed"),
-        parameter_model=_parameter_model(root, "ProjectEmbedParams"),
+        parameter_model=_parameter_model(root, "EmbedParameters"),
         inputs={
             "prior": FutureInputRef(
                 producer_stage_id="build",
@@ -534,7 +529,7 @@ def test_generated_project_executes_five_stage_benchmark(
     )
     candidate_train = TrainSpec(
         implementation=_stage_implementation(root, "train"),
-        parameter_model=_parameter_model(root, "ProjectTrainParams"),
+        parameter_model=_parameter_model(root, "TrainParameters"),
         inputs={
             "embedding": FutureInputRef(
                 producer_stage_id="embed",
@@ -558,7 +553,7 @@ def test_generated_project_executes_five_stage_benchmark(
     )
     candidate_evaluate = EvaluateSpec(
         implementation=_stage_implementation(root, "evaluate"),
-        parameter_model=_parameter_model(root, "ProjectEvaluateParams"),
+        parameter_model=_parameter_model(root, "EvaluateParameters"),
         evaluation_id="starter_eval",
         metric_ids=("prediction_bytes",),
         split_inputs=("test_split",),

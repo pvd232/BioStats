@@ -30,6 +30,7 @@ from tests.fixtures import (
     stage_implementation_ref,
     verification_policy,
 )
+from viper import parameters
 from viper.paths import retrieval_body_path
 from viper.protocol import (
     PARAMETERS,
@@ -44,7 +45,6 @@ from viper.protocol import (
     BaseSpec,
     BenchmarkResult,
     BenchmarkSpec,
-    BuildParams,
     BuildSpec,
     BuildVariantStageParams,
     BundleArtifactSpec,
@@ -53,10 +53,8 @@ from viper.protocol import (
     CPUContext,
     DataLoaderConfiguration,
     DataRole,
-    DownloadParams,
     DownloadSpec,
     DownloadVariantStageParams,
-    EvaluateParams,
     EvaluateSpec,
     EvaluateVariantStageParams,
     ExecutionContext,
@@ -124,7 +122,6 @@ from viper.protocol import (
     StoredInputRef,
     TorchDeterminismSpec,
     TorchPrecisionSpec,
-    TrainParams,
     TrainSpec,
     TrainVariantStageParams,
     VariantSpec,
@@ -913,7 +910,7 @@ def publish_producer_run(
                 data_role=evaluation_role,
             ),
         },
-        params=DownloadParams(),
+        params=parameters.Download(),
     )
     train = TrainSpec(
         implementation=stage_implementation_ref(
@@ -929,7 +926,7 @@ def publish_producer_run(
                 producer_artifact="dataset",
             )
         },
-        params=TrainParams.model_validate(
+        params=parameters.Train.model_validate(
             {"epochs": 1, "batch_size": 2, "learning_rate": 0.01}
         ),
         artifacts={
@@ -1258,7 +1255,7 @@ def build_complete_fixture(
                 data_role="training",
             )
         },
-        params=BuildParams(),
+        params=parameters.Build(),
         artifacts={
             "prior": BundleArtifactSpec(
                 kind="bundle",
@@ -1282,7 +1279,7 @@ def build_complete_fixture(
                 producer_artifact="prior",
             )
         },
-        params=TrainParams.model_validate(
+        params=parameters.Train.model_validate(
             {"epochs": 2, "batch_size": 2, "learning_rate": 0.01}
         ),
         artifacts={
@@ -1329,7 +1326,7 @@ def build_complete_fixture(
                 data_role=evaluation_role,
             ),
         },
-        params=EvaluateParams(),
+        params=parameters.Evaluate(),
         artifacts={
             "predictions": SingleFileArtifactSpec(
                 kind="file",

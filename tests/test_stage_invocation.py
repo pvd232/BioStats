@@ -7,8 +7,8 @@ from types import MappingProxyType
 import numpy as np
 import pytest
 
-from viper import StageContext, train_stage
-from viper.protocol import StageImplementationRef, TrainParams
+from viper import StageContext, parameters, train_stage
+from viper.protocol import StageImplementationRef
 from viper.stages import (
     StageDefinitionError,
     load_stage_callable,
@@ -16,7 +16,7 @@ from viper.stages import (
 )
 
 
-class ExampleTrainParameters(TrainParams):
+class ExampleTrainParameters(parameters.Train):
     """Define one project-owned parameter field for decorator tests."""
 
     epochs: int
@@ -60,8 +60,8 @@ def test_stage_loader_requires_exact_decorated_top_level_callable(
     """Load the selected symbol only when its bytes and decorator agree."""
     raw = (
         b"from viper import train_stage\n"
-        b"from viper.protocol import TrainParams\n\n"
-        b"class Params(TrainParams):\n"
+        b"from viper import parameters\n\n"
+        b"class Params(parameters.Train):\n"
         b"    epochs: int\n\n"
         b"@train_stage(parameter_model=Params)\n"
         b"def fit(context):\n"
@@ -99,8 +99,8 @@ def test_stage_loader_resolves_standard_src_layout(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (package_root / "parameters.py").write_text(
-        "from viper.protocol import TrainParams\n\n"
-        "class ProjectParameters(TrainParams):\n"
+        "from viper import parameters\n\n"
+        "class ProjectParameters(parameters.Train):\n"
         "    epochs: int\n",
         encoding="utf-8",
     )

@@ -12,6 +12,7 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
+from viper import parameters
 from viper.http import HttpRetrievalError, invoke_transport, resolve_transport
 from viper.protocol import (
     BuiltinHttpTransportSpec,
@@ -20,7 +21,6 @@ from viper.protocol import (
     HttpRequestSpec,
     HttpRetrievalPolicy,
     HttpTransportImplementationRef,
-    HttpTransportParams,
     LocalFileRef,
     ObservedHttpResponse,
     ParameterModelRef,
@@ -126,18 +126,18 @@ def conforming_transport(request: pytest.FixtureRequest) -> TransportFactory:
         return lambda root: resolve_transport(root, BuiltinHttpTransportSpec())
 
     parameter_raw = (
-        b"from viper.protocol import HttpTransportParams\n\n"
-        b"class ConformingTransportParams(HttpTransportParams):\n"
+        b"from viper import parameters\n\n"
+        b"class ConformingTransportParameters(parameters.HttpTransport):\n"
         b'    """Validate the conformance transport parameters."""\n'
     )
     implementation_raw = (
         b"import httpx\n"
-        b"from project.transport_params import ConformingTransportParams\n"
+        b"from project.transport_params import ConformingTransportParameters\n"
         b"from viper import HttpTransportResult, http_transport\n"
         b"from viper.http import HttpRetrievalError\n"
         b"from viper.protocol import ObservedHttpResponse\n\n"
         b"@http_transport(transport_id='conforming', "
-        b"parameter_model=ConformingTransportParams)\n"
+        b"parameter_model=ConformingTransportParameters)\n"
         b"def transfer(context):\n"
         b"    try:\n"
         b"        response = httpx.get(\n"
@@ -184,11 +184,11 @@ def conforming_transport(request: pytest.FixtureRequest) -> TransportFactory:
                 ),
                 parameter_model=ParameterModelRef(
                     path="project/transport_params.py",
-                    symbol="ConformingTransportParams",
+                    symbol="ConformingTransportParameters",
                     sha256=hashlib.sha256(parameter_raw).hexdigest(),
                     bytes=len(parameter_raw),
                 ),
-                params=HttpTransportParams(),
+                params=parameters.HttpTransport(),
             ),
         )
 
@@ -454,17 +454,17 @@ def test_project_transport_receives_typed_parameters_and_exact_destination(
     body = b"verified response"
     parameter_raw = (
         b"from pydantic import Field\n"
-        b"from viper.protocol import HttpTransportParams\n\n"
-        b"class ProjectTransportParams(HttpTransportParams):\n"
+        b"from viper import parameters\n\n"
+        b"class ProjectTransportParameters(parameters.HttpTransport):\n"
         b"    chunk_size: int = Field(gt=0)\n"
     )
     implementation_raw = (
         b"import httpx\n"
-        b"from project.transport_params import ProjectTransportParams\n"
+        b"from project.transport_params import ProjectTransportParameters\n"
         b"from viper import HttpTransportResult, http_transport\n"
         b"from viper.protocol import ObservedHttpResponse\n\n"
         b"@http_transport(transport_id='project_http', "
-        b"parameter_model=ProjectTransportParams)\n"
+        b"parameter_model=ProjectTransportParameters)\n"
         b"def transfer(context):\n"
         b"    assert context.params.chunk_size == 4\n"
         b"    response = httpx.get(str(context.request.url), "
@@ -497,11 +497,11 @@ def test_project_transport_receives_typed_parameters_and_exact_destination(
         ),
         parameter_model=ParameterModelRef(
             path="project/transport_params.py",
-            symbol="ProjectTransportParams",
+            symbol="ProjectTransportParameters",
             sha256=hashlib.sha256(parameter_raw).hexdigest(),
             bytes=len(parameter_raw),
         ),
-        params=HttpTransportParams.model_validate({"chunk_size": 4}),
+        params=parameters.HttpTransport.model_validate({"chunk_size": 4}),
     )
     request = _request(
         url=f"http://{host}:{port}/body",
@@ -664,15 +664,15 @@ def test_transport_rejects_policy_secret_and_same_length_body_failures(
 def test_project_transport_rejects_returned_path_escape(tmp_path: Path) -> None:
     """Reject a project transport that returns a file outside its workspace."""
     parameter_raw = (
-        b"from viper.protocol import HttpTransportParams\n\n"
-        b"class EscapeParams(HttpTransportParams):\n"
+        b"from viper import parameters\n\n"
+        b"class EscapeParameters(parameters.HttpTransport):\n"
         b'    """Validate the empty escape-test parameter mapping."""\n'
     )
     implementation_raw = (
-        b"from project.params import EscapeParams\n"
+        b"from project.params import EscapeParameters\n"
         b"from viper import HttpTransportResult, http_transport\n"
         b"from viper.protocol import ObservedHttpResponse\n\n"
-        b"@http_transport(transport_id='escape', parameter_model=EscapeParams)\n"
+        b"@http_transport(transport_id='escape', parameter_model=EscapeParameters)\n"
         b"def transfer(context):\n"
         b"    escaped = context.workspace.parent / 'escaped'\n"
         b"    escaped.write_bytes(b'x')\n"
@@ -700,11 +700,11 @@ def test_project_transport_rejects_returned_path_escape(tmp_path: Path) -> None:
         ),
         parameter_model=ParameterModelRef(
             path="project/params.py",
-            symbol="EscapeParams",
+            symbol="EscapeParameters",
             sha256=hashlib.sha256(parameter_raw).hexdigest(),
             bytes=len(parameter_raw),
         ),
-        params=HttpTransportParams(),
+        params=parameters.HttpTransport(),
     )
     workspace = tmp_path / "retrieval"
     workspace.mkdir()

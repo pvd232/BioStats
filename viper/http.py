@@ -20,18 +20,20 @@ from urllib.parse import urljoin
 import httpx
 from pydantic import HttpUrl, TypeAdapter
 
+from . import parameters
+from ._parameter_validation import (
+    instantiate_parameters,
+    verify_parameter_model_bytes,
+)
 from .ids import HumanId, InputName
-from .parameter_models import instantiate_parameters, verify_parameter_model_bytes
 from .protocol import (
     BuiltinHttpTransportSpec,
-    DownloadParams,
     EnvironmentSecretRef,
     ExternalExecutableSpec,
     HttpHeaderName,
     HttpRequestSpec,
     HttpRetrievalPolicy,
     HttpTransportImplementationRef,
-    HttpTransportParams,
     HttpTransportSpec,
     ObservedHttpResponse,
     ProjectHttpTransportSpec,
@@ -41,7 +43,7 @@ from .protocol import (
 )
 from .stages import StageContext
 
-TransportParamsT = TypeVar("TransportParamsT", bound=HttpTransportParams)
+TransportParamsT = TypeVar("TransportParamsT", bound=parameters.HttpTransport)
 DecoratedTransport = TypeVar("DecoratedTransport", bound=Callable[..., object])
 _HTTP_URL_ADAPTER = TypeAdapter(HttpUrl)
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
@@ -101,7 +103,7 @@ class HttpRetrievalHandle:
 
 
 @dataclass(frozen=True)
-class DownloadContext(StageContext[DownloadParams]):
+class DownloadContext(StageContext[parameters.Download]):
     """Extend the stage context with verified HTTP retrieval handles."""
 
     retrievals: Mapping[InputName, HttpRetrievalHandle]
@@ -132,9 +134,10 @@ def http_transport(
     parameter_model: type[TransportParamsT],
 ) -> Callable[[DecoratedTransport], DecoratedTransport]:
     """Declare one project-owned HTTP transport callable."""
-    if not issubclass(parameter_model, HttpTransportParams):
+    if not issubclass(parameter_model, parameters.HttpTransport):
         raise TypeError(
-            "HTTP transport parameter model must subclass HttpTransportParams"
+            "HTTP transport parameter model must subclass "
+            "viper.parameters.HttpTransport"
         )
     definition = HttpTransportDefinition(
         transport_id=transport_id,
@@ -297,7 +300,7 @@ def resolve_transport(
         parameter_path,
         spec.parameter_model,
         spec.params,
-        HttpTransportParams,
+        parameters.HttpTransport,
     )
     executables = tuple(_resolve_executable(value) for value in spec.executables)
     return ResolvedHttpTransport(spec=spec, external_executables=executables)
@@ -327,7 +330,7 @@ def _persisted_headers(response: httpx.Response) -> dict[str, str]:
 
 
 def _httpx_transport(
-    context: HttpTransportContext[HttpTransportParams],
+    context: HttpTransportContext[parameters.HttpTransport],
 ) -> HttpTransportResult:
     """Retrieve one exact response body through a bounded HTTPX client."""
     started = time.monotonic()
@@ -445,17 +448,17 @@ def invoke_transport(
     if destination.is_symlink():
         raise HttpRetrievalError("HTTP destination must not be a symlink")
     if isinstance(transport.spec, BuiltinHttpTransportSpec):
-        params = HttpTransportParams()
+        params = parameters.HttpTransport()
         function: HttpTransportCallable[Any] = _httpx_transport
     else:
         project = transport.spec
         params = cast(
-            HttpTransportParams,
+            parameters.HttpTransport,
             instantiate_parameters(
                 root / project.parameter_model.path,
                 project.parameter_model,
                 project.params,
-                HttpTransportParams,
+                parameters.HttpTransport,
             ),
         )
         function = _load_project_transport(root, project)

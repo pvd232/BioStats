@@ -2,6 +2,7 @@
 
 import hashlib
 
+from viper import parameters
 from viper.protocol import (
     ArtifactLoaderRef,
     BuiltinHttpTransportSpec,
@@ -16,7 +17,6 @@ from viper.protocol import (
     MetricDependency,
     MetricImplementationRef,
     MetricKind,
-    MetricParams,
     MetricSpec,
     NumPyRNGState,
     ParameterModelRef,
@@ -65,10 +65,10 @@ def parameter_model_ref(kind: str) -> ParameterModelRef:
 def parameter_model_source(kind: str) -> bytes:
     """Build the source bytes matched by ``parameter_model_ref``."""
     class_name = f"{kind.title()}Parameters"
-    base_name = f"{kind.title()}Params"
+    base_name = kind.title()
     return (
-        f"from viper.protocol import {base_name}\n\n"
-        f"class {class_name}({base_name}):\n"
+        "from viper import parameters\n\n"
+        f"class {class_name}(parameters.{base_name}):\n"
         f'    """Validate the {kind} parameters used by this fixture."""\n'
     ).encode()
 
@@ -202,7 +202,7 @@ def metric_spec(
             metric_id=metric_id,
             kind=kind,
             implementation=implementation,
-            params=MetricParams(),
+            params=parameters.Metric(),
             mode="recompute",
             dependencies=(
                 MetricDependency(
@@ -217,7 +217,7 @@ def metric_spec(
         metric_id=metric_id,
         kind=kind,
         implementation=implementation,
-        params=MetricParams(),
+        params=parameters.Metric(),
         mode="live",
     )
 

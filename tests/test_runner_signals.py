@@ -26,6 +26,7 @@ from tests.fixtures import (
     reproducibility,
     resume_state,
 )
+from viper import parameters
 from viper.authoring import RunPlanDraft, StageDraft, freeze_run_plan
 from viper.journal import DurableJournal
 from viper.local_store import LocalArtifactStore
@@ -38,7 +39,6 @@ from viper.protocol import (
     CPUComputeSpec,
     CUDABackendContext,
     CUDAComputeSpec,
-    DownloadParams,
     DownloadSpec,
     DownloadVariantStageParams,
     ExperimentSpec,
@@ -55,7 +55,6 @@ from viper.protocol import (
     StageArtifactRef,
     StageImplementationRef,
     StageInvocationReceipt,
-    TrainParams,
     TrainSpec,
     TrainVariantStageParams,
     VariantSpec,
@@ -160,13 +159,13 @@ def _write_source_files(root: Path, *, blocking: bool = True) -> dict[str, bytes
             f"    return {resume_state().model_dump(mode='python')!r}\n"
         ).encode(),
         "project/parameters/download.py": (
-            b"from viper.protocol import DownloadParams\n\n"
-            b"class SignalDownloadParameters(DownloadParams):\n"
+            b"from viper import parameters\n\n"
+            b"class SignalDownloadParameters(parameters.Download):\n"
             b'    """Validate this fixture\'s download parameters."""\n'
         ),
         "project/parameters/train.py": (
-            b"from viper.protocol import TrainParams\n\n"
-            b"class SignalTrainParameters(TrainParams):\n"
+            b"from viper import parameters\n\n"
+            b"class SignalTrainParameters(parameters.Train):\n"
             b'    """Validate this fixture\'s training parameters."""\n'
         ),
         "jobs/download.py": (
@@ -222,9 +221,9 @@ def _freeze_signal_plan(
         stage_params=(
             DownloadVariantStageParams(
                 stage_id="download",
-                params=DownloadParams(),
+                params=parameters.Download(),
             ),
-            TrainVariantStageParams(stage_id="train", params=TrainParams()),
+            TrainVariantStageParams(stage_id="train", params=parameters.Train()),
         ),
     )
     experiment_path = root / "experiments/signals/spec.yaml"
@@ -300,7 +299,7 @@ def _freeze_signal_plan(
                 data_role="training",
             )
         },
-        params=DownloadParams(),
+        params=parameters.Download(),
     )
     train = TrainSpec(
         implementation=StageImplementationRef(
@@ -323,7 +322,7 @@ def _freeze_signal_plan(
                 producer_artifact="prior",
             )
         },
-        params=TrainParams(),
+        params=parameters.Train(),
         artifacts={
             PARAMETERS: SingleFileArtifactSpec(
                 path=f"{RUN_ROOT}/artifacts/models/tiny/parameters.bin",

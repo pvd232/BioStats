@@ -1,4 +1,4 @@
-# Project parameter models
+# Project parameters
 
 ## Status
 
@@ -16,19 +16,18 @@ class must appear at module scope and subclass the core parameter type for its
 stage.
 
 ```python
+import viper
 from pydantic import Field, model_validator
 
-from viper.protocol import TrainParams
 
-
-class TransformerTrainParameters(TrainParams):
+class TrainParameters(viper.parameters.Train):
     epochs: int = Field(gt=0)
     batch_size: int = Field(gt=0)
     learning_rate: float = Field(gt=0)
     warmup_epochs: int = Field(ge=0)
 
     @model_validator(mode="after")
-    def validate_warmup(self) -> "TransformerTrainParameters":
+    def validate_warmup(self) -> "TrainParameters":
         """Keep warmup within the selected training schedule."""
         if self.warmup_epochs >= self.epochs:
             raise ValueError("warmup_epochs must be smaller than epochs")
@@ -39,11 +38,14 @@ Available core bases:
 
 | Stage | Base class |
 | --- | --- |
-| Download | `DownloadParams` |
-| Build | `BuildParams` |
-| Embed | `EmbedParams` |
-| Train | `TrainParams` |
-| Evaluate | `EvaluateParams` |
+| Download | `viper.parameters.Download` |
+| Build | `viper.parameters.Build` |
+| Embed | `viper.parameters.Embed` |
+| Train | `viper.parameters.Train` |
+| Evaluate | `viper.parameters.Evaluate` |
+
+Metrics subclass `viper.parameters.Metric`. Project-defined HTTP transports
+subclass `viper.parameters.HttpTransport`.
 
 ## Bind the class
 
@@ -59,7 +61,7 @@ implementation:
   bytes: 2468
 parameter_model:
   path: project/parameters/transformer.py
-  symbol: TransformerTrainParameters
+  symbol: TrainParameters
   sha256: 76239c61bfba46604579e47f932b92f5ad8c1ca33e2240bab2b4dbc3cabdcabe
   bytes: 577
 params:
@@ -100,5 +102,5 @@ This contract proves parameter identity and validity. The current stage
 interface supplies the spec path to project code, which reloads the document.
 [Stage invocation](STAGE_INVOCATION.md) defines typed delivery of the validated
 value to the decorated callable. [HTTP retrieval](HTTP_RETRIEVAL.md) applies the
-same validation mechanism to `HttpTransportParams`. The selected transport
-callable receives that typed value through `HttpTransportContext`.
+same validation mechanism to `viper.parameters.HttpTransport`. The selected
+transport callable receives that typed value through `HttpTransportContext`.

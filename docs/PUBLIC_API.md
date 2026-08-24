@@ -16,7 +16,7 @@ tests exercise each path before release.
 | `viper.local_store` | Immutable repository-local files and stage snapshots |
 | `viper.materialization` | Verified stored-input and same-run input materialization |
 | `viper.metrics` | Decorated functions, stateful metrics, comparison, and measurement output |
-| `viper.parameter_models` | Project parameter-class loading, identity checks, and validation |
+| `viper.parameters` | Public parameter categories for stages, metrics, and HTTP transports |
 | `viper.preflight` | Complete-plan checks for the active single-host environment |
 | `viper.protocol` | Authored and resolved protocol models |
 | `viper.resume` | Training resume-state capture, persistence, and restoration |
@@ -42,7 +42,7 @@ viper.journal
 viper.local_store
 viper.materialization
 viper.metrics
-viper.parameter_models
+viper.parameters
 viper.preflight
 viper.protocol
 viper.resume
@@ -66,7 +66,6 @@ viper.StageContext
 viper.DownloadContext
 viper.HttpRetrievalHandle
 viper.HttpTransportContext
-viper.HttpTransportParams
 viper.HttpTransportResult
 viper.run
 ```
@@ -100,17 +99,19 @@ by repository-relative path, top-level symbol, SHA-256 digest, and byte count.
 Every `ParameterizedSpec` requires this reference. Download, build, embed,
 train, and evaluate specs inherit that contract.
 
-`viper.parameter_models` exposes:
+Projects specialize the categories exposed by `viper.parameters`:
 
-| Function | Result |
+| Category | Project extension |
 | --- | --- |
-| `verify_parameter_model_bytes(reference, raw)` | Confirms the frozen byte identity |
-| `load_parameter_model(path, symbol, expected_base)` | Loads the selected class and checks its stage-specific base |
-| `validate_parameters(path, reference, params, expected_base)` | Returns the class-validated JSON mapping |
-| `validate_stage_parameters(repository_root, stage_spec_path, stage)` | Runs stage validation in a dedicated trusted-local worker |
-| `validate_loaded_stage_parameters(repository_root, stage_spec_path)` | Loads a parameterized stage and runs the same worker validation |
+| `viper.parameters.Download` | Download parameters |
+| `viper.parameters.Build` | Build parameters |
+| `viper.parameters.Embed` | Embedding parameters |
+| `viper.parameters.Train` | Training parameters |
+| `viper.parameters.Evaluate` | Evaluation parameters |
+| `viper.parameters.Metric` | Metric parameters |
+| `viper.parameters.HttpTransport` | HTTP transport parameters |
 
-See [Project parameter models](contracts/PARAMETER_MODELS.md) for the authoring
+See [Project parameters](contracts/PARAMETERS.md) for the authoring
 contract.
 
 ## HTTP transports
@@ -125,7 +126,7 @@ values into the normalized URL stored by `HttpRequestSpec`.
 | `http_transport()` | Decorate one project transport callable and bind its transport ID and parameter class. |
 | `HttpTransportContext` | Deliver one frozen request, a runtime credential, a dedicated retrieval workspace, the assigned destination, the retrieval policy, validated transport parameters, and preflight-verified executable paths. |
 | `HttpTransportResult` | Return the completed body path and terminal HTTP response. |
-| `HttpTransportParams` | Base class for project-defined transport parameters. |
+| `viper.parameters.HttpTransport` | Base class for project-defined transport parameters. |
 
 The built-in transport ID is `httpx`. A `ProjectHttpTransportSpec` freezes a
 decorated callable through its repository-relative path, symbol, SHA-256, byte

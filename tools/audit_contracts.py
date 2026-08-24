@@ -187,31 +187,32 @@ def _compare_shapes(
 
 
 def _implemented_schema_findings(root: Path) -> tuple[int, list[AuditFinding]]:
-    """Generate schemas for every implemented Pydantic protocol model."""
+    """Generate schemas for every implemented persisted or extension model."""
     sys.path.insert(0, str(root))
     try:
-        from viper import protocol
+        from viper import parameters, protocol
     finally:
         sys.path.pop(0)
 
     findings: list[AuditFinding] = []
     count = 0
-    for name, value in inspect.getmembers(protocol, inspect.isclass):
-        if value.__module__ != protocol.__name__:
-            continue
-        if not issubclass(value, BaseModel):
-            continue
-        count += 1
-        try:
-            value.model_json_schema()
-        except Exception as error:  # noqa: BLE001 - report every schema failure.
-            findings.append(
-                AuditFinding(
-                    code="schema.construct",
-                    location=f"viper.protocol.{name}",
-                    message=f"Pydantic schema generation failed: {error}",
+    for module in (parameters, protocol):
+        for name, value in inspect.getmembers(module, inspect.isclass):
+            if value.__module__ != module.__name__:
+                continue
+            if not issubclass(value, BaseModel):
+                continue
+            count += 1
+            try:
+                value.model_json_schema()
+            except Exception as error:  # noqa: BLE001 - report every schema failure.
+                findings.append(
+                    AuditFinding(
+                        code="schema.construct",
+                        location=f"{module.__name__}.{name}",
+                        message=f"Pydantic schema generation failed: {error}",
+                    )
                 )
-            )
     return count, findings
 
 

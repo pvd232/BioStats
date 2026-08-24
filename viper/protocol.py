@@ -18,11 +18,11 @@ from pydantic import (
     ConfigDict,
     Field,
     HttpUrl,
-    JsonValue,
     field_validator,
     model_validator,
 )
 
+from . import parameters
 from .ids import (
     ExperimentId,
     FactorId,
@@ -754,17 +754,6 @@ class FloatComparator(ProtocolModel):
         return self
 
 
-class ParameterSet(BaseModel):
-    """A versioned JSON parameter mapping that project models may specialize."""
-
-    model_config = ConfigDict(extra="allow", frozen=True)
-
-    __pydantic_extra__: dict[str, JsonValue] = Field(  # pyright: ignore[reportIncompatibleVariableOverride]
-        init=False
-    )
-    schema_version: Literal[1] = 1
-
-
 class ParameterModelRef(ProtocolModel):
     """Identify one project-owned Pydantic parameter class by exact file bytes."""
 
@@ -790,10 +779,6 @@ class ArtifactLoaderRef(ProtocolModel):
     symbol: PythonSymbol = "load"
     sha256: SHA256
     bytes: int = Field(gt=0)
-
-
-class HttpTransportParams(ParameterSet):
-    """Parameters consumed by one project-defined HTTP transport."""
 
 
 class HttpTransportImplementationRef(ProtocolModel):
@@ -828,7 +813,7 @@ class ProjectHttpTransportSpec(ProtocolModel):
     transport_id: HumanId
     implementation: HttpTransportImplementationRef
     parameter_model: ParameterModelRef
-    params: HttpTransportParams
+    params: parameters.HttpTransport
     executables: tuple[ExternalExecutableSpec, ...] = ()
 
     @model_validator(mode="after")
@@ -971,10 +956,6 @@ class ResolvedStageInvocationRef(ResolvedFileRef):
     kind: Literal["stage_invocation"] = "stage_invocation"
 
 
-class MetricParams(ParameterSet):
-    """Metric-specific parameters preserved by the core protocol."""
-
-
 class MetricImplementationRef(ProtocolModel):
     """Identify one project-owned metric callable by exact file bytes."""
 
@@ -999,7 +980,7 @@ class MetricSpec(ProtocolModel):
     metric_id: MetricId
     kind: MetricKind
     implementation: MetricImplementationRef
-    params: MetricParams
+    params: parameters.Metric
     mode: MetricMode
     dependencies: tuple[MetricDependency, ...] = ()
     comparator: FloatComparator | None = None
@@ -1041,7 +1022,7 @@ class MetricExecutionReceipt(ProtocolModel):
     stage_id: StageId
     purpose: Literal["measurement", "verification"]
     implementation: MetricImplementationRef
-    params: MetricParams
+    params: parameters.Metric
     dependencies: tuple[ResolvedMetricDependency, ...] = Field(min_length=1)
     startup: ProcessStartupReceipt
     execution_context: ExecutionContext
@@ -1820,10 +1801,6 @@ class ParameterizedSpec(BaseSpec):
     parameter_model: ParameterModelRef
 
 
-class DownloadParams(ParameterSet):
-    """Parameters consumed by one project-defined download procedure."""
-
-
 class DownloadSpec(ParameterizedSpec):
     """Request verified HTTP retrievals followed by one project operation."""
 
@@ -1831,7 +1808,7 @@ class DownloadSpec(ParameterizedSpec):
     inputs: dict[InputName, HttpRequestSpec] = Field(min_length=1)
     transport: HttpTransportSpec
     policy: HttpRetrievalPolicy
-    params: DownloadParams
+    params: parameters.Download
 
 
 class InternalSpec(ParameterizedSpec):
@@ -1872,51 +1849,25 @@ class InternalSpec(ParameterizedSpec):
         return self
 
 
-class BuildParams(ParameterSet):
-    """Parameters consumed by one project-defined prior builder."""
-
-
-class EmbedParams(ParameterSet):
-    """Parameters consumed by one project-defined embedding stage."""
-
-
-class TrainParams(ParameterSet):
-    """Parameters consumed by one project-defined training procedure."""
-
-
-class EvaluateParams(ParameterSet):
-    """Model-specific parameters outside the shared evaluation contract."""
-
-    @model_validator(mode="after")
-    def exclude_shared_fields(self) -> EvaluateParams:
-        """Keep metric IDs and split inputs on EvaluateSpec."""
-        supplied = set(self.model_extra or {})
-        if {"metric_ids", "split_inputs"} & supplied:
-            raise ValueError(
-                "metric_ids and split_inputs belong directly on EvaluateSpec"
-            )
-        return self
-
-
 class BuildSpec(InternalSpec):
     """Request construction of a project-defined prior artifact."""
 
     kind: Literal["build"] = "build"  # pyright: ignore[reportIncompatibleVariableOverride]
-    params: BuildParams
+    params: parameters.Build
 
 
 class EmbedSpec(InternalSpec):
     """Request construction of a project-defined embedding artifact."""
 
     kind: Literal["embed"] = "embed"  # pyright: ignore[reportIncompatibleVariableOverride]
-    params: EmbedParams
+    params: parameters.Embed
 
 
 class TrainSpec(InternalSpec):
     """Request training and one terminal replay checkpoint."""
 
     kind: Literal["train"] = "train"  # pyright: ignore[reportIncompatibleVariableOverride]
-    params: TrainParams
+    params: parameters.Train
 
     @model_validator(mode="after")
     def validate_terminal_checkpoint(self) -> TrainSpec:
@@ -1970,7 +1921,7 @@ class EvaluateSpec(InternalSpec):
         min_length=1
     )
     split_inputs: tuple[InputName, ...] = Field(min_length=1)
-    params: EvaluateParams
+    params: parameters.Evaluate
 
     @model_validator(mode="after")
     def validate_evaluation_contract(self) -> EvaluateSpec:
@@ -2061,7 +2012,7 @@ class DownloadVariantStageParams(ProtocolModel):
 
     kind: Literal["download"] = "download"
     stage_id: StageId
-    params: DownloadParams
+    params: parameters.Download
 
 
 class BuildVariantStageParams(ProtocolModel):
@@ -2069,7 +2020,7 @@ class BuildVariantStageParams(ProtocolModel):
 
     kind: Literal["build"] = "build"
     stage_id: StageId
-    params: BuildParams
+    params: parameters.Build
 
 
 class EmbedVariantStageParams(ProtocolModel):
@@ -2077,7 +2028,7 @@ class EmbedVariantStageParams(ProtocolModel):
 
     kind: Literal["embed"] = "embed"
     stage_id: StageId
-    params: EmbedParams
+    params: parameters.Embed
 
 
 class TrainVariantStageParams(ProtocolModel):
@@ -2085,7 +2036,7 @@ class TrainVariantStageParams(ProtocolModel):
 
     kind: Literal["train"] = "train"
     stage_id: StageId
-    params: TrainParams
+    params: parameters.Train
 
 
 class EvaluateVariantStageParams(ProtocolModel):
@@ -2093,7 +2044,7 @@ class EvaluateVariantStageParams(ProtocolModel):
 
     kind: Literal["evaluate"] = "evaluate"
     stage_id: StageId
-    params: EvaluateParams
+    params: parameters.Evaluate
 
 
 VariantStageParams = Annotated[

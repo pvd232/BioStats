@@ -96,7 +96,7 @@ Every implementation contract appears once in the execution sequence.
 
 | Contract | Current status | Execution phase | Completion evidence |
 |---|---|---|---|
-| [Parameter models](contracts/PARAMETER_MODELS.md) | Implemented | Regression coverage in Phases 1 and 2 | The exact project class validates the frozen parameter mapping. Phase 1 owns typed delivery. |
+| [Parameters](contracts/PARAMETERS.md) | Implemented | Regression coverage in Phases 1 and 2 | The exact project class validates the frozen parameter mapping. Phase 1 owns typed delivery. |
 | [Stage invocation](contracts/STAGE_INVOCATION.md) | Implemented | Phase 1 | The frozen callable receives typed parameters and declared paths. Python and CLI execution share one verified coordinator path. |
 | [Process startup](contracts/PROCESS_STARTUP.md) | Implemented | Phase 1 | The controlled child records its startup environment, applied controls, initialized generators, delivered generators, and observed runtime. The designated L4 acceptance gate passed for CPU and CUDA stages. |
 | [HTTP retrieval](contracts/HTTP_RETRIEVAL.md) | Implemented | Phase 2 | Each declared input binds its frozen request, expected body identity, selected transport, terminal response, external executable identity, and delivered context handle. HTTPX and project transports pass one conformance suite. |
@@ -293,7 +293,7 @@ python -m pytest tests/test_stage_invocation.py tests/test_process_startup.py \
   specifications.
 - [x] Add the built-in and project `HttpTransportSpec` variants and require one
   selected transport on each `DownloadSpec`.
-- [x] Add `HttpTransportImplementationRef`, `HttpTransportParams`, and the
+- [x] Add `HttpTransportImplementationRef`, `viper.parameters.HttpTransport`, and the
   `http_transport()` decorator.
 - [x] Add frozen external executable requirements to each project transport.
 - [x] Resolve decorated project transports to an exact callable, parameter
@@ -329,7 +329,7 @@ python -m pytest tests/test_stage_invocation.py tests/test_process_startup.py \
 - [x] Require every successful transport to return its terminal HTTP response.
 - [x] Verify the expected body identity before project download code runs.
 - [x] Add `DownloadContext` as the `StageContext` extension that exposes typed
-  `DownloadParams` and one verified retrieval handle per input.
+  `viper.parameters.Download` and one verified retrieval handle per input.
 - [x] Treat redirects and segmented range requests as internal operations of
   one transport invocation.
 - [x] Keep dynamic pagination and scraping in discovery processes that publish

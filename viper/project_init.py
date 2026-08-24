@@ -23,11 +23,11 @@ def validate_package_name(package: str) -> None:
 def _project_files(package: str) -> dict[str, str]:
     """Return the complete starter-project file mapping."""
     stage_definitions = {
-        "download": ("DownloadParams", "download_stage", "dataset"),
-        "build": ("BuildParams", "build_stage", "prior"),
-        "embed": ("EmbedParams", "embed_stage", "embedding"),
-        "train": ("TrainParams", "train_stage", "parameters"),
-        "evaluate": ("EvaluateParams", "evaluate_stage", "predictions"),
+        "download": ("DownloadParameters", "download_stage", "dataset"),
+        "build": ("BuildParameters", "build_stage", "prior"),
+        "embed": ("EmbedParameters", "embed_stage", "embedding"),
+        "train": ("TrainParameters", "train_stage", "parameters"),
+        "evaluate": ("EvaluateParameters", "evaluate_stage", "predictions"),
     }
     files: dict[str, str] = {
         ".gitignore": ".viper/\n__pycache__/\n*.egg-info/\n",
@@ -71,42 +71,35 @@ pythonpath = ["src"]
         f"src/{package}/parameters.py": (
             '''"""Define project-owned stage parameter models."""
 
+import viper
 from pydantic import Field
 
-from viper.protocol import (
-    BuildParams,
-    DownloadParams,
-    EmbedParams,
-    EvaluateParams,
-    TrainParams,
-)
 
-
-class ProjectDownloadParams(DownloadParams):
+class DownloadParameters(viper.parameters.Download):
     """Select the expected media type for the retrieved dataset."""
 
     media_type: str = "text/plain"
 
 
-class ProjectBuildParams(BuildParams):
+class BuildParameters(viper.parameters.Build):
     """Select the delimiter consumed by the prior builder."""
 
     delimiter: str = ","
 
 
-class ProjectEmbedParams(EmbedParams):
+class EmbedParameters(viper.parameters.Embed):
     """Select the dimension of the example embedding."""
 
     dimensions: int = Field(default=2, gt=0)
 
 
-class ProjectTrainParams(TrainParams):
+class TrainParameters(viper.parameters.Train):
     """Select the number of example training passes."""
 
     epochs: int = Field(default=1, gt=0)
 
 
-class ProjectEvaluateParams(EvaluateParams):
+class EvaluateParameters(viper.parameters.Evaluate):
     """Select the label written beside the example predictions."""
 
     label: str = "baseline"
@@ -246,7 +239,7 @@ def test_stage_kinds() -> None:
 '''
         ),
     }
-    for stage, (params, decorator, artifact) in stage_definitions.items():
+    for stage, (parameter_class, decorator, artifact) in stage_definitions.items():
         if stage == "download":
             input_read = ""
         elif stage == "evaluate":
@@ -277,11 +270,11 @@ def test_stage_kinds() -> None:
             f"src/{package}/stages/{stage}.py"
         ] = f'''"""Execute the example {stage} stage."""
 
-from {package}.parameters import Project{params}
+from {package}.parameters import {parameter_class}
 from viper import {decorator}
 
 
-@{decorator}(parameter_model=Project{params})
+@{decorator}(parameter_model={parameter_class})
 def {stage}(context) -> None:
     """Write the declared {artifact} artifact from verified inputs."""
 {stage_body}'''

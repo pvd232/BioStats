@@ -17,7 +17,7 @@ ROOT_MODULES = (
     "local_store",
     "materialization",
     "metrics",
-    "parameter_models",
+    "parameters",
     "preflight",
     "protocol",
     "runner",
@@ -34,7 +34,6 @@ ROOT_EXPORTS = (
     "DownloadContext",
     "HttpRetrievalHandle",
     "HttpTransportContext",
-    "HttpTransportParams",
     "HttpTransportResult",
     "build_stage",
     "download_stage",
@@ -74,3 +73,17 @@ def test_application_exports_and_registries_are_complete() -> None:
         assert getattr(application, name) is not None
     assert tuple(application.REQUEST_REGISTRY) == application.OPERATIONS
     assert tuple(application.HANDLER_REGISTRY) == application.OPERATIONS
+
+
+def test_parameter_categories_form_the_public_extension_namespace() -> None:
+    """Expose one parameter category for each supported extension role."""
+    assert tuple(viper.parameters.__all__) == (
+        "Build",
+        "Download",
+        "Embed",
+        "Evaluate",
+        "HttpTransport",
+        "Metric",
+        "Train",
+    )
+    assert issubclass(viper.parameters.Train, viper.parameters.ParameterSet)

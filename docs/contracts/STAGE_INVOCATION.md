@@ -36,7 +36,7 @@ class StageImplementationRef(ProtocolModel):
 dataclass because it contains attempt-local paths and live metric handles:
 
 ```python
-ParamsT = TypeVar("ParamsT", bound=ParameterSet)
+ParamsT = TypeVar("ParamsT", bound=viper.parameters.ParameterSet)
 
 
 @dataclass(frozen=True)

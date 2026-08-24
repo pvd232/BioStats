@@ -29,15 +29,15 @@ project:
 from pydantic import Field
 
 import viper
-from viper.protocol import TrainParams
+import viper
 
 
-class TrainingParameters(TrainParams):
+class TrainParameters(viper.parameters.Train):
     epochs: int = Field(gt=0)
 
 
-@viper.train_stage(parameter_model=TrainingParameters)
-def train(context: viper.StageContext[TrainingParameters]) -> None:
+@viper.train_stage(parameter_model=TrainParameters)
+def train(context: viper.StageContext[TrainParameters]) -> None:
     dataset = context.inputs["dataset"]
     parameters = context.artifacts["parameters"]
     # Project training code reads dataset and writes parameters.

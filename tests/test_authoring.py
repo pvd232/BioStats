@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 
 import yaml
 
+from viper import parameters
 from viper.authoring import (
     RunPlanDraft,
     expand_http_url,
@@ -22,13 +23,11 @@ from viper.protocol import (
     ExperimentSpec,
     FactorSpec,
     MetricImplementationRef,
-    MetricParams,
     MetricSpec,
     ParameterModelRef,
     ReplicateSpec,
     RunSpec,
     StageImplementationRef,
-    TrainParams,
     TrainSpec,
     TrainVariantStageParams,
     VariantSpec,
@@ -189,8 +188,8 @@ class RunPlanAuthoringTests(unittest.TestCase):
             )
             parameter_raw = (
                 b"from pydantic import Field\n"
-                b"from viper.protocol import TrainParams\n\n"
-                b"class StrandTrainParameters(TrainParams):\n"
+                b"from viper import parameters\n\n"
+                b"class StrandTrainParameters(parameters.Train):\n"
                 b"    epochs: int = Field(gt=0)\n"
             )
             parameter_path = root / "project/parameters/train.py"
@@ -295,7 +294,7 @@ class RunPlanAuthoringTests(unittest.TestCase):
                 sha256="a" * 64,
                 bytes=1,
             ),
-            params=MetricParams(),
+            params=parameters.Metric(),
             mode="live",
         )
         experiment = ExperimentSpec(
@@ -312,7 +311,7 @@ class RunPlanAuthoringTests(unittest.TestCase):
             stage_params=(
                 TrainVariantStageParams(
                     stage_id="train",
-                    params=TrainParams.model_validate({"epochs": 2}),
+                    params=parameters.Train.model_validate({"epochs": 2}),
                 ),
             ),
         )

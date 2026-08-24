@@ -10,9 +10,9 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from ._parameter_validation import instantiate_parameters
 from .http import DownloadContext, HttpRetrievalHandle
 from .metrics import MeasurementSink, MetricHandle, bind_live_metric
-from .parameter_models import instantiate_parameters
 from .paths import retrieval_body_path
 from .protocol import (
     DownloadSpec,

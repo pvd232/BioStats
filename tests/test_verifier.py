@@ -24,6 +24,7 @@ from tests.fixtures import (
     stage_implementation_ref,
     verification_policy,
 )
+from viper import parameters
 from viper.ids import InputName
 from viper.protocol import (
     PARAMETERS,
@@ -34,14 +35,12 @@ from viper.protocol import (
     AttemptFailure,
     AttemptJournalRef,
     BenchmarkSpec,
-    BuildParams,
     BuildSpec,
     BuildVariantStageParams,
     CPUBackendContext,
     CPUComputeSpec,
     CPUContext,
     DataLoaderConfiguration,
-    EvaluateParams,
     EvaluateSpec,
     EvaluateVariantStageParams,
     ExecutionContext,
@@ -91,7 +90,6 @@ from viper.protocol import (
     StoredInputRef,
     TorchDeterminismSpec,
     TorchPrecisionSpec,
-    TrainParams,
     TrainSpec,
     TrainVariantStageParams,
     VariantSpec,
@@ -394,7 +392,7 @@ def train_spec(*, future_prior: bool = False) -> TrainSpec:
         ),
         parameter_model=parameter_model_ref("train"),
         inputs=inputs,
-        params=TrainParams.model_validate(
+        params=parameters.Train.model_validate(
             {"epochs": 10, "batch_size": 64, "learning_rate": 0.001}
         ),
         artifacts={
@@ -431,7 +429,7 @@ def build_spec() -> BuildSpec:
                 data_role="training",
             )
         },
-        params=BuildParams(),
+        params=parameters.Build(),
         artifacts={
             "prior": SingleFileArtifactSpec(
                 kind="file",
@@ -1766,7 +1764,7 @@ class RunPlanRelationshipTests(unittest.TestCase):
                     data_role="benchmark",
                 ),
             },
-            params=EvaluateParams(),
+            params=parameters.Evaluate(),
             artifacts={
                 "predictions": SingleFileArtifactSpec(
                     kind="file",
