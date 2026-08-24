@@ -45,13 +45,11 @@ def _run(stage_raw: bytes, *, seed: int) -> RunSpec:
                 "repository": "https://github.com/example/project",
                 "commit": COMMIT,
             },
-                "environment": {
-                    "kind": "local",
-                    "compute": {"kind": "cpu"},
-                    "python_environment": python_environment().model_dump(
-                        mode="json"
-                    ),
-                    "lockfile": {
+            "environment": {
+                "kind": "local",
+                "compute": {"kind": "cpu"},
+                "python_environment": python_environment().model_dump(mode="json"),
+                "lockfile": {
                     "kind": "git",
                     "repository": "https://github.com/example/project",
                     "commit": COMMIT,
