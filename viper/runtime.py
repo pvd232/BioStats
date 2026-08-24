@@ -32,6 +32,8 @@ from .protocol import (
     GCEBootImageRef,
     GCEEnvironmentSpec,
     GCEHostContext,
+    GCEMachineImageRef,
+    GCEProvisioningRef,
     GeneratorInitializationReceipt,
     HostContext,
     LocalHostContext,
@@ -48,7 +50,7 @@ from .protocol import (
 
 _GCE_METADATA_ROOT = "http://metadata.google.internal/computeMetadata/v1"
 MetadataGetter = Callable[[str], str]
-ImageIdGetter = Callable[[str, str], str]
+ProvisioningIdGetter = Callable[[str, str, str], str]
 
 
 @dataclass(frozen=True)
@@ -94,20 +96,21 @@ def _gce_metadata(path: str) -> str:
         return response.read().decode("utf-8")
 
 
-def _gce_image_id(project: str, name: str) -> str:
-    """Return the server-defined ID for one GCE image visible to the VM."""
+def _gce_provisioning_id(kind: str, project: str, name: str) -> str:
+    """Return the server-defined ID for one GCE provisioning resource."""
     token = json.loads(_gce_metadata("instance/service-accounts/default/token"))
     access_token = cast(str, token["access_token"])
     project_value = urllib.parse.quote(project, safe="")
-    image_value = urllib.parse.quote(name, safe="")
+    resource_value = urllib.parse.quote(name, safe="")
+    collection = "images" if kind == "boot_image" else "machineImages"
     request = urllib.request.Request(
         "https://compute.googleapis.com/compute/v1/projects/"
-        f"{project_value}/global/images/{image_value}",
+        f"{project_value}/global/{collection}/{resource_value}",
         headers={"Authorization": f"Bearer {access_token}"},
     )
     with urllib.request.urlopen(request, timeout=10) as response:
-        image = json.loads(response.read())
-    return cast(str, image["id"])
+        resource = json.loads(response.read())
+    return cast(str, resource["id"])
 
 
 def _gce_resource_name(value: str, resource: str) -> str:
@@ -123,21 +126,37 @@ def _gce_resource_name(value: str, resource: str) -> str:
     return name
 
 
-def observe_gce_boot_image(
+def observe_gce_provisioning(
     metadata_get: MetadataGetter = _gce_metadata,
-    image_id_get: ImageIdGetter = _gce_image_id,
-) -> GCEBootImageRef:
-    """Resolve the active VM boot image from metadata and the Compute API."""
+    provisioning_id_get: ProvisioningIdGetter = _gce_provisioning_id,
+) -> GCEProvisioningRef:
+    """Resolve the active VM provisioning source and server-defined ID."""
     value = metadata_get("instance/image")
-    parts = value.strip("/").split("/")
-    if len(parts) != 5 or parts[0] != "projects" or parts[2:4] != ["global", "images"]:
-        raise RuntimeError(f"invalid GCE image metadata path: {value}")
-    project, name = parts[1], parts[4]
-    return GCEBootImageRef(
-        project=project,
-        name=name,
-        id=image_id_get(project, name),
-    )
+    if value:
+        parts = value.strip("/").split("/")
+        if (
+            len(parts) != 5
+            or parts[0] != "projects"
+            or parts[2:4] != ["global", "images"]
+        ):
+            raise RuntimeError(f"invalid GCE image metadata path: {value}")
+        project, name = parts[1], parts[4]
+        return GCEBootImageRef(
+            project=project,
+            name=name,
+            id=provisioning_id_get("boot_image", project, name),
+        )
+
+    kind = metadata_get("instance/attributes/viper-provisioning-kind")
+    if kind != "machine_image":
+        raise RuntimeError("GCE provisioning metadata is absent")
+    project = metadata_get("instance/attributes/viper-provisioning-project")
+    name = metadata_get("instance/attributes/viper-provisioning-name")
+    declared_id = metadata_get("instance/attributes/viper-provisioning-id")
+    observed_id = provisioning_id_get(kind, project, name)
+    if declared_id != observed_id:
+        raise RuntimeError("GCE machine-image metadata ID differs from the API")
+    return GCEMachineImageRef(project=project, name=name, id=observed_id)
 
 
 def process_environment(
@@ -418,7 +437,7 @@ def observe_gce_execution(
     compute: ComputeSpec,
     *,
     metadata_get: MetadataGetter = _gce_metadata,
-    image_id_get: ImageIdGetter = _gce_image_id,
+    provisioning_id_get: ProvisioningIdGetter = _gce_provisioning_id,
 ) -> ExecutionContext:
     """Capture GCE host, CPU, backend, and numerical runtime facts."""
     try:
@@ -428,7 +447,10 @@ def observe_gce_execution(
     return _observe_execution(
         GCEHostContext(
             project_id=metadata_get("project/project-id"),
-            boot_image=observe_gce_boot_image(metadata_get, image_id_get),
+            provisioning=observe_gce_provisioning(
+                metadata_get,
+                provisioning_id_get,
+            ),
             machine_type=_gce_resource_name(
                 metadata_get("instance/machine-type"), "machineTypes"
             ),

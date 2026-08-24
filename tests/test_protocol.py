@@ -61,7 +61,8 @@ def environment(*, compute: dict | None = None) -> dict:
     """Build the shared GCE environment payload."""
     return {
         "kind": "gce",
-        "boot_image": {
+        "provisioning": {
+            "kind": "boot_image",
             "project": "viper-project",
             "name": "viper-image",
             "id": "123456789",

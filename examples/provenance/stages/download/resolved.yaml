@@ -28,8 +28,9 @@ environment:
       kind: git
       path: environment.yml
       repository: https://github.com/example/mantra
-  boot_image:
+  provisioning:
     id: "123456789"
+    kind: boot_image
     name: mantra-image
     project: mantra-project
   machine_type: n2-standard-8
@@ -47,8 +48,9 @@ execution_context:
     instruction_features: [avx2]
     model: Intel Cascade Lake
   host:
-    boot_image:
+    provisioning:
       id: "123456789"
+      kind: boot_image
       name: mantra-image
       project: mantra-project
     guest_os_name: debian

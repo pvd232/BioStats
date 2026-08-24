@@ -1759,9 +1759,23 @@ ResolvedRun.successful_attempt_id
 
 ```python
 class GCEBootImageRef(ProtocolModel):
+    kind: Literal["boot_image"] = "boot_image"
     project: NonEmptyStr
     name: NonEmptyStr
     id: NonEmptyStr
+
+
+class GCEMachineImageRef(ProtocolModel):
+    kind: Literal["machine_image"] = "machine_image"
+    project: NonEmptyStr
+    name: NonEmptyStr
+    id: NonEmptyStr
+
+
+GCEProvisioningRef = Annotated[
+    GCEBootImageRef | GCEMachineImageRef,
+    Field(discriminator="kind"),
+]
 
 
 class PythonDistributionSpec(ProtocolModel):
@@ -1792,7 +1806,7 @@ ComputeSpec = Annotated[
 
 class GCEEnvironmentSpec(ProtocolModel):
     kind: Literal["gce"] = "gce"
-    boot_image: GCEBootImageRef
+    provisioning: GCEProvisioningRef
     machine_type: NonEmptyStr
     compute: ComputeSpec
     lockfile: GitFileRef
@@ -1880,7 +1894,7 @@ class ResolvedGitFileRef(ResolvedFileRef):
 
 class ResolvedGCEEnvironment(ProtocolModel):
     kind: Literal["gce"] = "gce"
-    boot_image: GCEBootImageRef
+    provisioning: GCEProvisioningRef
     machine_type: NonEmptyStr
     compute: ComputeSpec
     lockfile: ResolvedGitFileRef
@@ -1903,7 +1917,7 @@ ResolvedEnvironment = Annotated[
 class GCEHostContext(ProtocolModel):
     provider: Literal["gce"] = "gce"
     project_id: NonEmptyStr
-    boot_image: GCEBootImageRef
+    provisioning: GCEProvisioningRef
     machine_type: NonEmptyStr
     zone: NonEmptyStr
     guest_os_name: NonEmptyStr
@@ -2030,8 +2044,8 @@ $$
 The verifier establishes $e_j\in E_{q,j}$ through these equalities:
 
 ```text
-ResolvedGCEEnvironment.boot_image
-== selected GCEEnvironmentSpec.boot_image
+ResolvedGCEEnvironment.provisioning
+== selected GCEEnvironmentSpec.provisioning
 
 ResolvedGCEEnvironment.python_environment
 == selected GCEEnvironmentSpec.python_environment
@@ -2099,9 +2113,9 @@ environment, the backend is `cuda`, its number of devices equals
 `CUDAComputeSpec.count`, and each device model equals `CUDAComputeSpec.model`.
 
 Every resolved environment records the exact Python environment and verified
-lockfile reference. A resolved GCE environment also records the boot-image
-identity. `ExecutionContext` records the runtime library implementations and
-versions used by the stage.
+lockfile reference. A resolved GCE environment also records the immutable
+provisioning-source identity. `ExecutionContext` records the runtime library
+implementations and versions used by the stage.
 
 ### Source and invocation
 

@@ -1940,7 +1940,7 @@ def verify_attempt_stages(
             GCEEnvironmentSpec,
         ):
             environment_differs = environment_differs or (
-                resolved_environment.boot_image != requested_environment.boot_image
+                resolved_environment.provisioning != requested_environment.provisioning
                 or resolved_environment.machine_type
                 != requested_environment.machine_type
             )

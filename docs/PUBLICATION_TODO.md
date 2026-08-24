@@ -146,7 +146,7 @@ rejection tests named there.
 | Artifact validation | `artifact.representation`, `artifact.bundle`, `artifact.loader`, `artifact.loadability`, `artifact.semantic.resume_state` |
 | Attempt execution | `attempt.order`, `attempt.terminal`, `attempt.identity`, `attempt.files`, `attempt.failure`, `attempt.invocations`, `attempt.retry`, `attempt.purpose` |
 | Benchmark execution | `benchmark.plan`, `benchmark.confirmation`, `benchmark.artifacts`, `benchmark.metrics`, `benchmark.status` |
-| Cloud execution | `environment.kind`, `gce.boot_image`, `gce.machine_type`, `gce.compute`, `gce.lockfile`, `gce.python`, `runtime.controls`, `run.result` |
+| Cloud execution | `environment.kind`, `gce.provisioning`, `gce.machine_type`, `gce.compute`, `gce.lockfile`, `gce.python`, `runtime.controls`, `run.result` |
 | HTTP retrieval | `http.input`, `http.request`, `http.policy`, `http.credentials`, `http.transport.identity`, `http.transport.parameters`, `http.transport.executable`, `http.response`, `http.content`, `http.delivery`, `parameter_model.identity`, `parameter_model.validation`, `stage.source`, `artifact.files` |
 | Metric provenance | `metric.implementation`, `metric.dependencies`, `metric.parameters`, `metric.measurement`, `metric.production`, `metric.environment`, `metric.recompute`, `metric.live_execution` |
 | Process startup | `startup.plan`, `startup.environment`, `startup.controls`, `startup.randomness`, `startup.callable`, `startup.context`, `startup.runtime`, `startup.backend`, `startup.distributed`, `startup.outcome` |
@@ -557,17 +557,17 @@ python -m pytest tests/test_benchmark_execution.py \
 
 ### Protocol and runtime
 
-- [x] Replace `GCEMachineImageRef` with immutable `GCEBootImageRef` containing
-  project, image name, and server-defined image ID.
-- [x] Replace `machine_image` fields with `boot_image` on requested and resolved
-  GCE environments.
+- [x] Add immutable boot-image and machine-image references containing project,
+  resource name, and server-defined resource ID.
+- [x] Select either provisioning source through `GCEProvisioningRef` on
+  requested, resolved, and observed GCE environments.
 - [x] Add `PythonEnvironmentSpec` with the exact Python version and normalized,
   sorted installed-distribution mapping.
-- [x] Add an authoring helper that resolves the boot-image ID before freezing;
-  require freezing to preserve the selected immutable identity.
+- [x] Add an authoring helper that resolves the provisioning-source ID before
+  freezing; require freezing to preserve the selected immutable identity.
 - [x] Generalize preflight from the local-only check to the effective
   environment selected for each stage.
-- [x] Add GCE project, boot-image, machine-type, zone, guest OS, kernel, CPU,
+- [x] Add GCE project, provisioning source, machine type, zone, guest OS, kernel, CPU,
   CUDA, driver, and numerical-runtime observation.
 - [x] Compare the realized environment with the stage environment override or
   shared run environment selected by the plan.
@@ -578,7 +578,7 @@ python -m pytest tests/test_benchmark_execution.py \
 
 - [ ] Exercise deterministic local CPU, local CUDA, GCE CPU, and GCE CUDA
   fixtures.
-- [ ] Reject boot-image, machine-type, accelerator, lockfile, Python
+- [ ] Reject provisioning-source, machine-type, accelerator, lockfile, Python
   environment, and numerical-control mismatches.
 - [ ] Build and install the Phase 7 wheel on the designated L4 VM.
 - [ ] Execute the maintained acceptance project from the existing SSH terminal with

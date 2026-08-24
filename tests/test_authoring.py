@@ -65,7 +65,8 @@ def environment_payload(commit: str = COMMIT) -> dict[str, object]:
     """Build the shared GCE environment used by an authored run plan."""
     return {
         "kind": "gce",
-        "boot_image": {
+        "provisioning": {
+            "kind": "boot_image",
             "project": "mantra",
             "name": "strict-v1",
             "id": "123456789",

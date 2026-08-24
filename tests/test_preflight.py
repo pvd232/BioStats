@@ -78,7 +78,8 @@ def test_preflight_reports_all_plan_failures(tmp_path: Path) -> None:
             },
             "environment": {
                 "kind": "gce",
-                "boot_image": {
+                "provisioning": {
+                    "kind": "boot_image",
                     "project": "example",
                     "name": "image",
                     "id": "123456789",

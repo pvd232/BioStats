@@ -685,7 +685,7 @@ def _resolved_environment(
         if not isinstance(host, GCEHostContext):
             raise RunError("GCE execution omitted its observed GCE host")
         return ResolvedGCEEnvironment(
-            boot_image=host.boot_image,
+            provisioning=host.provisioning,
             machine_type=host.machine_type,
             compute=environment.compute,
             lockfile=_resolved_git_file(fetcher, environment.lockfile),

@@ -254,7 +254,7 @@ def preflight_plan(repository_root: Path, run_spec_path: Path) -> PreflightRepor
                 observed_host = observed_gce.host
                 gce_matches = (
                     isinstance(observed_host, GCEHostContext)
-                    and observed_host.boot_image == effective_environment.boot_image
+                    and observed_host.provisioning == effective_environment.provisioning
                     and observed_host.machine_type == effective_environment.machine_type
                 )
             except (OSError, RuntimeError):

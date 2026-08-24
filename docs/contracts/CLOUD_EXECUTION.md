@@ -3,8 +3,8 @@
 ## Status
 
 GCE environment declarations and resolved host models are implemented. In-place
-execution on a pre-provisioned GCE instance and migration from machine-image to
-boot-image identity are approved for VIPER 0.1.
+execution on a pre-provisioned GCE instance and immutable provisioning-source
+identity are approved for VIPER 0.1.
 
 ## Required claim
 
@@ -30,12 +30,13 @@ the corresponding resolved records.
 existing `ComputeSpec` union and the local CUDA observer. Cloud execution reuses
 that compute path after adding GCE host observation.
 
-The environment model currently selects `GCEMachineImageRef`. Google defines a
-machine image as an instance-cloning and multi-disk-backup resource. The VM
-metadata server exposes the active boot image at `instance/image`:
-[Machine images](https://docs.cloud.google.com/compute/docs/machine-images) and
-[VM metadata](https://docs.cloud.google.com/compute/docs/metadata/querying-metadata#querying).
-The GCE contract therefore needs boot-image identity.
+GCE supports two provisioning sources used by this project. A VM created from
+a boot image exposes that source through `instance/image`. A VM restored from a
+machine image has an empty `instance/image` value because machine-image restore
+does not preserve `disks.sourceImage`. The provisioning contract must represent
+both sources: [Machine images](https://docs.cloud.google.com/compute/docs/machine-images),
+[machine-image restore limitations](https://docs.cloud.google.com/compute/docs/machine-images/create-machine-images#instance-and-disk-properties-not-supported-by-machine-image),
+and [VM metadata](https://docs.cloud.google.com/compute/docs/metadata/querying-metadata#querying).
 
 ## Execution location
 
@@ -68,13 +69,27 @@ access, source placement, and cloud-resource lifecycle.
 
 ## Environment selection
 
-The protocol migration introduces one immutable boot-image reference:
+The protocol defines one tagged provisioning-source union:
 
 ```python
 class GCEBootImageRef(ProtocolModel):
+    kind: Literal["boot_image"] = "boot_image"
     project: NonEmptyStr
     name: NonEmptyStr
     id: NonEmptyStr
+
+
+class GCEMachineImageRef(ProtocolModel):
+    kind: Literal["machine_image"] = "machine_image"
+    project: NonEmptyStr
+    name: NonEmptyStr
+    id: NonEmptyStr
+
+
+GCEProvisioningRef = Annotated[
+    GCEBootImageRef | GCEMachineImageRef,
+    Field(discriminator="kind"),
+]
 
 
 class PythonDistributionSpec(ProtocolModel):
@@ -92,14 +107,24 @@ replaced by `-`. The distribution tuple is sorted by name and contains one
 entry per name. This follows the Python packaging name-normalization rule:
 [Name normalization](https://packaging.python.org/en/latest/specifications/name-normalization/).
 
-`GCEEnvironmentSpec.boot_image` and
-`ResolvedGCEEnvironment.boot_image` carry this value. The author selects the
-server-defined image ID before freezing. Plan freezing preserves that immutable
-selection. During execution, VIPER reads the active image project and name from
-VM metadata, then retrieves the server-defined image ID through the Compute
-Engine `images.get` operation. VIPER compares the observed value with the frozen
-selection. The API operation requires `compute.images.get`:
-[Compute Engine `images.get`](https://docs.cloud.google.com/compute/docs/reference/rest/v1/images/get).
+`GCEEnvironmentSpec.provisioning` and
+`ResolvedGCEEnvironment.provisioning` carry this value. The author selects the
+server-defined resource ID before freezing. Plan freezing preserves that
+immutable selection.
+
+For a boot-image VM, VIPER reads the project and name from `instance/image`,
+then retrieves the resource ID with `images.get`. For a machine-image VM, the
+provisioner writes the selected kind, project, name, and ID into the reserved
+`viper-provisioning-*` instance metadata keys. VIPER retrieves the named machine
+image through `machineImages.get` and requires the API resource ID to equal the
+metadata value. VIPER compares the observed provisioning reference with the
+frozen selection: [Compute Engine `images.get`](https://docs.cloud.google.com/compute/docs/reference/rest/v1/images/get)
+and [Compute Engine `machineImages.get`](https://docs.cloud.google.com/compute/docs/reference/rest/v1/machineImages/get).
+
+The machine-image metadata keys form a provisioner attestation under the 0.1
+trusted-host boundary. They establish which immutable machine-image resource
+the provisioner selected. GCE does not persist a server-owned source-machine-
+image field on the resulting instance or restored disk.
 
 `GCEEnvironmentSpec.python_environment` stores the exact Python version and
 the sorted installed-distribution mapping selected by the author. VIPER exposes
@@ -125,7 +150,7 @@ The observer constructs:
 
 ```text
 ResolvedGCEEnvironment
-├── immutable boot-image identity
+├── immutable provisioning-source identity
 ├── machine type
 ├── CPU or CUDA compute request
 ├── resolved lockfile identity
@@ -134,7 +159,7 @@ ResolvedGCEEnvironment
 ExecutionContext
 ├── GCEHostContext
 │   ├── instance project
-│   └── observed boot-image identity
+│   └── observed provisioning-source identity
 ├── CPUContext
 ├── CPUBackendContext or CUDABackendContext
 └── NumericalRuntimeContext
@@ -164,7 +189,7 @@ to durable object storage while preserving the execution contract.
 | Check | Rule |
 |---|---|
 | `environment.kind` | The resolved environment and observed host both identify GCE. |
-| `gce.boot_image` | The observed boot-image project, name, and server-defined ID equal the frozen request. |
+| `gce.provisioning` | The observed provisioning kind, project, name, and server-defined ID equal the frozen request. |
 | `gce.machine_type` | The resolved environment and observed host report the requested machine type. |
 | `gce.compute` | The observed backend kind, CUDA model, and device count satisfy the frozen compute request. |
 | `gce.lockfile` | The resolved lockfile points to the exact lockfile selected by the effective environment. |
@@ -176,7 +201,7 @@ to durable object storage while preserving the execution contract.
 
 | Surface | Required change |
 |---|---|
-| Protocol | Replace `GCEMachineImageRef` with immutable `GCEBootImageRef`; add `PythonEnvironmentSpec`; consume the `ComputeSpec` startup contract for GCE stages. |
+| Protocol | Add `GCEProvisioningRef` and `PythonEnvironmentSpec`; consume the `ComputeSpec` startup contract for GCE stages. |
 | Coordinator | Replace the local-environment gate with selection of the effective environment for each stage. |
 | Preflight | Accept `LocalEnvironmentSpec` and `GCEEnvironmentSpec`; check the active host against the selected kind. |
 | Runtime | Reuse the process-startup compute observer and add the GCE host observer. |
@@ -188,7 +213,7 @@ to durable object storage while preserving the execution contract.
 
 ## Acceptance case
 
-A frozen run selects a `GCEEnvironmentSpec` containing one boot image,
+A frozen run selects a `GCEEnvironmentSpec` containing one machine image,
 machine type, L4 accelerator, and lockfile. The user opens a terminal on the
 matching VM and invokes the installed project entrypoint. VIPER executes the
 run on that VM, records the GCE and CUDA evidence, publishes the terminal run,
@@ -211,11 +236,11 @@ separate contracts when their first implementations enter scope.
 
 ## Implementation order
 
-1. Replace the GCE machine-image fields with immutable boot-image identity.
+1. Replace the GCE image field with immutable provisioning-source identity.
 2. Use the host-neutral `run` operation for complete-run coordination.
 3. Generalize preflight and the coordinator across local and GCE environments.
 4. Reuse the process-startup compute observer and implement GCE host and
-   boot-image observation.
+   provisioning-source observation.
 5. Apply the environment verification rules to every completed stage.
 6. Add deterministic local and GCE coverage.
 7. Run the installed-wheel acceptance project on the advertised GCE profile.

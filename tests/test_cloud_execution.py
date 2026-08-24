@@ -15,8 +15,8 @@ from viper.protocol import (
     PythonEnvironmentSpec,
 )
 from viper.runtime import (
-    observe_gce_boot_image,
     observe_gce_execution,
+    observe_gce_provisioning,
     observe_python_environment,
 )
 
@@ -32,8 +32,9 @@ def _metadata(path: str) -> str:
     return values[path]
 
 
-def _image_id(project: str, name: str) -> str:
+def _provisioning_id(kind: str, project: str, name: str) -> str:
     """Return the immutable ID matched by the synthetic image selection."""
+    assert kind == "boot_image"
     assert project == "ubuntu-os-cloud"
     assert name == "ubuntu-2404-v1"
     return "987654321"
@@ -64,7 +65,7 @@ def test_python_environment_rejects_noncanonical_distribution_order() -> None:
 
 def test_gce_boot_image_binds_metadata_name_to_server_id() -> None:
     """Combine the active image path with its server-defined immutable ID."""
-    image = observe_gce_boot_image(_metadata, _image_id)
+    image = observe_gce_provisioning(_metadata, _provisioning_id)
 
     assert image.project == "ubuntu-os-cloud"
     assert image.name == "ubuntu-2404-v1"
@@ -76,18 +77,42 @@ def test_gce_execution_records_host_and_cpu_backend() -> None:
     context = observe_gce_execution(
         CPUComputeSpec(),
         metadata_get=_metadata,
-        image_id_get=_image_id,
+        provisioning_id_get=_provisioning_id,
     )
 
     assert isinstance(context.host, GCEHostContext)
     assert context.host.project_id == "mantra-477901"
     assert context.host.machine_type == "g2-standard-12"
     assert context.host.zone == "us-central1-a"
-    assert context.host.boot_image.id == "987654321"
+    assert context.host.provisioning.id == "987654321"
     assert isinstance(context.backend, CPUBackendContext)
 
 
 def test_gce_boot_image_rejects_malformed_metadata_path() -> None:
     """Reject a metadata value that cannot identify an immutable boot image."""
     with pytest.raises(RuntimeError, match="invalid GCE image metadata path"):
-        observe_gce_boot_image(lambda _: "ubuntu-2404-v1", _image_id)
+        observe_gce_provisioning(lambda _: "ubuntu-2404-v1", _provisioning_id)
+
+
+def test_gce_machine_image_requires_matching_provisioning_attestation() -> None:
+    """Resolve an API-validated machine image from provisioning metadata."""
+    values = {
+        "instance/image": "",
+        "instance/attributes/viper-provisioning-kind": "machine_image",
+        "instance/attributes/viper-provisioning-project": "mantra-477901",
+        "instance/attributes/viper-provisioning-name": "mantra-backup-blueprint",
+        "instance/attributes/viper-provisioning-id": "4030260845309136958",
+    }
+
+    def resolve(kind: str, project: str, name: str) -> str:
+        assert (kind, project, name) == (
+            "machine_image",
+            "mantra-477901",
+            "mantra-backup-blueprint",
+        )
+        return "4030260845309136958"
+
+    source = observe_gce_provisioning(values.__getitem__, resolve)
+
+    assert source.kind == "machine_image"
+    assert source.id == "4030260845309136958"

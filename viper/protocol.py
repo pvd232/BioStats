@@ -402,9 +402,25 @@ class ArtifactPointer(ProtocolModel):
 class GCEBootImageRef(ProtocolModel):
     """Select one immutable Google Compute Engine boot image."""
 
+    kind: Literal["boot_image"] = "boot_image"
     project: NonEmptyStr
     name: NonEmptyStr
     id: NonEmptyStr
+
+
+class GCEMachineImageRef(ProtocolModel):
+    """Select one immutable Google Compute Engine machine image."""
+
+    kind: Literal["machine_image"] = "machine_image"
+    project: NonEmptyStr
+    name: NonEmptyStr
+    id: NonEmptyStr
+
+
+GCEProvisioningRef = Annotated[
+    GCEBootImageRef | GCEMachineImageRef,
+    Field(discriminator="kind"),
+]
 
 
 class PythonDistributionSpec(ProtocolModel):
@@ -455,7 +471,7 @@ class GCEEnvironmentSpec(ProtocolModel):
     """Declare the requested Google Compute Engine environment."""
 
     kind: Literal["gce"] = "gce"
-    boot_image: GCEBootImageRef
+    provisioning: GCEProvisioningRef
     machine_type: NonEmptyStr
     compute: ComputeSpec
     lockfile: GitFileRef
@@ -466,7 +482,7 @@ class ResolvedGCEEnvironment(ProtocolModel):
     """Record the environment realized for one stage execution."""
 
     kind: Literal["gce"] = "gce"
-    boot_image: GCEBootImageRef
+    provisioning: GCEProvisioningRef
     machine_type: NonEmptyStr
     compute: ComputeSpec
     lockfile: ResolvedGitFileRef
@@ -1509,7 +1525,7 @@ class GCEHostContext(ProtocolModel):
     provider: Literal["gce"] = "gce"
 
     project_id: NonEmptyStr
-    boot_image: GCEBootImageRef
+    provisioning: GCEProvisioningRef
     machine_type: NonEmptyStr
     zone: NonEmptyStr
 
@@ -2260,9 +2276,10 @@ class ResolvedBaseSpec(ProtocolModel):
                 requested_environment,
                 GCEEnvironmentSpec,
             ):
-                if self.environment.boot_image != requested_environment.boot_image:
+                if self.environment.provisioning != requested_environment.provisioning:
                     raise ValueError(
-                        "resolved boot image must match the stage environment override"
+                        "resolved GCE provisioning source must match the stage "
+                        "environment override"
                     )
                 if self.environment.machine_type != requested_environment.machine_type:
                     raise ValueError(
@@ -2303,9 +2320,9 @@ class ResolvedBaseSpec(ProtocolModel):
             host,
             GCEHostContext,
         ):
-            if self.environment.boot_image != host.boot_image:
+            if self.environment.provisioning != host.provisioning:
                 raise ValueError(
-                    "resolved boot image must match the observed host boot image"
+                    "resolved GCE provisioning source must match the observed host"
                 )
             if self.environment.machine_type != host.machine_type:
                 raise ValueError(

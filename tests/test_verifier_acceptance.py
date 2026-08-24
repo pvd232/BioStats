@@ -294,7 +294,7 @@ def environment(source_commit: str) -> GCEEnvironmentSpec:
     """Build the shared requested execution environment."""
     return GCEEnvironmentSpec(
         kind="gce",
-        boot_image=GCEBootImageRef(
+        provisioning=GCEBootImageRef(
             project="viper-project",
             name="viper-image",
             id="123456789",
@@ -345,7 +345,7 @@ def execution_context() -> ExecutionContext:
         host=GCEHostContext(
             provider="gce",
             project_id="viper-project",
-            boot_image=GCEBootImageRef(
+            provisioning=GCEBootImageRef(
                 project="viper-project",
                 name="viper-image",
                 id="123456789",
@@ -665,7 +665,7 @@ def resolved_environment(
     lockfile = add_source_file(store, source_commit, "environment.yml", lock_raw)
     return ResolvedGCEEnvironment(
         kind="gce",
-        boot_image=GCEBootImageRef(
+        provisioning=GCEBootImageRef(
             project="viper-project",
             name="viper-image",
             id="123456789",

@@ -213,7 +213,7 @@ def environment() -> GCEEnvironmentSpec:
     """Build the shared requested GCE environment."""
     return GCEEnvironmentSpec(
         kind="gce",
-        boot_image=GCEBootImageRef(
+        provisioning=GCEBootImageRef(
             project="viper-project",
             name="viper-image",
             id="123456",
@@ -265,7 +265,7 @@ def execution_context(seed: int = 42) -> ExecutionContext:
         host=GCEHostContext(
             provider="gce",
             project_id="viper-project",
-            boot_image=GCEBootImageRef(
+            provisioning=GCEBootImageRef(
                 project="viper-project",
                 name="viper-image",
                 id="123456",
@@ -447,7 +447,7 @@ def resolved_environment(lock_raw: bytes) -> ResolvedGCEEnvironment:
     """Bind the requested environment to its immutable machine image and lockfile."""
     return ResolvedGCEEnvironment(
         kind="gce",
-        boot_image=GCEBootImageRef(
+        provisioning=GCEBootImageRef(
             project="viper-project",
             name="viper-image",
             id="123456",
