@@ -634,7 +634,7 @@ python -m pytest tests/test_runtime.py tests/test_cloud_execution.py \
   authors one experiment and benchmark after the generated repository receives
   its first source commit.
 - [x] Make the generated source freeze, preflight, run, benchmark, and verify
-  without editing any generated implementation file.
+  in its generated form.
 - [x] Add concise guides for stage callables, parameter models, HTTP downloads,
   metrics, artifact loaders, retries, benchmarks, and GCE execution.
 - [x] Reconcile README, protocol, application API, public API, contract index,
@@ -666,17 +666,17 @@ python -m pytest tests/test_application.py tests/test_application_json.py \
 
 ### Deterministic release gate
 
-- [ ] Run the repository gate from a clean checkout at the current candidate.
+- [x] Run the repository gate from a clean checkout at the current candidate.
 - [x] Build the source distribution and wheel.
 - [x] Run `twine check` on both distributions.
-- [ ] Install the wheel into clean Python 3.11, 3.12, 3.13, and 3.14
+- [x] Install the wheel into clean Python 3.11, 3.12, 3.13, and 3.14
   environments.
 - [x] Run every public import, schema, capability, CLI help, and JSON smoke test
   from the installed wheel.
 - [x] Create the scaffold outside the VIPER checkout and execute its complete
   local run and benchmark.
 - [ ] Complete the live GCE acceptance case from the same wheel.
-- [ ] Require successful remote CI for the exact candidate commit.
+- [x] Require successful remote CI for the exact candidate commit.
 - [x] Record every command, result, environment, and distribution digest in the
   release-candidate report.
 
