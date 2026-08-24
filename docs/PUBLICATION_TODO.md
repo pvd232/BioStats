@@ -576,14 +576,14 @@ python -m pytest tests/test_benchmark_execution.py \
 
 ### Acceptance
 
-- [ ] Exercise deterministic local CPU, local CUDA, GCE CPU, and GCE CUDA
+- [x] Exercise deterministic local CPU, local CUDA, GCE CPU, and GCE CUDA
   fixtures.
 - [ ] Reject provisioning-source, machine-type, accelerator, lockfile, Python
   environment, and numerical-control mismatches.
-- [ ] Build and install the Phase 7 wheel on the designated L4 VM.
+- [x] Build and install the Phase 7 wheel on the designated L4 VM.
 - [ ] Execute the maintained acceptance project from the existing SSH terminal with
   `python train.py` and `viper run`.
-- [ ] Verify the completed GCE run through a clean installed-wheel process.
+- [x] Verify the completed GCE run through a clean installed-wheel process.
 
 **Focused gate**
 
