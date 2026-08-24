@@ -2,9 +2,10 @@
 
 ## Status
 
-The 0.1.0a1 source archive and wheel pass local, clean-environment, remote CI,
-generated-project, and live GCE acceptance. Registry publication remains
-pending.
+The parameter-namespace candidate passes the local repository, distribution,
+installed-wheel, and external generated-project gates under Python 3.14.
+Python 3.11–3.14 CI and live GCE acceptance remain pending for these exact
+distribution bytes.
 
 ## Required claim
 
@@ -15,12 +16,12 @@ and receive equivalent verified results outside the source checkout.
 
 ## Current gap
 
-The exact candidate distributions and their SHA-256 digests are recorded in the
-[release-candidate report](../releases/0.1.0a1.md). The generated source
+The exact local candidate distributions and their SHA-256 digests are recorded
+in the [release-candidate report](../releases/0.1.0a1.md). The generated source
 completed the acquisition, five-stage candidate, and benchmark-confirmation
-path from a clean installed wheel on local and GCE hosts. The remaining gate
-requires the owner-selected license and author metadata, TestPyPI credentials,
-PyPI authorization, and the release-tag signing identity.
+path from the installed wheel. Release requires exact-candidate CI and GCE
+results, owner-selected license and author metadata, registry credentials,
+publication authorization, and the release-tag signing identity.
 
 ## Public surface
 
@@ -54,8 +55,8 @@ through repository-relative paths stored in its specs. The protocol remains
 source-layout agnostic.
 
 The generated implementation files must freeze, preflight, execute, and verify
-without source edits. The acceptance driver initializes Git before it authors
-the source-bound experiment, benchmark, stage, and run documents.
+in their generated form. The acceptance driver initializes Git before it
+authors the source-bound experiment, benchmark, stage, and run documents.
 
 The runnable example has two plans. The acquisition plan publishes the fixed
 evaluation dataset and split, then writes their promoted artifact pointers.
@@ -64,8 +65,9 @@ and `evaluate` stages. Its evaluation stage selects the promoted evaluation
 inputs and the parameters produced by its training stage. The benchmark
 executes one independent confirmation of the candidate plan.
 
-This sequence preserves the data-use contract: evaluation and benchmark inputs
-exist before the candidate plan is frozen and never enter its training stages.
+This sequence preserves the data-use contract. The training stages consume
+training-role inputs. The evaluation stage receives the evaluation and
+benchmark inputs published by the acquisition plan.
 
 `PATH` must be absent or empty. The command validates every requested path and
 package name before writing the first file. An occupied path returns a typed
