@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+import torch
 
 from tests.fixtures import (
     builtin_http_transport,
@@ -32,7 +33,9 @@ from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
     ArtifactLoaderRef,
+    CPUBackendContext,
     CPUComputeSpec,
+    CUDABackendContext,
     CUDAComputeSpec,
     DownloadParams,
     DownloadSpec,
@@ -57,6 +60,7 @@ from viper.protocol import (
     VariantSpec,
 )
 from viper.runner import RunFetcher
+from viper.runner import run as execute_run
 from viper.serialization import document_digest, parse_yaml_bytes, serialize_document
 from viper.verifier import (
     VerificationError,
@@ -131,11 +135,17 @@ def _write_source_files(root: Path, *, blocking: bool = True) -> dict[str, bytes
         b"        time.sleep(1)\n"
         if blocking
         else (
+            b"    import torch\n"
             b"    assert context.inputs['prior'].read_bytes() == b'prior'\n"
+            b"    device = 'cuda' if torch.cuda.is_available() else 'cpu'\n"
+            b"    values = torch.tensor([2.0, 3.0], device=device)\n"
+            b"    result = values.square().sum().item()\n"
             b"    context.artifacts['parameters'].parent.mkdir(\n"
             b"        parents=True, exist_ok=True\n"
             b"    )\n"
-            b"    context.artifacts['parameters'].write_bytes(b'parameters')\n"
+            b"    context.artifacts['parameters'].write_bytes(\n"
+            b"        f'{device}:{result}'.encode()\n"
+            b"    )\n"
             b"    context.artifacts['resume_state'].write_bytes(b'resume')\n"
         )
     )
@@ -237,7 +247,7 @@ def _freeze_signal_plan(
                 "commit": source_commit,
                 "path": "environment.yml",
             }
-        )
+        ),
     )
     bytes_loader = ArtifactLoaderRef(
         path="project/loaders/bytes_file.py",
@@ -357,6 +367,75 @@ def _freeze_signal_plan(
     return frozen.files[-1]
 
 
+@pytest.mark.live_cuda
+@pytest.mark.skipif(
+    os.environ.get("VIPER_LIVE_CUDA") != "1",
+    reason="set VIPER_LIVE_CUDA=1 to run live CUDA acceptance",
+)
+@pytest.mark.parametrize(
+    ("compute", "expected_backend_type", "expected_artifact"),
+    (
+        (CPUComputeSpec(), CPUBackendContext, b"cpu:13.0"),
+        (
+            CUDAComputeSpec(model="NVIDIA L4", count=1),
+            CUDABackendContext,
+            b"cuda:13.0",
+        ),
+    ),
+    ids=("cpu-on-l4-host", "cuda-on-l4"),
+)
+def test_live_l4_stage_records_requested_backend(
+    tmp_path: Path,
+    signal_http_source: tuple[str, int],
+    compute: CPUComputeSpec | CUDAComputeSpec,
+    expected_backend_type: type[CPUBackendContext] | type[CUDABackendContext],
+    expected_artifact: bytes,
+) -> None:
+    """Execute and verify separate CPU and CUDA plans on the L4 host."""
+    assert torch.cuda.is_available()
+
+    root = tmp_path / compute.kind
+    root.mkdir()
+    _git(root, "init", "--quiet")
+    _git(root, "config", "user.email", "viper@example.com")
+    _git(root, "config", "user.name", "VIPER Test")
+    _git(root, "remote", "add", "origin", REPOSITORY)
+
+    source_files = _write_source_files(root, blocking=False)
+    run_path = _freeze_signal_plan(
+        root,
+        source_files,
+        *signal_http_source,
+        compute=compute,
+    )
+
+    result = execute_run(root, run_path)
+    store = LocalArtifactStore(root)
+    fetcher = RunFetcher(root, store, REPOSITORY)
+    verified = verify_run_result(
+        result.resolved_run,
+        policy=VerificationPolicy(trusted_source_repositories=frozenset({REPOSITORY})),
+        fetcher=fetcher,
+    )
+
+    train_result = verified.resolved_stages["train"]
+    backend = train_result.execution_context.backend
+
+    assert result.resolved_run.status == "succeeded"
+    assert verified.attempts[-1].status == "succeeded"
+    assert isinstance(backend, expected_backend_type)
+    assert train_result.startup.environment["CUDA_VISIBLE_DEVICES"] == (
+        "" if compute.kind == "cpu" else "0"
+    )
+
+    if isinstance(backend, CUDABackendContext):
+        assert len(backend.gpu_devices) == 1
+        assert backend.gpu_devices[0].model == "NVIDIA L4"
+
+    parameters_path = root / RUN_ROOT / "artifacts/models/tiny/parameters.bin"
+    assert parameters_path.read_bytes() == expected_artifact
+
+
 def _wait_for_file(path: Path, timeout_seconds: float = 30) -> None:
     """Wait until the blocking stage records its process identities."""
     deadline = time.monotonic() + timeout_seconds
@@ -472,14 +551,17 @@ def test_signal_closes_attempt_with_active_stage_evidence(
         if reference.stored_at.path.endswith("train.stdout.log")
     )
     assert store.fetch(stdout_ref.stored_at) == b"blocking train started\n"
-    assert DurableJournal(
-        root / ".viper/workspaces" / RUN_ID / "attempt-1/control/journal.jsonl"
-    ).latest().state == "terminal"  # type: ignore[union-attr]
+    assert (
+        DurableJournal(
+            root / ".viper/workspaces" / RUN_ID / "attempt-1/control/journal.jsonl"
+        )
+        .latest()
+        .state
+        == "terminal"
+    )  # type: ignore[union-attr]
     verified = verify_run_result(
         run,
-        policy=VerificationPolicy(
-            trusted_source_repositories=frozenset({REPOSITORY})
-        ),
+        policy=VerificationPolicy(trusted_source_repositories=frozenset({REPOSITORY})),
         fetcher=fetcher,
     )
     assert verified.attempts[-1] == attempt
@@ -565,9 +647,7 @@ def test_python_adapter_and_cli_share_verification_boundary(
         )
     assert verified_runs[0].plan.run == verified_runs[1].plan.run
     assert (
-        verified_runs[0].result.status
-        == verified_runs[1].result.status
-        == "succeeded"
+        verified_runs[0].result.status == verified_runs[1].result.status == "succeeded"
     )
     assert set(verified_runs[0].resolved_stages) == {"download", "train"}
     assert set(verified_runs[1].resolved_stages) == {"download", "train"}
