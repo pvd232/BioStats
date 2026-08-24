@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 — unreleased
+## 0.1.0a1 — unreleased
 
 - Define the v3 run-plan, stage, artifact, attempt, evaluation, benchmark, and
   resolved-record contracts.
