@@ -2,9 +2,9 @@
 
 ## Status
 
-Source and wheel builds, CI, installed-wheel capability checks, and the public
-API inventory are implemented. The complete distribution gate is approved for
-VIPER 0.1.
+The 0.1.0a1 source archive and wheel pass local, clean-environment, remote CI,
+generated-project, and live GCE acceptance. Registry publication remains
+pending.
 
 ## Required claim
 
@@ -15,11 +15,12 @@ and receive equivalent verified results outside the source checkout.
 
 ## Current gap
 
-The package builds as `0.1.0a1`, both distributions pass `twine check`, and the
-application exposes project initialization. The generated source completed the
-acquisition, five-stage candidate, and benchmark-confirmation path. The release
-metadata still needs its final license and authors. Final candidate build
-validation, GCE execution, remote CI, and TestPyPI publication remain.
+The exact candidate distributions and their SHA-256 digests are recorded in the
+[release-candidate report](../releases/0.1.0a1.md). The generated source
+completed the acquisition, five-stage candidate, and benchmark-confirmation
+path from a clean installed wheel on local and GCE hosts. The remaining gate
+requires the owner-selected license and author metadata, TestPyPI credentials,
+PyPI authorization, and the release-tag signing identity.
 
 ## Public surface
 

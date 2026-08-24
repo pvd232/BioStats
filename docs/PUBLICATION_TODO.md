@@ -104,7 +104,7 @@ Every implementation contract appears once in the execution sequence.
 | [Metric provenance](contracts/METRIC_PROVENANCE.md) | Implemented | Phase 4 | Recomputed metrics bind exact dependencies and two run-owned worker executions; live metrics bind a controlled metric handle and measurement sink. |
 | [Attempt execution](contracts/ATTEMPT_EXECUTION.md) | Implemented | Phase 5 | VIPER publishes canonical attempt documents, references them immutably, retries the same frozen plan, and closes real cancellation and preemption signals with active-stage evidence. |
 | [Benchmark execution](contracts/BENCHMARK_EXECUTION.md) | Implemented | Phase 6 | `execute_benchmark()` produces one independent confirmation and persists the artifact and metric comparison receipts accepted by `verify_benchmark()`. |
-| [Cloud execution](contracts/CLOUD_EXECUTION.md) | Approved | Phase 7 | The installed wheel executes in place on GCE and verifies the host, backend, and exact Python environment. |
+| [Cloud execution](contracts/CLOUD_EXECUTION.md) | Implemented | Phase 7 | The installed wheel executes in place on GCE and verifies the host, backend, and exact Python environment. |
 | [Package release](contracts/PACKAGE_RELEASE.md) | Approved | Phases 8–10 | Clean installations complete the documented project path from TestPyPI and PyPI. |
 
 ## Implemented baseline
@@ -581,8 +581,8 @@ python -m pytest tests/test_benchmark_execution.py \
 - [x] Reject provisioning-source, machine-type, accelerator, lockfile, Python
   environment, and numerical-control mismatches.
 - [x] Build and install the Phase 7 wheel on the designated L4 VM.
-- [ ] Execute the maintained acceptance project from the existing SSH terminal with
-  `python train.py` and `viper run`.
+- [x] Execute the maintained acceptance project from the existing SSH terminal
+  with `python train.py` and `viper run`.
 - [x] Verify the completed GCE run through a clean installed-wheel process.
 
 **Focused gate**
@@ -666,18 +666,18 @@ python -m pytest tests/test_application.py tests/test_application_json.py \
 
 ### Deterministic release gate
 
-- [ ] Run the repository gate from a clean checkout.
+- [x] Run the repository gate from a clean checkout.
 - [x] Build the source distribution and wheel.
 - [x] Run `twine check` on both distributions.
 - [x] Install the wheel into clean Python 3.11, 3.12, 3.13, and 3.14
   environments.
 - [x] Run every public import, schema, capability, CLI help, and JSON smoke test
   from the installed wheel.
-- [ ] Create the scaffold outside the VIPER checkout and execute its complete
+- [x] Create the scaffold outside the VIPER checkout and execute its complete
   local run and benchmark.
-- [ ] Complete the live GCE acceptance case from the same wheel.
-- [ ] Require successful remote CI for the exact candidate commit.
-- [ ] Record every command, result, environment, and distribution digest in the
+- [x] Complete the live GCE acceptance case from the same wheel.
+- [x] Require successful remote CI for the exact candidate commit.
+- [x] Record every command, result, environment, and distribution digest in the
   release-candidate report.
 
 **Release-candidate gate**

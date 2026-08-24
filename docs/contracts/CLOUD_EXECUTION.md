@@ -222,13 +222,16 @@ installed distribution version and fails `gce.python`.
 
 ## Live acceptance evidence
 
-On 2026-08-24, the Phase 7 wheel executed the two-stage runner acceptance case
-on `viper-l4-live`. The worker recorded machine-image ID
-`4030260845309136958`, machine type `g2-standard-12`, one NVIDIA L4, Ubuntu
-22.04, CUDA 13.0, and the installed Python environment. Pytest imported VIPER
-from the wheel in the `mantra` environment and reported one passing test in
-94.36 seconds. The test executed the candidate run, retry path, terminal
-verification, and benchmark confirmation.
+On 2026-08-24, the final candidate wheel executed on `viper-l4-live`. Its
+SHA-256 was
+`10f906d824c6017b8d0b452a6a62e48bfc6a168ff36630828b8277f63787576a`.
+Pytest imported VIPER from the wheel in the VM's `mantra` environment. Four
+live process-startup checks passed on one NVIDIA L4. The generated project then
+completed acquisition, the five-stage candidate, Python entrypoint execution,
+benchmark confirmation, and verification under a frozen GCE environment in
+272.93 seconds. The worker recorded machine-image ID
+`4030260845309136958`, machine type `g2-standard-12`, the host and CPU context,
+and the installed Python environment.
 
 ## Release boundary
 
