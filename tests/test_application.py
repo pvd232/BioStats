@@ -71,6 +71,30 @@ def test_result_json_is_deterministic_and_newline_terminated() -> None:
     assert first == second
     assert first.endswith(b"\n")
     assert json.loads(first)["operation"] == "get_capabilities"
+    assert json.loads(first)["warnings"] == []
+
+
+def test_failure_details_redact_credentials() -> None:
+    """Remove secret-bearing fields before a failure reaches public JSON."""
+    failure = ViperFailure(
+        operation="run",
+        origin="application",
+        code="retrieval_failed",
+        message="retrieval failed",
+        details={
+            "request": {
+                "url": "https://example.test/data",
+                "authorization": "Bearer private",
+            },
+            "secret_name": "DATA_TOKEN",
+        },
+    )
+
+    value = json.loads(result_json_bytes(failure))
+
+    assert value["details"]["request"]["url"] == "https://example.test/data"
+    assert value["details"]["request"]["authorization"] == "<redacted>"
+    assert value["details"]["secret_name"] == "<redacted>"
 
 
 def test_status_returns_latest_durable_attempt_state(tmp_path: Path) -> None:

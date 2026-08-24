@@ -454,6 +454,8 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
             requests.append(request)
             or RunSuccess(
                 run_id=RUN_ID,
+                attempt_id=1,
+                resolved_attempt=root / RUN_ROOT / "attempts/1/resolved.yaml",
                 resolved_run=root / RUN_ROOT / "resolved.yaml",
                 journal=root / ".viper" / "attempt.jsonl",
             )

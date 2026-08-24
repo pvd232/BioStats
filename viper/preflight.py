@@ -51,6 +51,29 @@ from .verifier import (
 )
 
 PreflightStatus = Literal["pass", "warning", "failure"]
+PreflightCheckCode = Literal[
+    "artifact.loader",
+    "environment.gce",
+    "environment.python",
+    "http.credentials",
+    "http.request",
+    "http.transport.identity",
+    "input.future",
+    "metric.implementation",
+    "parameter_model.identity",
+    "parameter_model.validation",
+    "plan.document",
+    "plan.git_identity",
+    "plan.records",
+    "plan.relationships",
+    "source.repository",
+    "stage.callable",
+    "stage.document",
+    "stage.identity",
+    "stage.implementation",
+    "startup.compute",
+    "startup.distributed",
+]
 
 
 class PreflightCheck(BaseModel):
@@ -58,7 +81,7 @@ class PreflightCheck(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    code: str
+    code: PreflightCheckCode
     status: PreflightStatus
     target: str
     message: str
@@ -79,7 +102,7 @@ class PreflightReport(BaseModel):
 
 
 def _check(
-    code: str,
+    code: PreflightCheckCode,
     target: str,
     passed: bool,
     failure_message: str,

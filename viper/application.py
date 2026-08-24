@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import json
+from base64 import b64encode
 from collections.abc import Callable, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+)
 
 from .authoring import freeze_run_plan, load_run_plan_draft
 from .benchmark import BenchmarkExecutionError
@@ -74,12 +83,39 @@ ErrorCode = Literal[
     "invalid_request",
     "invalid_document",
     "not_found",
+    "retrieval_failed",
     "write_conflict",
     "io_failed",
     "execution_failed",
     "verification_failed",
+    "publication_failed",
+    "cancelled",
     "internal_error",
 ]
+
+_REDACTED = "<redacted>"
+_SENSITIVE_FIELD_PARTS = (
+    "authorization",
+    "credential",
+    "password",
+    "secret",
+    "token",
+)
+
+
+def _redact_public_value(value: Any, *, field_name: str = "") -> Any:
+    """Remove credential-bearing values from public failure details."""
+    normalized_name = field_name.casefold()
+    if any(part in normalized_name for part in _SENSITIVE_FIELD_PARTS):
+        return _REDACTED
+    if isinstance(value, Mapping):
+        return {
+            str(key): _redact_public_value(item, field_name=str(key))
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_redact_public_value(item) for item in value]
+    return value
 
 
 class ApplicationModel(BaseModel):
@@ -101,6 +137,13 @@ class ViperFailure(ApplicationModel):
     code: ErrorCode
     message: str = Field(min_length=1)
     details: dict[str, Any] = Field(default_factory=dict)
+    warnings: tuple[str, ...] = ()
+
+    @field_validator("details", mode="before")
+    @classmethod
+    def redact_details(cls, value: Any) -> Any:
+        """Redact secret-bearing fields before a failure can be serialized."""
+        return _redact_public_value(value)
 
 
 class ViperError(RuntimeError):
@@ -117,6 +160,7 @@ class SuccessModel(ApplicationModel):
 
     status: Literal["ok"] = "ok"
     operation: OperationName
+    warnings: tuple[str, ...] = ()
 
 
 class PathRequest(ApplicationModel):
@@ -226,6 +270,8 @@ class RunSuccess(SuccessModel):
 
     operation: Literal["run"] = "run"  # pyright: ignore[reportIncompatibleVariableOverride]
     run_id: RunId
+    attempt_id: int = Field(ge=1)
+    resolved_attempt: Path
     resolved_run: Path
     journal: Path
 
@@ -624,8 +670,17 @@ def run(request: RunRequest) -> RunSuccess:
     except (OSError, ValueError, yaml.YAMLError) as exc:
         raise _document_error("run", request.run_spec, exc) from exc
     run = RunSpec.model_validate(parse_yaml_bytes(request.run_spec.read_bytes()))
+    attempt_id = result.resolved_run.successful_attempt_id
+    assert attempt_id is not None
     return RunSuccess(
         run_id=run.run_id,
+        attempt_id=attempt_id,
+        resolved_attempt=(
+            result.resolved_run_path.parent
+            / "attempts"
+            / str(attempt_id)
+            / "resolved.yaml"
+        ),
         resolved_run=result.resolved_run_path,
         journal=result.journal_path,
     )
@@ -1071,8 +1126,47 @@ def dispatch(
 
 def result_json_bytes(result: ApplicationModel) -> bytes:
     """Encode one application result as deterministic UTF-8 JSON."""
-    value = result.model_dump(mode="json")
-    rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    def normalize(value: Any) -> Any:
+        """Convert public values into one canonical JSON-compatible form."""
+        if isinstance(value, BaseModel):
+            return normalize(value.model_dump(mode="python"))
+        if isinstance(value, Path):
+            return value.as_posix()
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                raise ValueError("public datetimes must include a timezone")
+            return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        if isinstance(value, bytes):
+            return b64encode(value).decode("ascii")
+        if isinstance(value, Enum):
+            return normalize(value.value)
+        if isinstance(value, Mapping):
+            return {
+                str(key): normalize(value[key])
+                for key in sorted(value, key=lambda item: str(item))
+            }
+        if isinstance(value, (set, frozenset)):
+            normalized = [normalize(item) for item in value]
+            return sorted(
+                normalized,
+                key=lambda item: json.dumps(
+                    item,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
+        if isinstance(value, (list, tuple)):
+            return [normalize(item) for item in value]
+        return value
+
+    value = normalize(result)
+    rendered = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return f"{rendered}\n".encode()
 
 
