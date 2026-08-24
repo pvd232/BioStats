@@ -1,4 +1,4 @@
-"""Inspect a complete local run plan before stage execution begins."""
+"""Inspect a complete run plan on its selected execution host."""
 
 from __future__ import annotations
 
@@ -22,15 +22,20 @@ from .protocol import (
     BaseSpec,
     DownloadSpec,
     FutureInputRef,
+    GCEEnvironmentSpec,
+    GCEHostContext,
     GitFileRef,
     InternalSpec,
-    LocalEnvironmentSpec,
     ParameterizedSpec,
     ProjectHttpTransportSpec,
     RunSpec,
     StorageModel,
 )
-from .runtime import select_cuda_device
+from .runtime import (
+    observe_gce_execution,
+    observe_python_environment,
+    select_cuda_device,
+)
 from .serialization import load_stage_spec, parse_yaml_bytes
 from .stages import (
     StageDefinitionError,
@@ -97,8 +102,8 @@ def _git_bytes(repository_root: Path, commit: str, path: str) -> bytes:
     ).stdout
 
 
-def preflight_local_plan(repository_root: Path, run_spec_path: Path) -> PreflightReport:
-    """Validate local plan bytes, source paths, and same-run dependencies."""
+def preflight_plan(repository_root: Path, run_spec_path: Path) -> PreflightReport:
+    """Validate plan bytes, host requirements, and same-run dependencies."""
     root = repository_root.resolve()
     checks: list[PreflightCheck] = []
     try:
@@ -160,14 +165,7 @@ def preflight_local_plan(repository_root: Path, run_spec_path: Path) -> Prefligh
         )
     )
 
-    checks.append(
-        _check(
-            "environment.local",
-            "run.environment",
-            isinstance(run.environment, LocalEnvironmentSpec),
-            "trusted local execution requires a local shared environment",
-        )
-    )
+    active_python_environment = observe_python_environment()
 
     loaded: dict[StageId, BaseSpec] = {}
     prior: set[StageId] = set()
@@ -242,6 +240,33 @@ def preflight_local_plan(repository_root: Path, run_spec_path: Path) -> Prefligh
             )
         )
         effective_environment = stage.environment or run.environment
+        checks.append(
+            _check(
+                "environment.python",
+                reference.stage_id,
+                active_python_environment == effective_environment.python_environment,
+                "installed Python environment differs from the frozen plan",
+            )
+        )
+        if isinstance(effective_environment, GCEEnvironmentSpec):
+            try:
+                observed_gce = observe_gce_execution(effective_environment.compute)
+                observed_host = observed_gce.host
+                gce_matches = (
+                    isinstance(observed_host, GCEHostContext)
+                    and observed_host.boot_image == effective_environment.boot_image
+                    and observed_host.machine_type == effective_environment.machine_type
+                )
+            except (OSError, RuntimeError):
+                gce_matches = False
+            checks.append(
+                _check(
+                    "environment.gce",
+                    reference.stage_id,
+                    gce_matches,
+                    "active GCE host differs from the frozen environment",
+                )
+            )
         checks.append(
             _check(
                 "startup.distributed",

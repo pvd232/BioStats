@@ -16,6 +16,7 @@ from tests.fixtures import (
     builtin_http_transport,
     http_policy,
     http_request,
+    python_environment,
     reproducibility,
     resume_state,
 )
@@ -306,7 +307,8 @@ def test_two_stage_local_run_writes_and_verifies_terminal_result(
                 "commit": source_commit,
                 "path": "environment.yml",
             }
-        )
+        ),
+        python_environment=python_environment(),
     )
     host, port = http_source
     download = DownloadSpec(

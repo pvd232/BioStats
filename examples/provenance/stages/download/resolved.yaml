@@ -28,11 +28,16 @@ environment:
       kind: git
       path: environment.yml
       repository: https://github.com/example/mantra
-  machine_image:
+  boot_image:
     id: "123456789"
     name: mantra-image
     project: mantra-project
   machine_type: n2-standard-8
+  python_environment:
+    python_version: "3.13.0"
+    distributions:
+      - name: viper-provenance
+        version: "0.1.0"
 execution_context:
   backend:
     device: cpu
@@ -42,10 +47,15 @@ execution_context:
     instruction_features: [avx2]
     model: Intel Cascade Lake
   host:
+    boot_image:
+      id: "123456789"
+      name: mantra-image
+      project: mantra-project
     guest_os_name: debian
     guest_os_version: "12"
     kernel_release: "6.1"
     machine_type: n2-standard-8
+    project_id: mantra-project
     provider: gce
     zone: us-central1-a
   numerical_runtime:

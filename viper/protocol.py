@@ -77,6 +77,10 @@ PythonRepoRelPath = Annotated[
 PythonSymbol = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
 SHA256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 NonEmptyStr = Annotated[str, Field(min_length=1)]
+NormalizedDistributionName = Annotated[
+    str,
+    Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$"),
+]
 GitCommit = Annotated[
     str,
     Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"),
@@ -395,17 +399,36 @@ class ArtifactPointer(ProtocolModel):
 # ---------------------------------------------------------------------------
 
 
-class GCEMachineImageRef(ProtocolModel):
-    """Select a named Google Compute Engine machine image."""
+class GCEBootImageRef(ProtocolModel):
+    """Select one immutable Google Compute Engine boot image."""
 
     project: NonEmptyStr
     name: NonEmptyStr
-
-
-class ResolvedGCEMachineImageRef(GCEMachineImageRef):
-    """Record the immutable identity of a selected machine image."""
-
     id: NonEmptyStr
+
+
+class PythonDistributionSpec(ProtocolModel):
+    """Fix one normalized installed Python distribution and version."""
+
+    name: NormalizedDistributionName
+    version: NonEmptyStr
+
+
+class PythonEnvironmentSpec(ProtocolModel):
+    """Fix the interpreter and installed distributions used by a stage."""
+
+    python_version: NonEmptyStr
+    distributions: tuple[PythonDistributionSpec, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_distribution_order(self) -> PythonEnvironmentSpec:
+        """Require one canonically ordered entry for each distribution name."""
+        names = tuple(distribution.name for distribution in self.distributions)
+        if names != tuple(sorted(names)):
+            raise ValueError("Python distributions must be sorted by name")
+        if len(set(names)) != len(names):
+            raise ValueError("Python distribution names must be unique")
+        return self
 
 
 class CPUComputeSpec(ProtocolModel):
@@ -432,20 +455,22 @@ class GCEEnvironmentSpec(ProtocolModel):
     """Declare the requested Google Compute Engine environment."""
 
     kind: Literal["gce"] = "gce"
-    machine_image: GCEMachineImageRef
+    boot_image: GCEBootImageRef
     machine_type: NonEmptyStr
     compute: ComputeSpec
     lockfile: GitFileRef
+    python_environment: PythonEnvironmentSpec
 
 
 class ResolvedGCEEnvironment(ProtocolModel):
     """Record the environment realized for one stage execution."""
 
     kind: Literal["gce"] = "gce"
-    machine_image: ResolvedGCEMachineImageRef
+    boot_image: GCEBootImageRef
     machine_type: NonEmptyStr
     compute: ComputeSpec
     lockfile: ResolvedGitFileRef
+    python_environment: PythonEnvironmentSpec
 
 
 class LocalEnvironmentSpec(ProtocolModel):
@@ -454,6 +479,7 @@ class LocalEnvironmentSpec(ProtocolModel):
     kind: Literal["local"] = "local"
     compute: ComputeSpec = Field(default_factory=CPUComputeSpec)
     lockfile: GitFileRef
+    python_environment: PythonEnvironmentSpec
 
 
 class ResolvedLocalEnvironment(ProtocolModel):
@@ -462,6 +488,7 @@ class ResolvedLocalEnvironment(ProtocolModel):
     kind: Literal["local"] = "local"
     compute: ComputeSpec = Field(default_factory=CPUComputeSpec)
     lockfile: ResolvedGitFileRef
+    python_environment: PythonEnvironmentSpec
 
 
 EnvironmentSpec = Annotated[
@@ -1002,6 +1029,7 @@ class MetricExecutionReceipt(ProtocolModel):
     dependencies: tuple[ResolvedMetricDependency, ...] = Field(min_length=1)
     startup: ProcessStartupReceipt
     execution_context: ExecutionContext
+    python_environment: PythonEnvironmentSpec
     value: float = Field(allow_inf_nan=False)
     started_at: AwareDatetime
     completed_at: AwareDatetime
@@ -1480,6 +1508,8 @@ class GCEHostContext(ProtocolModel):
 
     provider: Literal["gce"] = "gce"
 
+    project_id: NonEmptyStr
+    boot_image: GCEBootImageRef
     machine_type: NonEmptyStr
     zone: NonEmptyStr
 
@@ -2230,15 +2260,9 @@ class ResolvedBaseSpec(ProtocolModel):
                 requested_environment,
                 GCEEnvironmentSpec,
             ):
-                resolved_image = self.environment.machine_image
-                requested_image = requested_environment.machine_image
-                if (
-                    resolved_image.project != requested_image.project
-                    or resolved_image.name != requested_image.name
-                ):
+                if self.environment.boot_image != requested_environment.boot_image:
                     raise ValueError(
-                        "resolved machine image must match the stage "
-                        "environment override"
+                        "resolved boot image must match the stage environment override"
                     )
                 if self.environment.machine_type != requested_environment.machine_type:
                     raise ValueError(
@@ -2249,6 +2273,15 @@ class ResolvedBaseSpec(ProtocolModel):
             if self.environment.compute != requested_environment.compute:
                 raise ValueError(
                     "resolved compute must match the stage environment override"
+                )
+
+            if (
+                self.environment.python_environment
+                != requested_environment.python_environment
+            ):
+                raise ValueError(
+                    "resolved Python environment must match the stage "
+                    "environment override"
                 )
 
             resolved_lockfile = self.environment.lockfile
@@ -2270,6 +2303,10 @@ class ResolvedBaseSpec(ProtocolModel):
             host,
             GCEHostContext,
         ):
+            if self.environment.boot_image != host.boot_image:
+                raise ValueError(
+                    "resolved boot image must match the observed host boot image"
+                )
             if self.environment.machine_type != host.machine_type:
                 raise ValueError(
                     "resolved machine type must match the observed host machine type"

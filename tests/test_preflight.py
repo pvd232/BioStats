@@ -12,7 +12,7 @@ from tests.fixtures import (
     stage_implementation_ref,
 )
 from viper.materialization import future_input_paths
-from viper.preflight import preflight_local_plan
+from viper.preflight import preflight_plan
 from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
@@ -78,7 +78,11 @@ def test_preflight_reports_all_plan_failures(tmp_path: Path) -> None:
             },
             "environment": {
                 "kind": "gce",
-                "machine_image": {"project": "example", "name": "image"},
+                "boot_image": {
+                    "project": "example",
+                    "name": "image",
+                    "id": "123456789",
+                },
                 "machine_type": "n2-standard-8",
                 "compute": {"kind": "cpu"},
                 "lockfile": {
@@ -86,6 +90,10 @@ def test_preflight_reports_all_plan_failures(tmp_path: Path) -> None:
                     "repository": "https://github.com/example/project",
                     "commit": "a" * 40,
                     "path": "environment.yml",
+                },
+                "python_environment": {
+                    "python_version": "3.13.0",
+                    "distributions": [{"name": "viper-provenance", "version": "0.1.0"}],
                 },
             },
             "reproducibility": {
@@ -135,12 +143,13 @@ def test_preflight_reports_all_plan_failures(tmp_path: Path) -> None:
     run_path = tmp_path / run_root / "spec.yaml"
     run_path.write_bytes(serialize_document(run))
 
-    report = preflight_local_plan(tmp_path, run_path)
+    report = preflight_plan(tmp_path, run_path)
 
     failures = {check.code for check in report.checks if check.status == "failure"}
     assert failures == {
         "artifact.loader",
-        "environment.local",
+        "environment.gce",
+        "environment.python",
         "input.future",
         "metric.implementation",
         "parameter_model.identity",

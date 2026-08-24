@@ -24,6 +24,7 @@ from .protocol import (
     ParameterizedSpec,
     ParameterizedStageSpec,
     ProcessStartupReceipt,
+    PythonEnvironmentSpec,
     ResolvedArtifact,
     ResolvedBundleArtifact,
     ResolvedBundleMember,
@@ -89,6 +90,7 @@ class StageWorkerResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     execution_context: ExecutionContext | None
+    python_environment: PythonEnvironmentSpec | None
     startup: ProcessStartupReceipt | None
     invocation: StageInvocationReceipt
     error: str | None = None
@@ -103,6 +105,7 @@ class StageProcessResult:
     completed_at: datetime
     artifacts: dict[ArtifactName, ResolvedArtifact]
     execution_context: ExecutionContext
+    python_environment: PythonEnvironmentSpec
     startup: ProcessStartupReceipt
     invocation: StageInvocationReceipt
     stdout: bytes
@@ -383,7 +386,11 @@ def execute_stage_process(
             stdout=stdout,
             stderr=stderr,
         )
-    if worker_result.execution_context is None or worker_result.startup is None:
+    if (
+        worker_result.execution_context is None
+        or worker_result.python_environment is None
+        or worker_result.startup is None
+    ):
         raise StageExecutionError("successful stage omitted runtime evidence")
 
     artifacts = {
@@ -396,6 +403,7 @@ def execute_stage_process(
         completed_at=completed_at,
         artifacts=artifacts,
         execution_context=worker_result.execution_context,
+        python_environment=worker_result.python_environment,
         startup=worker_result.startup,
         invocation=worker_result.invocation,
         stdout=stdout,

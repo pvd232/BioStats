@@ -557,20 +557,21 @@ python -m pytest tests/test_benchmark_execution.py \
 
 ### Protocol and runtime
 
-- [ ] Replace `GCEMachineImageRef` with immutable `GCEBootImageRef` containing
+- [x] Replace `GCEMachineImageRef` with immutable `GCEBootImageRef` containing
   project, image name, and server-defined image ID.
-- [ ] Replace `machine_image` fields with `boot_image` on requested and resolved
+- [x] Replace `machine_image` fields with `boot_image` on requested and resolved
   GCE environments.
-- [ ] Add `PythonEnvironmentSpec` with the exact Python version and normalized,
+- [x] Add `PythonEnvironmentSpec` with the exact Python version and normalized,
   sorted installed-distribution mapping.
-- [ ] Resolve the boot-image ID during plan freezing.
-- [ ] Generalize preflight from the local-only check to the effective
+- [x] Add an authoring helper that resolves the boot-image ID before freezing;
+  require freezing to preserve the selected immutable identity.
+- [x] Generalize preflight from the local-only check to the effective
   environment selected for each stage.
-- [ ] Add GCE project, boot-image, machine-type, zone, guest OS, kernel, CPU,
+- [x] Add GCE project, boot-image, machine-type, zone, guest OS, kernel, CPU,
   CUDA, driver, and numerical-runtime observation.
-- [ ] Compare the realized environment with the stage environment override or
+- [x] Compare the realized environment with the stage environment override or
   shared run environment selected by the plan.
-- [ ] Publish the same workspace, snapshots, journal, and terminal run files on
+- [x] Publish the same workspace, snapshots, journal, and terminal run files on
   local and GCE hosts.
 
 ### Acceptance

@@ -19,6 +19,7 @@ from tests.fixtures import (
     metric_spec,
     parameter_model_ref,
     parameter_model_source,
+    python_environment,
     resume_state,
     stage_implementation_ref,
     verification_policy,
@@ -46,9 +47,9 @@ from viper.protocol import (
     ExecutionContext,
     ExperimentSpec,
     FutureInputRef,
+    GCEBootImageRef,
     GCEEnvironmentSpec,
     GCEHostContext,
-    GCEMachineImageRef,
     GitFileRef,
     GitSource,
     HuggingFaceFileRef,
@@ -69,7 +70,6 @@ from viper.protocol import (
     ResolvedFileRef,
     ResolvedFutureInputRef,
     ResolvedGCEEnvironment,
-    ResolvedGCEMachineImageRef,
     ResolvedGitFileRef,
     ResolvedRun,
     ResolvedRunRef,
@@ -213,13 +213,15 @@ def environment() -> GCEEnvironmentSpec:
     """Build the shared requested GCE environment."""
     return GCEEnvironmentSpec(
         kind="gce",
-        machine_image=GCEMachineImageRef(
+        boot_image=GCEBootImageRef(
             project="viper-project",
             name="viper-image",
+            id="123456",
         ),
         machine_type="n2-standard-8",
         compute=CPUComputeSpec(kind="cpu"),
         lockfile=git_file("uv.lock"),
+        python_environment=python_environment(),
     )
 
 
@@ -262,6 +264,12 @@ def execution_context(seed: int = 42) -> ExecutionContext:
     return ExecutionContext(
         host=GCEHostContext(
             provider="gce",
+            project_id="viper-project",
+            boot_image=GCEBootImageRef(
+                project="viper-project",
+                name="viper-image",
+                id="123456",
+            ),
             machine_type="n2-standard-8",
             zone="us-central1-a",
             guest_os_name="debian",
@@ -439,7 +447,7 @@ def resolved_environment(lock_raw: bytes) -> ResolvedGCEEnvironment:
     """Bind the requested environment to its immutable machine image and lockfile."""
     return ResolvedGCEEnvironment(
         kind="gce",
-        machine_image=ResolvedGCEMachineImageRef(
+        boot_image=GCEBootImageRef(
             project="viper-project",
             name="viper-image",
             id="123456",
@@ -447,6 +455,7 @@ def resolved_environment(lock_raw: bytes) -> ResolvedGCEEnvironment:
         machine_type="n2-standard-8",
         compute=CPUComputeSpec(kind="cpu"),
         lockfile=resolved_git(lock_raw, "uv.lock"),
+        python_environment=python_environment(),
     )
 
 

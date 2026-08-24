@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import os
 import pickle
 import platform
 import random
+import re
 import subprocess
-from collections.abc import Mapping
+import urllib.parse
+import urllib.request
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -23,17 +27,28 @@ from .protocol import (
     CUDABackendContext,
     CUDAComputeSpec,
     CUDADeviceContext,
+    EnvironmentSpec,
     ExecutionContext,
+    GCEBootImageRef,
+    GCEEnvironmentSpec,
+    GCEHostContext,
     GeneratorInitializationReceipt,
+    HostContext,
     LocalHostContext,
     NativeLibraryContext,
     NativeThreadPoolContext,
     NumericalRuntimeContext,
     ProcessStartupReceipt,
+    PythonDistributionSpec,
+    PythonEnvironmentSpec,
     ReproducibilitySpec,
     RNGSeed,
     StartupVariable,
 )
+
+_GCE_METADATA_ROOT = "http://metadata.google.internal/computeMetadata/v1"
+MetadataGetter = Callable[[str], str]
+ImageIdGetter = Callable[[str, str], str]
 
 
 @dataclass(frozen=True)
@@ -42,6 +57,87 @@ class RuntimeInitialization:
 
     numpy_generators: dict[str, np.random.Generator]
     receipt: ProcessStartupReceipt
+
+
+def observe_python_environment() -> PythonEnvironmentSpec:
+    """Record the interpreter and every installed Python distribution."""
+    versions: dict[str, str] = {}
+    for distribution in importlib.metadata.distributions():
+        try:
+            raw_name = distribution.metadata["Name"]
+        except KeyError:
+            continue
+        name = re.sub(r"[-_.]+", "-", raw_name).lower()
+        version = distribution.version
+        previous = versions.get(name)
+        if previous is not None and previous != version:
+            raise RuntimeError(f"installed distribution {name!r} has multiple versions")
+        versions[name] = version
+    if not versions:
+        raise RuntimeError("the active Python environment has no distributions")
+    return PythonEnvironmentSpec(
+        python_version=platform.python_version(),
+        distributions=tuple(
+            PythonDistributionSpec(name=name, version=versions[name])
+            for name in sorted(versions)
+        ),
+    )
+
+
+def _gce_metadata(path: str) -> str:
+    """Read one predefined value from the GCE metadata server."""
+    request = urllib.request.Request(
+        f"{_GCE_METADATA_ROOT}/{path}",
+        headers={"Metadata-Flavor": "Google"},
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return response.read().decode("utf-8")
+
+
+def _gce_image_id(project: str, name: str) -> str:
+    """Return the server-defined ID for one GCE image visible to the VM."""
+    token = json.loads(_gce_metadata("instance/service-accounts/default/token"))
+    access_token = cast(str, token["access_token"])
+    project_value = urllib.parse.quote(project, safe="")
+    image_value = urllib.parse.quote(name, safe="")
+    request = urllib.request.Request(
+        "https://compute.googleapis.com/compute/v1/projects/"
+        f"{project_value}/global/images/{image_value}",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        image = json.loads(response.read())
+    return cast(str, image["id"])
+
+
+def _gce_resource_name(value: str, resource: str) -> str:
+    """Extract one terminal resource name from a metadata resource path."""
+    parts = value.strip("/").split("/")
+    try:
+        index = parts.index(resource)
+        name = parts[index + 1]
+    except (ValueError, IndexError) as exc:
+        raise RuntimeError(f"invalid GCE {resource} metadata path: {value}") from exc
+    if not name:
+        raise RuntimeError(f"empty GCE {resource} metadata name")
+    return name
+
+
+def observe_gce_boot_image(
+    metadata_get: MetadataGetter = _gce_metadata,
+    image_id_get: ImageIdGetter = _gce_image_id,
+) -> GCEBootImageRef:
+    """Resolve the active VM boot image from metadata and the Compute API."""
+    value = metadata_get("instance/image")
+    parts = value.strip("/").split("/")
+    if len(parts) != 5 or parts[0] != "projects" or parts[2:4] != ["global", "images"]:
+        raise RuntimeError(f"invalid GCE image metadata path: {value}")
+    project, name = parts[1], parts[4]
+    return GCEBootImageRef(
+        project=project,
+        name=name,
+        id=image_id_get(project, name),
+    )
 
 
 def process_environment(
@@ -267,16 +363,12 @@ def select_cuda_device(model: str) -> int:
     raise RuntimeError(f"requested CUDA device model is unavailable: {model}")
 
 
-def observe_local_execution(compute: ComputeSpec) -> ExecutionContext:
-    """Capture local host, CPU, backend, and numerical runtime facts."""
+def _observe_execution(host: HostContext, compute: ComputeSpec) -> ExecutionContext:
+    """Capture CPU, backend, and numerical runtime facts for one observed host."""
     architecture = platform.machine() or "unreported"
     processor = platform.processor() or architecture
     return ExecutionContext(
-        host=LocalHostContext(
-            operating_system=platform.system() or "unreported",
-            release=platform.release() or "unreported",
-            architecture=architecture,
-        ),
+        host=host,
         cpu=CPUContext(
             architecture=architecture,
             model=processor,
@@ -307,6 +399,55 @@ def observe_local_execution(compute: ComputeSpec) -> ExecutionContext:
             ),
         ),
     )
+
+
+def observe_local_execution(compute: ComputeSpec) -> ExecutionContext:
+    """Capture local host, CPU, backend, and numerical runtime facts."""
+    architecture = platform.machine() or "unreported"
+    return _observe_execution(
+        LocalHostContext(
+            operating_system=platform.system() or "unreported",
+            release=platform.release() or "unreported",
+            architecture=architecture,
+        ),
+        compute,
+    )
+
+
+def observe_gce_execution(
+    compute: ComputeSpec,
+    *,
+    metadata_get: MetadataGetter = _gce_metadata,
+    image_id_get: ImageIdGetter = _gce_image_id,
+) -> ExecutionContext:
+    """Capture GCE host, CPU, backend, and numerical runtime facts."""
+    try:
+        os_release = platform.freedesktop_os_release()
+    except OSError:
+        os_release = {}
+    return _observe_execution(
+        GCEHostContext(
+            project_id=metadata_get("project/project-id"),
+            boot_image=observe_gce_boot_image(metadata_get, image_id_get),
+            machine_type=_gce_resource_name(
+                metadata_get("instance/machine-type"), "machineTypes"
+            ),
+            zone=_gce_resource_name(metadata_get("instance/zone"), "zones"),
+            guest_os_name=os_release.get("ID", platform.system() or "unreported"),
+            guest_os_version=os_release.get(
+                "VERSION_ID", platform.release() or "unreported"
+            ),
+            kernel_release=platform.release() or "unreported",
+        ),
+        compute,
+    )
+
+
+def observe_execution(environment: EnvironmentSpec) -> ExecutionContext:
+    """Observe the host and backend selected by one effective environment."""
+    if isinstance(environment, GCEEnvironmentSpec):
+        return observe_gce_execution(environment.compute)
+    return observe_local_execution(environment.compute)
 
 
 def autocast_context(reproducibility: ReproducibilitySpec) -> Any:

@@ -1940,13 +1940,14 @@ def verify_attempt_stages(
             GCEEnvironmentSpec,
         ):
             environment_differs = environment_differs or (
-                resolved_environment.machine_image.project
-                != requested_environment.machine_image.project
-                or resolved_environment.machine_image.name
-                != requested_environment.machine_image.name
+                resolved_environment.boot_image != requested_environment.boot_image
                 or resolved_environment.machine_type
                 != requested_environment.machine_type
             )
+        environment_differs = environment_differs or (
+            resolved_environment.python_environment
+            != requested_environment.python_environment
+        )
         if environment_differs:
             raise VerificationError(
                 f"stage {stage_reference.stage_id!r} realized a different "
@@ -2266,6 +2267,8 @@ def _verify_metric_worker_runtime(
         raise VerificationError("metric worker NumPy generators differ")
     context = receipt.execution_context
     effective_environment = stage.environment or run.environment
+    if receipt.python_environment != effective_environment.python_environment:
+        raise VerificationError("metric worker Python environment differs")
     if context.host.provider != effective_environment.kind:
         raise VerificationError("metric worker host provider differs")
     if isinstance(effective_environment, GCEEnvironmentSpec):

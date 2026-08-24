@@ -61,13 +61,18 @@ def environment(*, compute: dict | None = None) -> dict:
     """Build the shared GCE environment payload."""
     return {
         "kind": "gce",
-        "machine_image": {
+        "boot_image": {
             "project": "viper-project",
             "name": "viper-image",
+            "id": "123456789",
         },
         "machine_type": "n2-standard-8",
         "compute": compute or {"kind": "cpu"},
         "lockfile": git_file("uv.lock"),
+        "python_environment": {
+            "python_version": "3.13.0",
+            "distributions": [{"name": "viper-provenance", "version": "0.1.0"}],
+        },
     }
 
 

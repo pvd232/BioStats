@@ -22,14 +22,21 @@ from viper.protocol import (
     ParameterModelRef,
     PCG64GeneratorState,
     PCG64InternalState,
+    PythonEnvironmentSpec,
     PythonRNGState,
     ReproducibilitySpec,
     ResumeState,
     StageImplementationRef,
 )
+from viper.runtime import observe_python_environment
 from viper.verifier import VerificationPolicy
 
 DEFAULT_ARTIFACT_LOADER_SOURCE = b"def load(path):\n    return path.read_bytes()\n"
+
+
+def python_environment() -> PythonEnvironmentSpec:
+    """Capture the interpreter and installed distributions used by this test run."""
+    return observe_python_environment()
 
 
 def metric_source(metric_id: str, kind: MetricKind) -> bytes:

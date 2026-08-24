@@ -17,7 +17,12 @@ from .metrics import (
     validate_metric_definition,
 )
 from .protocol import MetricExecutionReceipt
-from .runtime import apply_reproducibility, autocast_context, observe_local_execution
+from .runtime import (
+    apply_reproducibility,
+    autocast_context,
+    observe_execution,
+    observe_python_environment,
+)
 
 
 def _write_result(path: Path, result: MetricWorkerResult) -> None:
@@ -96,7 +101,10 @@ def main(argv: list[str] | None = None) -> int:
             context.run.reproducibility,
         )
         effective_environment = context.stage.environment or context.run.environment
-        execution_context = observe_local_execution(effective_environment.compute)
+        python_environment = observe_python_environment()
+        if python_environment != effective_environment.python_environment:
+            raise ValueError("startup.python: installed Python environment differs")
+        execution_context = observe_execution(effective_environment)
         callable_metric = load_metric(
             root / context.metric.implementation.path,
             context.metric.implementation.symbol,
@@ -136,6 +144,7 @@ def main(argv: list[str] | None = None) -> int:
             dependencies=context.dependencies,
             startup=initialization.receipt,
             execution_context=execution_context,
+            python_environment=python_environment,
             value=value,
             started_at=started_at,
             completed_at=completed_at,

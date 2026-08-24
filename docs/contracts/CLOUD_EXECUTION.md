@@ -93,18 +93,19 @@ entry per name. This follows the Python packaging name-normalization rule:
 [Name normalization](https://packaging.python.org/en/latest/specifications/name-normalization/).
 
 `GCEEnvironmentSpec.boot_image` and
-`ResolvedGCEEnvironment.boot_image` carry this value. Plan freezing resolves
-the image resource ID. During execution, VIPER reads the active project and
-image name from VM metadata, then retrieves the server-defined image ID through
-the Compute Engine `images.get` operation. That operation returns the image
-resource and requires `compute.images.get`:
+`ResolvedGCEEnvironment.boot_image` carry this value. The author selects the
+server-defined image ID before freezing. Plan freezing preserves that immutable
+selection. During execution, VIPER reads the active image project and name from
+VM metadata, then retrieves the server-defined image ID through the Compute
+Engine `images.get` operation. VIPER compares the observed value with the frozen
+selection. The API operation requires `compute.images.get`:
 [Compute Engine `images.get`](https://docs.cloud.google.com/compute/docs/reference/rest/v1/images/get).
 
 `GCEEnvironmentSpec.python_environment` stores the exact Python version and
-the sorted installed-distribution mapping selected by the author. Plan freezing
-captures this value from the prepared environment or validates an authored
-value. The child reconstructs the same mapping through Python package metadata
-and stores it as `ResolvedGCEEnvironment.python_environment`.
+the sorted installed-distribution mapping selected by the author. VIPER exposes
+an environment-observation helper for authoring. Plan freezing validates the
+selected value. The child reconstructs the same mapping through Python package
+metadata and stores it as `ResolvedGCEEnvironment.python_environment`.
 
 The lockfile reference identifies the environment-construction input. The
 Python environment value constrains the distributions that actually execute
@@ -132,6 +133,8 @@ ResolvedGCEEnvironment
 
 ExecutionContext
 ├── GCEHostContext
+│   ├── instance project
+│   └── observed boot-image identity
 ├── CPUContext
 ├── CPUBackendContext or CUDABackendContext
 └── NumericalRuntimeContext

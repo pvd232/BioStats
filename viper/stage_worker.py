@@ -25,7 +25,12 @@ from .protocol import (
     StageInvocationReceipt,
     StoredInputRef,
 )
-from .runtime import apply_reproducibility, autocast_context, observe_local_execution
+from .runtime import (
+    apply_reproducibility,
+    autocast_context,
+    observe_execution,
+    observe_python_environment,
+)
 from .serialization import document_digest, load_stage_spec, parse_yaml_bytes
 from .stage_execution import StageWorkerContext, StageWorkerResult
 from .stages import StageContext, load_stage_callable, stage_definition
@@ -156,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     started_at = datetime.now(UTC)
     initialization = None
     execution_context = None
+    python_environment = None
     try:
         if not isinstance(stage, ParameterizedSpec):
             raise ValueError("stage worker requires a parameterized stage")
@@ -199,7 +205,10 @@ def main(argv: list[str] | None = None) -> int:
         generator_names = tuple(sorted(initialization.numpy_generators))
         if generator_names != binding.numpy_generator_names:
             raise ValueError("startup.context: NumPy generator names differ")
-        execution_context = observe_local_execution(effective_environment.compute)
+        python_environment = observe_python_environment()
+        if python_environment != effective_environment.python_environment:
+            raise ValueError("startup.python: installed Python environment differs")
+        execution_context = observe_execution(effective_environment)
 
         params = instantiate_parameters(
             root / stage.parameter_model.path,
@@ -281,6 +290,7 @@ def main(argv: list[str] | None = None) -> int:
             worker_context.result_path,
             StageWorkerResult(
                 execution_context=execution_context,
+                python_environment=python_environment,
                 startup=None if initialization is None else initialization.receipt,
                 invocation=invocation,
                 error=f"{type(exc).__name__}: {exc}",
@@ -299,10 +309,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     assert initialization is not None
     assert execution_context is not None
+    assert python_environment is not None
     _write_result(
         worker_context.result_path,
         StageWorkerResult(
             execution_context=execution_context,
+            python_environment=python_environment,
             startup=initialization.receipt,
             invocation=invocation,
         ),

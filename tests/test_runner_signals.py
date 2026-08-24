@@ -22,13 +22,14 @@ from tests.fixtures import (
     builtin_http_transport,
     http_policy,
     http_request,
+    python_environment,
     reproducibility,
     resume_state,
 )
 from viper.authoring import RunPlanDraft, StageDraft, freeze_run_plan
 from viper.journal import DurableJournal
 from viper.local_store import LocalArtifactStore
-from viper.preflight import preflight_local_plan
+from viper.preflight import preflight_plan
 from viper.protocol import (
     PARAMETERS,
     RESUME_STATE,
@@ -248,6 +249,7 @@ def _freeze_signal_plan(
                 "path": "environment.yml",
             }
         ),
+        python_environment=python_environment(),
     )
     bytes_loader = ArtifactLoaderRef(
         path="project/loaders/bytes_file.py",
@@ -798,7 +800,7 @@ def test_preflight_rejects_unsupported_cuda_requests(
         compute=compute,
     )
 
-    report = preflight_local_plan(root, run_path)
+    report = preflight_plan(root, run_path)
 
     failures = {check.code for check in report.checks if check.status == "failure"}
     assert expected_code in failures

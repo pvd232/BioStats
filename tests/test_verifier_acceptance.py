@@ -25,6 +25,7 @@ from tests.fixtures import (
     metric_spec,
     parameter_model_ref,
     parameter_model_source,
+    python_environment,
     resume_state,
     stage_implementation_ref,
     verification_policy,
@@ -61,9 +62,9 @@ from viper.protocol import (
     ExecutionContext,
     ExperimentSpec,
     FutureInputRef,
+    GCEBootImageRef,
     GCEEnvironmentSpec,
     GCEHostContext,
-    GCEMachineImageRef,
     GeneratorInitializationReceipt,
     GitFileRef,
     GitSource,
@@ -98,7 +99,6 @@ from viper.protocol import (
     ResolvedFileRef,
     ResolvedFutureInputRef,
     ResolvedGCEEnvironment,
-    ResolvedGCEMachineImageRef,
     ResolvedGitFileRef,
     ResolvedHttpRetrieval,
     ResolvedHttpTransport,
@@ -294,10 +294,15 @@ def environment(source_commit: str) -> GCEEnvironmentSpec:
     """Build the shared requested execution environment."""
     return GCEEnvironmentSpec(
         kind="gce",
-        machine_image=GCEMachineImageRef(project="viper-project", name="viper-image"),
+        boot_image=GCEBootImageRef(
+            project="viper-project",
+            name="viper-image",
+            id="123456789",
+        ),
         machine_type="n2-standard-8",
         compute=CPUComputeSpec(kind="cpu"),
         lockfile=git_file(source_commit, "environment.yml"),
+        python_environment=python_environment(),
     )
 
 
@@ -339,6 +344,12 @@ def execution_context() -> ExecutionContext:
     return ExecutionContext(
         host=GCEHostContext(
             provider="gce",
+            project_id="viper-project",
+            boot_image=GCEBootImageRef(
+                project="viper-project",
+                name="viper-image",
+                id="123456789",
+            ),
             machine_type="n2-standard-8",
             zone="us-central1-a",
             guest_os_name="debian",
@@ -443,6 +454,7 @@ def publish_metric_verification(
         dependencies=dependencies,
         startup=startup_receipt(run),
         execution_context=execution_context(),
+        python_environment=python_environment(),
         value=measurement.value,
         started_at=stage_completed_at + timedelta(seconds=10),
         completed_at=stage_completed_at + timedelta(seconds=20),
@@ -653,7 +665,7 @@ def resolved_environment(
     lockfile = add_source_file(store, source_commit, "environment.yml", lock_raw)
     return ResolvedGCEEnvironment(
         kind="gce",
-        machine_image=ResolvedGCEMachineImageRef(
+        boot_image=GCEBootImageRef(
             project="viper-project",
             name="viper-image",
             id="123456789",
@@ -661,6 +673,7 @@ def resolved_environment(
         machine_type="n2-standard-8",
         compute=CPUComputeSpec(kind="cpu"),
         lockfile=lockfile,
+        python_environment=python_environment(),
     )
 
 

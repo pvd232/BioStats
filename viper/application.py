@@ -27,7 +27,7 @@ from .inspection import compare_runs as compare_verified_runs
 from .inspection import lineage as build_lineage
 from .inspection import plan_diff as compare_frozen_plans
 from .journal import AttemptState
-from .preflight import PreflightCheck, preflight_local_plan
+from .preflight import PreflightCheck, preflight_plan
 from .protocol import (
     ArtifactPointer,
     BenchmarkResult,
@@ -547,7 +547,7 @@ def freeze_run(request: FreezeRunRequest) -> FreezeRunSuccess:
 
 def preflight(request: PreflightRequest) -> PreflightSuccess:
     """Inspect one complete local plan before allocating a run attempt."""
-    report = preflight_local_plan(request.repository_root, request.run_spec)
+    report = preflight_plan(request.repository_root, request.run_spec)
     return PreflightSuccess(
         run_id=report.run_id,
         ready=report.ready,

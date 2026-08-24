@@ -1902,6 +1902,8 @@ ResolvedEnvironment = Annotated[
 
 class GCEHostContext(ProtocolModel):
     provider: Literal["gce"] = "gce"
+    project_id: NonEmptyStr
+    boot_image: GCEBootImageRef
     machine_type: NonEmptyStr
     zone: NonEmptyStr
     guest_os_name: NonEmptyStr
@@ -2363,6 +2365,7 @@ class MetricExecutionReceipt(ProtocolModel):
     dependencies: tuple[ResolvedMetricDependency, ...] = Field(min_length=1)
     startup: ProcessStartupReceipt
     execution_context: ExecutionContext
+    python_environment: PythonEnvironmentSpec
     value: float = Field(allow_inf_nan=False)
     started_at: AwareDatetime
     completed_at: AwareDatetime

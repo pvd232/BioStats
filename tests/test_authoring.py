@@ -65,7 +65,11 @@ def environment_payload(commit: str = COMMIT) -> dict[str, object]:
     """Build the shared GCE environment used by an authored run plan."""
     return {
         "kind": "gce",
-        "machine_image": {"project": "mantra", "name": "strict-v1"},
+        "boot_image": {
+            "project": "mantra",
+            "name": "strict-v1",
+            "id": "123456789",
+        },
         "machine_type": "n2-standard-8",
         "compute": {"kind": "cpu"},
         "lockfile": {
@@ -73,6 +77,10 @@ def environment_payload(commit: str = COMMIT) -> dict[str, object]:
             "repository": "https://github.com/example/viper-project",
             "commit": commit,
             "path": "environment.yml",
+        },
+        "python_environment": {
+            "python_version": "3.13.0",
+            "distributions": [{"name": "viper-provenance", "version": "0.1.0"}],
         },
     }
 

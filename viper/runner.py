@@ -21,7 +21,7 @@ from .local_store import LocalArtifactStore, snapshot_file
 from .metric_execution import MetricExecutionError, execute_metric_process
 from .metrics import MeasurementSink, compare_metric_values
 from .paths import retrieval_body_path
-from .preflight import preflight_local_plan
+from .preflight import preflight_plan
 from .protocol import (
     ArtifactPointer,
     AttemptFailure,
@@ -29,12 +29,14 @@ from .protocol import (
     AttemptPurpose,
     BaseSpec,
     DownloadSpec,
+    EnvironmentSpec,
     ExperimentSpec,
     FloatComparator,
+    GCEEnvironmentSpec,
+    GCEHostContext,
     GitFileRef,
     HuggingFaceFileRef,
     InternalSpec,
-    LocalEnvironmentSpec,
     LocalStageResultSnapshotRef,
     MetricSpec,
     MetricVerificationReceipt,
@@ -47,6 +49,7 @@ from .protocol import (
     ResolvedEvaluateSpec,
     ResolvedFileRef,
     ResolvedFutureInputRef,
+    ResolvedGCEEnvironment,
     ResolvedGitFileRef,
     ResolvedHttpRetrieval,
     ResolvedInternalInputRef,
@@ -673,12 +676,25 @@ def _run_after_stage_metrics(
 
 def _resolved_environment(
     fetcher: RunFetcher,
-    environment: LocalEnvironmentSpec,
-) -> ResolvedLocalEnvironment:
-    """Resolve one local environment's exact lockfile identity."""
+    environment: EnvironmentSpec,
+    process: StageProcessResult,
+) -> ResolvedLocalEnvironment | ResolvedGCEEnvironment:
+    """Resolve one requested environment from child-observed runtime evidence."""
+    if isinstance(environment, GCEEnvironmentSpec):
+        host = process.execution_context.host
+        if not isinstance(host, GCEHostContext):
+            raise RunError("GCE execution omitted its observed GCE host")
+        return ResolvedGCEEnvironment(
+            boot_image=host.boot_image,
+            machine_type=host.machine_type,
+            compute=environment.compute,
+            lockfile=_resolved_git_file(fetcher, environment.lockfile),
+            python_environment=process.python_environment,
+        )
     return ResolvedLocalEnvironment(
         compute=environment.compute,
         lockfile=_resolved_git_file(fetcher, environment.lockfile),
+        python_environment=process.python_environment,
     )
 
 
@@ -686,7 +702,7 @@ def _resolved_stage(
     stage: BaseSpec,
     *,
     source: ResolvedGitFileRef,
-    environment: ResolvedLocalEnvironment,
+    environment: ResolvedLocalEnvironment | ResolvedGCEEnvironment,
     process: StageProcessResult,
     invocation: ResolvedStageInvocationRef,
     inputs: dict[InputName, ResolvedInternalInputRef] | None,
@@ -732,8 +748,6 @@ def _execute_attempt(
     run_path = run_spec_path.resolve()
     run_raw = run_path.read_bytes()
     run = RunSpec.model_validate(parse_yaml_bytes(run_raw))
-    if not isinstance(run.environment, LocalEnvironmentSpec):
-        raise RunError("trusted execution requires a local environment")
     origin = _git(root, "remote", "get-url", "origin").decode().strip()
     if origin != str(run.source.repository):
         raise RunError("Git origin differs from RunSpec.source.repository")
@@ -830,7 +844,7 @@ def _execute_attempt(
     signal.signal(signal.SIGTERM, preempt_attempt)
     try:
         journal.append("allocated", "attempt allocated", recorded_at=attempt_started)
-        preflight = preflight_local_plan(root, run_path)
+        preflight = preflight_plan(root, run_path)
         preflight_path = workspace.control / "preflight.json"
         _write_synchronized(
             preflight_path,
@@ -855,8 +869,6 @@ def _execute_attempt(
             stage = load_stage_spec(root / stage_reference.spec)
             loaded_stages[stage_reference.stage_id] = stage
             effective_environment = stage.environment or run.environment
-            if not isinstance(effective_environment, LocalEnvironmentSpec):
-                raise RunError("runner cannot apply a remote environment")
             source_location = GitFileRef(
                 repository=run.source.repository,
                 commit=run.source.commit,
@@ -957,7 +969,11 @@ def _execute_attempt(
             resolved = _resolved_stage(
                 stage,
                 source=source,
-                environment=_resolved_environment(fetcher, effective_environment),
+                environment=_resolved_environment(
+                    fetcher,
+                    effective_environment,
+                    process,
+                ),
                 process=process,
                 invocation=invocation_ref,
                 inputs=resolved_inputs,

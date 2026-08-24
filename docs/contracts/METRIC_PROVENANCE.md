@@ -215,6 +215,7 @@ class MetricExecutionReceipt(ProtocolModel):
     dependencies: tuple[ResolvedMetricDependency, ...] = Field(min_length=1)
     startup: ProcessStartupReceipt
     execution_context: ExecutionContext
+    python_environment: PythonEnvironmentSpec
     value: float = Field(allow_inf_nan=False)
     started_at: AwareDatetime
     completed_at: AwareDatetime
