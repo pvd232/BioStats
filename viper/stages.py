@@ -144,13 +144,22 @@ def load_stage_callable(
     module = importlib.util.module_from_spec(module_spec)
     sys.modules[module_name] = module
     resolved_import_root = None if import_root is None else import_root.resolve()
-    inserted_path = None if resolved_import_root is None else str(resolved_import_root)
+    import_roots: tuple[Path, ...] = ()
+    if resolved_import_root is not None:
+        source_root = resolved_import_root / "src"
+        import_roots = (
+            (source_root, resolved_import_root)
+            if source_root.is_dir()
+            else (resolved_import_root,)
+        )
+    inserted_paths = tuple(str(root) for root in import_roots)
     saved_modules: dict[str, ModuleType] = {}
     project_prefixes: set[str] = set()
-    if resolved_import_root is not None:
+    if import_roots:
         project_prefixes = {
             child.stem
-            for child in resolved_import_root.iterdir()
+            for root in import_roots
+            for child in root.iterdir()
             if child.is_dir() or child.suffix == ".py"
         }
         for name in tuple(sys.modules):
@@ -159,8 +168,8 @@ def load_stage_callable(
                 for prefix in project_prefixes
             ):
                 saved_modules[name] = sys.modules.pop(name)
-        assert inserted_path is not None
-        sys.path.insert(0, inserted_path)
+        for inserted_path in reversed(inserted_paths):
+            sys.path.insert(0, inserted_path)
     try:
         module_spec.loader.exec_module(module)
         value = getattr(module, reference.symbol, None)
@@ -182,9 +191,9 @@ def load_stage_callable(
         ) from exc
     finally:
         sys.modules.pop(module_name, None)
-        if resolved_import_root is not None:
-            assert inserted_path is not None
-            sys.path.remove(inserted_path)
+        if import_roots:
+            for inserted_path in inserted_paths:
+                sys.path.remove(inserted_path)
             for name in tuple(sys.modules):
                 if any(
                     name == prefix or name.startswith(f"{prefix}.")

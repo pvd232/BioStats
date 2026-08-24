@@ -88,3 +88,38 @@ def test_stage_loader_requires_exact_decorated_top_level_callable(
     path.write_bytes(raw.replace(b"return None", b"return 3   "))
     with pytest.raises(StageDefinitionError, match="SHA-256"):
         load_stage_callable(path, reference, import_root=tmp_path)
+
+
+def test_stage_loader_resolves_standard_src_layout(tmp_path: Path) -> None:
+    """Load project imports from a repository-local ``src`` package root."""
+    package_root = tmp_path / "src/example_project"
+    package_root.mkdir(parents=True)
+    (package_root / "__init__.py").write_text(
+        '"""Example project package."""\n',
+        encoding="utf-8",
+    )
+    (package_root / "parameters.py").write_text(
+        "from viper.protocol import TrainParams\n\n"
+        "class ProjectParameters(TrainParams):\n"
+        "    epochs: int\n",
+        encoding="utf-8",
+    )
+    raw = (
+        b"from example_project.parameters import ProjectParameters\n"
+        b"from viper import train_stage\n\n"
+        b"@train_stage(parameter_model=ProjectParameters)\n"
+        b"def fit(context):\n"
+        b"    return None\n"
+    )
+    path = package_root / "fit.py"
+    path.write_bytes(raw)
+    reference = StageImplementationRef(
+        path="src/example_project/fit.py",
+        symbol="fit",
+        sha256=hashlib.sha256(raw).hexdigest(),
+        bytes=len(raw),
+    )
+
+    loaded = load_stage_callable(path, reference, import_root=tmp_path)
+
+    assert stage_definition(loaded).parameter_model.__name__ == "ProjectParameters"
