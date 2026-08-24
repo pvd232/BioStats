@@ -611,7 +611,7 @@ python -m pytest tests/test_runtime.py tests/test_cloud_execution.py \
   results.
 - [x] Add golden JSON fixtures for every public success and failure family.
 - [x] Route warnings into JSON result models.
-- [ ] Capture output and exit status for every CLI command in acceptance tests.
+- [x] Capture output and exit status for every CLI command in acceptance tests.
 - [x] Freeze one `PreflightCheckCode` for every release-gated preflight rule.
 - [x] Freeze the operation, schema, capability, decorator, context, and helper
   imports listed in `PUBLIC_API.md`.
@@ -667,9 +667,9 @@ python -m pytest tests/test_application.py tests/test_application_json.py \
 - [ ] Run the repository gate from a clean checkout.
 - [x] Build the source distribution and wheel.
 - [x] Run `twine check` on both distributions.
-- [ ] Install the wheel into clean Python 3.11, 3.12, 3.13, and 3.14
+- [x] Install the wheel into clean Python 3.11, 3.12, 3.13, and 3.14
   environments.
-- [ ] Run every public import, schema, capability, CLI help, and JSON smoke test
+- [x] Run every public import, schema, capability, CLI help, and JSON smoke test
   from the installed wheel.
 - [ ] Create the scaffold outside the VIPER checkout and execute its complete
   local run and benchmark.

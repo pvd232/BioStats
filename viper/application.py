@@ -1218,6 +1218,7 @@ def result_json_bytes(result: ApplicationModel) -> bytes:
 
 
 __all__ = [
+    "ApplicationModel",
     "CapabilitiesRequest",
     "CapabilitiesSuccess",
     "CompareRunsRequest",
@@ -1226,12 +1227,15 @@ __all__ = [
     "ExecuteStageSuccess",
     "ExecuteBenchmarkRequest",
     "ExecuteBenchmarkSuccess",
+    "ErrorCode",
+    "FailureOrigin",
     "FreezeRunRequest",
     "FreezeRunSuccess",
     "InitProjectRequest",
     "InitProjectSuccess",
     "LineageRequest",
     "LineageSuccess",
+    "OperationName",
     "PlanDiffRequest",
     "PlanDiffSuccess",
     "PreflightRequest",
@@ -1244,6 +1248,7 @@ __all__ = [
     "SchemaSuccess",
     "StatusRequest",
     "StatusSuccess",
+    "SuccessModel",
     "ValidateResolvedStageRequest",
     "ValidateResolvedStageSuccess",
     "ValidateRunSpecRequest",

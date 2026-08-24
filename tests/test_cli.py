@@ -139,3 +139,74 @@ class CommandLineTests(unittest.TestCase):
             result = json.loads(process.stdout)
             self.assertEqual(result["operation"], "init_project")
             self.assertTrue((target / "src/sample_project/stages/train.py").is_file())
+
+    def test_every_command_emits_one_json_document_and_stable_exit_status(
+        self,
+    ) -> None:
+        """Exercise every CLI route through its success or expected-failure path."""
+        cases = {
+            "validate-stage": ["validate-stage", "missing.yaml"],
+            "validate-resolved-stage": [
+                "validate-resolved-stage",
+                "missing.yaml",
+            ],
+            "validate-run": ["validate-run", "missing.yaml"],
+            "freeze-run": ["freeze-run", "missing.yaml"],
+            "preflight": ["preflight", "missing.yaml"],
+            "execute-stage": ["execute-stage", "missing.yaml", "train"],
+            "run": ["run", "missing.yaml"],
+            "retry": ["retry", "missing.yaml"],
+            "execute-benchmark": [
+                "execute-benchmark",
+                "missing-run.yaml",
+                "missing-benchmark.yaml",
+            ],
+            "plan-diff": ["plan-diff", "left.yaml", "right.yaml"],
+            "lineage": [
+                "lineage",
+                "missing.yaml",
+                "--trust-source",
+                "https://example.test/repository",
+            ],
+            "status": ["status", "missing.jsonl"],
+            "compare-runs": [
+                "compare-runs",
+                "left.yaml",
+                "right.yaml",
+                "--trust-source",
+                "https://example.test/repository",
+            ],
+            "verify-run": [
+                "verify-run",
+                "missing.yaml",
+                "--trust-source",
+                "https://example.test/repository",
+            ],
+            "verify-benchmark": [
+                "verify-benchmark",
+                "missing.yaml",
+                "--trust-source",
+                "https://example.test/repository",
+            ],
+            "verify-pointer": [
+                "verify-pointer",
+                "missing.yaml",
+                "--trust-source",
+                "https://example.test/repository",
+            ],
+            "schema": ["schema", "MissingSchema"],
+            "capabilities": ["capabilities"],
+        }
+        for name, arguments in cases.items():
+            with self.subTest(command=name):
+                process = subprocess.run(
+                    [sys.executable, "-m", "viper.cli", "--json", *arguments],
+                    check=False,
+                    capture_output=True,
+                )
+
+                self.assertIn(process.returncode, {0, 1})
+                self.assertEqual(process.stderr, b"")
+                document = json.loads(process.stdout)
+                self.assertIn(document["status"], {"ok", "error"})
+                self.assertTrue(process.stdout.endswith(b"\n"))
