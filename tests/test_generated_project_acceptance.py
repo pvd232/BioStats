@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import subprocess
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -23,7 +26,6 @@ from viper.authoring import (
     write_experiment_spec,
     write_variant_spec,
 )
-from viper.benchmark import execute_benchmark
 from viper.local_store import LocalArtifactStore
 from viper.project_init import initialize_project
 from viper.protocol import (
@@ -34,6 +36,7 @@ from viper.protocol import (
     ArtifactPointer,
     ArtifactPointerRef,
     BaseSpec,
+    BenchmarkResult,
     BenchmarkSpec,
     BuildParams,
     BuildSpec,
@@ -61,6 +64,7 @@ from viper.protocol import (
     MetricSpec,
     ParameterModelRef,
     ReplicateSpec,
+    ResolvedRun,
     ResolvedRunRef,
     SingleFileArtifactSpec,
     StageArtifactRef,
@@ -71,8 +75,7 @@ from viper.protocol import (
     TrainVariantStageParams,
     VariantSpec,
 )
-from viper.runner import run as execute_run
-from viper.serialization import serialize_document
+from viper.serialization import parse_yaml_bytes, serialize_document
 
 ACQUISITION_RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAC"
 CANDIDATE_RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAD"
@@ -198,6 +201,19 @@ def _pointer_ref(commit: str, path: str) -> ArtifactPointerRef:
     )
 
 
+def _child_environment(root: Path) -> dict[str, str]:
+    """Expose generated source and this checkout to acceptance subprocesses."""
+    environment = os.environ.copy()
+    existing_python_path = environment.get("PYTHONPATH")
+    source_paths = os.pathsep.join((str(root / "src"), str(Path(__file__).parents[1])))
+    environment["PYTHONPATH"] = (
+        source_paths
+        if existing_python_path is None
+        else f"{source_paths}{os.pathsep}{existing_python_path}"
+    )
+    return environment
+
+
 def test_generated_project_executes_five_stage_benchmark(
     tmp_path: Path,
     http_source: tuple[str, int],
@@ -306,17 +322,33 @@ def test_generated_project_executes_five_stage_benchmark(
         source_commit=acquisition_source_commit,
         stages={"download": acquisition_download, "train": acquisition_train},
     )
-    acquisition_result = execute_run(root, acquisition_plan)
-    assert acquisition_result.resolved_run.status == "succeeded"
+    child_environment = _child_environment(root)
+    subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "viper.cli",
+            "--json",
+            "run",
+            str(acquisition_plan),
+            "--repository-root",
+            str(root),
+        ),
+        cwd=root,
+        env=child_environment,
+        check=True,
+        capture_output=True,
+    )
+    acquisition_result_path = root / acquisition_root / "resolved.yaml"
+    acquisition_result = ResolvedRun.model_validate(
+        parse_yaml_bytes(acquisition_result_path.read_bytes())
+    )
+    assert acquisition_result.status == "succeeded"
 
     store = LocalArtifactStore(root)
-    resolved_run_raw = acquisition_result.resolved_run_path.read_bytes()
+    resolved_run_raw = acquisition_result_path.read_bytes()
     resolved_run_file = store.resolved_files(
-        {
-            acquisition_result.resolved_run_path.relative_to(root).as_posix(): (
-                resolved_run_raw
-            )
-        }
+        {acquisition_result_path.relative_to(root).as_posix(): resolved_run_raw}
     )[0]
     producer = ResolvedRunRef.model_validate(resolved_run_file.model_dump())
     evaluation_pointer_path = "inputs/datasets/starter/evaluation.pointer.yaml"
@@ -553,14 +585,50 @@ def test_generated_project_executes_five_stage_benchmark(
             "evaluate": candidate_evaluate,
         },
     )
-    candidate_result = execute_run(root, candidate_plan)
-    benchmark_result = execute_benchmark(
-        root,
-        candidate_result.resolved_run_path,
-        benchmark_path,
+    subprocess.run(
+        (
+            sys.executable,
+            "train.py",
+            "--run",
+            str(candidate_plan),
+            "--stage",
+            "train",
+            "--repository-root",
+            str(root),
+        ),
+        cwd=root,
+        env=child_environment,
+        check=True,
+        capture_output=True,
+    )
+    candidate_result_path = root / candidate_root / "resolved.yaml"
+    candidate_result = ResolvedRun.model_validate(
+        parse_yaml_bytes(candidate_result_path.read_bytes())
+    )
+    subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "viper.cli",
+            "--json",
+            "execute-benchmark",
+            str(candidate_result_path),
+            str(benchmark_path),
+            "--repository-root",
+            str(root),
+        ),
+        cwd=root,
+        env=child_environment,
+        check=True,
+        capture_output=True,
+    )
+    benchmark_result = BenchmarkResult.model_validate(
+        parse_yaml_bytes(
+            (candidate_result_path.parent / "benchmark.result.yaml").read_bytes()
+        )
     )
 
-    assert candidate_result.resolved_run.status == "succeeded"
-    assert benchmark_result.result.status == "passed"
-    assert len(benchmark_result.result.artifacts) == 2
-    assert len(benchmark_result.result.metrics) == 1
+    assert candidate_result.status == "succeeded"
+    assert benchmark_result.status == "passed"
+    assert len(benchmark_result.artifacts) == 2
+    assert len(benchmark_result.metrics) == 1

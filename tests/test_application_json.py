@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from pydantic import HttpUrl
 
 from viper.application import (
     CapabilitiesRequest,
@@ -46,6 +47,24 @@ def test_failure_json_matches_origin_golden_document(
         }
     )
 
-    assert result_json_bytes(failure) == (
-        GOLDEN_ROOT / f"failure.{origin}.json"
-    ).read_bytes()
+    assert (
+        result_json_bytes(failure)
+        == (GOLDEN_ROOT / f"failure.{origin}.json").read_bytes()
+    )
+
+
+def test_public_json_serializes_validated_urls_as_strings() -> None:
+    """Represent a protocol URL through its canonical text form."""
+    failure = ViperFailure(
+        operation="run",
+        origin="application",
+        code="retrieval_failed",
+        message="retrieval failed",
+        details={
+            "repository": HttpUrl("https://github.com/example/project"),
+        },
+    )
+
+    assert b'"repository":"https://github.com/example/project"' in (
+        result_json_bytes(failure)
+    )

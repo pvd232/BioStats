@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 import yaml
 from pydantic import (
+    AnyUrl,
     BaseModel,
     ConfigDict,
     Field,
@@ -1179,6 +1180,8 @@ def result_json_bytes(result: ApplicationModel) -> bytes:
             return normalize(value.model_dump(mode="python"))
         if isinstance(value, Path):
             return value.as_posix()
+        if isinstance(value, AnyUrl):
+            return str(value)
         if isinstance(value, datetime):
             if value.tzinfo is None:
                 raise ValueError("public datetimes must include a timezone")

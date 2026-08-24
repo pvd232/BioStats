@@ -206,6 +206,20 @@ source identity.
 A benchmark governs one evaluation contract across candidate run plans and
 requires an independently executed confirmation.
 """,
+        "train.py": f'''"""Run one frozen project plan."""
+
+from {package}.stages.train import train
+from viper import run
+
+
+def main() -> None:
+    """Execute the complete plan selected by the command-line arguments."""
+    run(train)
+
+
+if __name__ == "__main__":
+    main()
+''',
         "tests/test_stage_definitions.py": (
             f'''"""Verify generated stages expose their VIPER definitions."""
 
