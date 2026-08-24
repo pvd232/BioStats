@@ -12,6 +12,7 @@ superseded implementations live in the [archive](../archive/).
 | [PUBLICATION_TODO.md](PUBLICATION_TODO.md) | Remaining implementation and release work |
 | [VERSIONING.md](VERSIONING.md) | Package and serialized-schema versioning policy |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Required local development environment |
+| [GETTING_STARTED.md](GETTING_STARTED.md) | Installed project, execution, retry, benchmark, and GCE guide |
 | [contracts/](contracts/README.md) | Implementation contracts that connect release claims to code, evidence, verifier rules, and acceptance tests |
 
 ## Supporting explanations

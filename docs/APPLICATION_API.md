@@ -156,14 +156,14 @@ retry(request: RetryRequest) -> RetrySuccess
 
 | Request field | Type | Meaning |
 | --- | --- | --- |
-| `resolved_run` | `Path` | Terminal result containing the immutable earlier attempt references |
+| `run_spec` | `Path` | Frozen plan whose terminal result is failed or cancelled |
 | `repository_root` | `Path` | Repository containing the same frozen run plan |
 | `timeout_seconds` | positive `float` or `None` | Per-stage process deadline |
 
-The coordinator verifies the terminal result, retrieves its frozen `RunSpec`,
-requires `status="failed"` or `status="cancelled"`, allocates the next attempt
-ID, and executes the same plan. The result contains the new attempt reference,
-the new terminal run path, and the new journal path.
+The coordinator loads the canonical terminal result beside `run_spec`, requires
+`status="failed"` or `status="cancelled"`, allocates the next attempt ID, and
+executes the same plan. The result contains the new attempt ID, canonical
+attempt path, terminal run path, and journal path.
 
 Expected errors: `execution_failed`, `verification_failed`, `invalid_document`,
 `not_found`, `write_conflict`, `io_failed`.

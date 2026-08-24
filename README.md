@@ -14,6 +14,7 @@ both named `viper`.
 |---|---|---|
 | [v3 protocol](docs/ProvenanceS1_v3.md) | Defines the active formal and protocol contract | Sections 1–23 |
 | [application API](docs/APPLICATION_API.md) | Defines the typed Python, CLI, and agent-facing operation contract | Operations, parameters, results, errors, and discovery |
+| [getting started](docs/GETTING_STARTED.md) | Shows the installed project, stage, run, retry, benchmark, and GCE path | `viper init`, decorators, Python execution, and CLI execution |
 | [implementation contracts](docs/contracts/README.md) | Defines each release claim from declaration through acceptance | Parameter delivery, HTTP retrieval, metrics, artifacts, attempts, benchmarks, cloud execution, and packaging |
 | [publication checklist](docs/PUBLICATION_TODO.md) | Tracks implementation and release work | Protocol, runner, package, and distribution tasks |
 | [versioning policy](docs/VERSIONING.md) | Separates software releases from serialized document schemas | Semantic package versions and document `schema_version` values |
@@ -126,8 +127,8 @@ benchmark data from entering a training stage.
   stage and run `spec.yaml` files.
 - `execute_stage_process(...)` verifies the frozen stage-spec bytes, invokes
   the canonical command, and records every produced artifact file.
-- `preflight_local_plan(repository_root, run_spec_path)` checks the complete
-  local plan and returns every failed check in one result.
+- `preflight_plan(repository_root, run_spec_path)` checks the complete plan on
+  the active host and returns every applicable named check.
 - `run(repository_root, run_spec_path)` executes every stage, publishes
   immutable stage results, writes the terminal `resolved.yaml`, and verifies
   the completed run.
@@ -156,9 +157,9 @@ reproducibility controls, invokes each stage through the VIPER runtime
 bootstrap, materializes declared inputs, publishes immutable results, and runs
 the complete verifier before returning success.
 
-## Approved 0.1 execution interface
+## Python execution interface
 
-Project code will declare stage callables with VIPER decorators and execute them
+Project code declares stage callables with VIPER decorators and executes them
 through ordinary Python:
 
 ```python
@@ -207,10 +208,9 @@ rejection.
 
 ## Current boundaries
 
-- `LocalEnvironmentSpec` powers the implemented trusted-local runner.
-- `GCEEnvironmentSpec` defines the in-place cloud environment contract.
-  Single-host GCE observation and execution remain a 0.1 release task; OCI
-  confinement follows as stable hardening.
+- `LocalEnvironmentSpec` and `GCEEnvironmentSpec` use the same in-place runner.
+  GCE execution records the immutable provisioning image, machine type, CPU,
+  CUDA backend, lockfile, and Python environment.
 - Every internal stage binds its versioned JSON parameters to an exact
   project-owned Pydantic class. VIPER validates the class and values during
   plan freezing, preflight, and execution.
@@ -228,8 +228,6 @@ rejection.
 - Artifact loaders execute Python from the Git commit named by `RunSpec.source`.
   Verification therefore accepts only run sources trusted to execute in the
   verifier process.
-- The trusted-local runner publishes successful and failed attempts, preserves
-  completed-stage evidence, and retries the same frozen plan through
-  `viper.run(stage_callable)`, `viper run`, or `viper retry`. Remaining VIPER
-  0.1 work includes immutable attempt references, direct cancellation and
-  preemption tests, and in-place GCE acceptance.
+- The runner publishes successful, failed, cancelled, and preempted attempts,
+  preserves completed-stage evidence, and retries the same frozen plan through
+  `viper.run(stage_callable)`, `viper run`, or `viper retry`.

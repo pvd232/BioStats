@@ -604,23 +604,23 @@ python -m pytest tests/test_runtime.py tests/test_cloud_execution.py \
 
 ### Application and CLI
 
-- [ ] Freeze stable error codes for request, retrieval, conflict, execution,
+- [x] Freeze stable error codes for request, retrieval, conflict, execution,
   verification, publication, cancellation, and internal failures.
-- [ ] Apply the approved redaction policy to serialized failures.
-- [ ] Canonicalize paths, UTC datetimes, bytes, sets, and mappings in JSON
+- [x] Apply the approved redaction policy to serialized failures.
+- [x] Canonicalize paths, UTC datetimes, bytes, sets, and mappings in JSON
   results.
-- [ ] Add golden JSON fixtures for every public success and failure family.
-- [ ] Route warnings into JSON result models.
+- [x] Add golden JSON fixtures for every public success and failure family.
+- [x] Route warnings into JSON result models.
 - [ ] Capture output and exit status for every CLI command in acceptance tests.
-- [ ] Freeze one `PreflightCheckCode` for every release-gated preflight rule.
-- [ ] Freeze the operation, schema, capability, decorator, context, and helper
+- [x] Freeze one `PreflightCheckCode` for every release-gated preflight rule.
+- [x] Freeze the operation, schema, capability, decorator, context, and helper
   imports listed in `PUBLIC_API.md`.
-- [ ] Include `retry`, `execute_benchmark`, and `init_project` in application
+- [x] Include `retry`, `execute_benchmark`, and `init_project` in application
   dispatch, CLI dispatch, schema discovery, and capability discovery.
 
 ### Project scaffold and guides
 
-- [ ] Implement `viper init PATH --package PROJECT_PACKAGE` for an absent or
+- [x] Implement `viper init PATH --package PROJECT_PACKAGE` for an absent or
   empty target directory.
 - [ ] Generate one five-stage example whose repository-relative spec paths
   work with any project package name and directory layout:
@@ -633,7 +633,7 @@ python -m pytest tests/test_runtime.py tests/test_cloud_execution.py \
   artifact loaders, one experiment, one benchmark, and focused project tests.
 - [ ] Make the generated project freeze, preflight, run, benchmark, and verify
   immediately after creation.
-- [ ] Add concise guides for stage callables, parameter models, HTTP downloads,
+- [x] Add concise guides for stage callables, parameter models, HTTP downloads,
   metrics, artifact loaders, retries, benchmarks, and GCE execution.
 - [ ] Reconcile README, protocol, application API, public API, contract index,
   examples, and this checklist.
@@ -657,16 +657,16 @@ python -m pytest tests/test_application.py tests/test_application_json.py \
 
 - [ ] **Owner input:** select and add the package license.
 - [ ] **Owner input:** confirm author names and contact metadata.
-- [ ] Confirm the repository and documentation project URLs.
-- [ ] Set the distribution version to `0.1.0a1`.
-- [ ] Confirm classifiers and supported Python versions against the tested CI
+- [x] Confirm the repository and documentation project URLs.
+- [x] Set the distribution version to `0.1.0a1`.
+- [x] Confirm classifiers and supported Python versions against the tested CI
   matrix.
 
 ### Deterministic release gate
 
 - [ ] Run the repository gate from a clean checkout.
-- [ ] Build the source distribution and wheel.
-- [ ] Run `twine check` on both distributions.
+- [x] Build the source distribution and wheel.
+- [x] Run `twine check` on both distributions.
 - [ ] Install the wheel into clean Python 3.11, 3.12, 3.13, and 3.14
   environments.
 - [ ] Run every public import, schema, capability, CLI help, and JSON smoke test

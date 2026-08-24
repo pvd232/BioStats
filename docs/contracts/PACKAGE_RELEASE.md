@@ -15,10 +15,12 @@ and receive equivalent verified results outside the source checkout.
 
 ## Current gap
 
-The package builds and passes installed-wheel smoke checks. The release metadata
-still needs its final license, authors, project URLs, and pre-release version.
-Candidate-wheel execution of the complete user-project path and TestPyPI
-publication remain pending.
+The package builds as `0.1.0a1`, both distributions pass `twine check`, and the
+application exposes project initialization. The release metadata still needs
+its final license and authors. The generated project exercises every decorated
+stage kind; its complete frozen-plan and benchmark execution gate remains open.
+Clean-interpreter validation, final candidate-wheel GCE execution, and
+TestPyPI publication also remain pending.
 
 ## Public surface
 
