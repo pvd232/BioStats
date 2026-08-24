@@ -637,7 +637,7 @@ python -m pytest tests/test_runtime.py tests/test_cloud_execution.py \
   without editing any generated implementation file.
 - [x] Add concise guides for stage callables, parameter models, HTTP downloads,
   metrics, artifact loaders, retries, benchmarks, and GCE execution.
-- [ ] Reconcile README, protocol, application API, public API, contract index,
+- [x] Reconcile README, protocol, application API, public API, contract index,
   examples, and this checklist.
 
 **Focused gate**

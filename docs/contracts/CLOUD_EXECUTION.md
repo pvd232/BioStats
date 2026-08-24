@@ -2,9 +2,9 @@
 
 ## Status
 
-GCE environment declarations and resolved host models are implemented. In-place
-execution on a pre-provisioned GCE instance and immutable provisioning-source
-identity are approved for VIPER 0.1.
+Implemented for VIPER 0.1. The runner executes frozen plans on a
+pre-provisioned GCE instance, records the immutable provisioning source and
+realized runtime, and verifies both against the effective stage environment.
 
 ## Required claim
 
@@ -12,23 +12,20 @@ VIPER executes a frozen run on the host where the user invokes it and verifies
 that each realized stage environment satisfies the effective
 `GCEEnvironmentSpec`.
 
-## Current gap
+## Implemented path
 
-[`GCEEnvironmentSpec`](../../viper/protocol.py),
-[`ResolvedGCEEnvironment`](../../viper/protocol.py), and
-[`GCEHostContext`](../../viper/protocol.py) define the requested and realized GCE
-state. [`run()`](../../viper/runner.py) accepts only
-`LocalEnvironmentSpec`. [`observe_local_execution()`](../../viper/runtime.py)
-always records `LocalHostContext` with a CPU backend.
+[`GCEEnvironmentSpec`](../../viper/protocol.py) fixes the requested host,
+provisioning source, compute backend, lockfile, and installed Python
+environment. [`observe_execution()`](../../viper/runtime.py) selects the local
+or GCE observer from that effective environment. The GCE observer constructs
+[`GCEHostContext`](../../viper/protocol.py), the CPU context, the selected CPU or
+CUDA backend context, and the numerical runtime context.
 
-The current runner therefore rejects a valid GCE plan before stage execution.
-The runtime observer also lacks the GCE and CUDA evidence required to construct
-the corresponding resolved records.
-
-`LocalEnvironmentSpec.compute` currently accepts only `CPUComputeSpec`. The
-[process-startup contract](PROCESS_STARTUP.md) now owns the migration to the
-existing `ComputeSpec` union and the local CUDA observer. Cloud execution reuses
-that compute path after adding GCE host observation.
+[`run()`](../../viper/runner.py) resolves each stage's effective environment,
+launches the stage on the active host, and stores
+[`ResolvedGCEEnvironment`](../../viper/protocol.py) with the observed execution
+context. [`verify_run_result()`](../../viper/verifier.py) checks the complete
+requested, resolved, and observed relationship before returning success.
 
 GCE supports two provisioning sources used by this project. A VM created from
 a boot image exposes that source through `instance/image`. A VM restored from a
@@ -199,17 +196,17 @@ to durable object storage while preserving the execution contract.
 
 ## Propagation
 
-| Surface | Required change |
+| Surface | Implemented mechanism |
 |---|---|
-| Protocol | Add `GCEProvisioningRef` and `PythonEnvironmentSpec`; consume the `ComputeSpec` startup contract for GCE stages. |
-| Coordinator | Replace the local-environment gate with selection of the effective environment for each stage. |
-| Preflight | Accept `LocalEnvironmentSpec` and `GCEEnvironmentSpec`; check the active host against the selected kind. |
-| Runtime | Reuse the process-startup compute observer and add the GCE host observer. |
-| Application | Expose one `run` operation for execution on the active host. |
-| Python interface | Route `viper.run(stage_callable)` through the same coordinator and process-startup contract. |
-| CLI | Route `viper run` through the application `run` operation. |
-| Verification | Apply the eight checks above before returning a successful run result. |
-| Tests | Exercise local CPU, local CUDA when available, deterministic GCE fixtures, and one live GCE smoke profile. |
+| Protocol | `GCEProvisioningRef`, `PythonEnvironmentSpec`, and `ComputeSpec` define the requested environment. |
+| Coordinator | Effective-environment selection governs each stage. |
+| Preflight | Local and GCE plans are checked against the active host kind. |
+| Runtime | The shared compute observer and GCE host observer produce the realized context. |
+| Application | One `run` operation executes on the active host. |
+| Python interface | `viper.run(stage_callable)` uses the shared coordinator and process-startup contract. |
+| CLI | `viper run` calls the application `run` operation. |
+| Verification | Eight named checks establish the completed environment relationship. |
+| Tests | Local CPU, local CUDA, deterministic GCE, and live GCE cases exercise the contract. |
 
 ## Acceptance case
 
@@ -244,13 +241,13 @@ OCI confinement supplies filesystem and network enforcement in the stable
 hardening release. Distributed execution and durable remote publication receive
 separate contracts when their first implementations enter scope.
 
-## Implementation order
+## Completed implementation sequence
 
-1. Replace the GCE image field with immutable provisioning-source identity.
-2. Use the host-neutral `run` operation for complete-run coordination.
-3. Generalize preflight and the coordinator across local and GCE environments.
-4. Reuse the process-startup compute observer and implement GCE host and
-   provisioning-source observation.
-5. Apply the environment verification rules to every completed stage.
-6. Add deterministic local and GCE coverage.
-7. Run the installed-wheel acceptance project on the advertised GCE profile.
+1. Model immutable boot-image and machine-image identities.
+2. Route Python and CLI execution through the host-neutral `run` operation.
+3. Resolve the effective environment during preflight and stage execution.
+4. Observe the GCE host, provisioning source, CPU, CUDA backend, and numerical
+   runtime.
+5. Verify each completed stage against its effective environment.
+6. Exercise deterministic local and GCE cases.
+7. Install the wheel and run the maintained acceptance case on the L4 profile.

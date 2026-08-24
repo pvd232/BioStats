@@ -5,8 +5,8 @@
 The mechanical audit passes. All ten contracts pass the schema, value-lifecycle,
 traceability, counterexample, and propagation gates. Parameter models, stage
 invocation, process startup, HTTP retrieval, artifact validation, metric
-provenance, attempt execution, and benchmark execution are implemented. Cloud
-execution and package release are approved for implementation.
+provenance, attempt execution, benchmark execution, and cloud execution are
+implemented. Package release remains approved for implementation.
 
 ## Reviewed scope
 
@@ -14,8 +14,8 @@ The review covers the ten contracts indexed by [README.md](README.md), the
 [formal protocol](../ProvenanceS1_v3.md), the
 [application API](../APPLICATION_API.md), the [public API](../PUBLIC_API.md),
 the [master checklist](../PUBLICATION_TODO.md), the active `viper` package, and
-the test suite. The inspected baseline commit is `eed13b7`. The audit result
-applies to the complete document set in the Git commit containing this report.
+the test suite. The audit result applies to the complete document set in the
+Git commit containing this report.
 
 Historical material under `archive/` and reference material under `prior/`
 remain outside the active design state.
@@ -28,9 +28,9 @@ remain outside the active design state.
 |---|---:|
 | Active contracts | 10 |
 | Python blocks parsed | 73 |
-| Repeated classes compared | 50 |
-| Repeated aliases compared | 7 |
-| Implemented Pydantic schemas generated | 134 |
+| Repeated classes compared | 51 |
+| Repeated aliases compared | 8 |
+| Implemented Pydantic schemas generated | 136 |
 | Named verifier rules traced to the checklist | 63 |
 | Deterministic result | Pass |
 
@@ -111,13 +111,14 @@ constraints expressed through field declarations, and repeated aliases.
 ## Propagation findings
 
 The contract layer, formal protocol, application API, public API, checklist,
-implementation, verifier, and tests agree for Phases 1 through 6. The remaining
-implementation work appears as unchecked items in the master checklist:
+implementation, verifier, and tests agree through Phase 8. The remaining
+release work appears as unchecked items in the master checklist:
 
 | Approved surface | Current implementation |
 |---|---|
-| GCE execution | Local-environment gate and CPU observer |
-| Project scaffold and release | Build smoke tests precede the complete installed-project path |
+| Package metadata | License and author values require owner selection. |
+| Release validation | The final candidate needs a clean-checkout gate, exact-wheel local and GCE acceptance, remote CI, and a release report. |
+| Publication | TestPyPI, PyPI, and signed-tag operations require owner credentials and authorization. |
 
 ## Contract decisions
 
@@ -131,7 +132,7 @@ implementation work appears as unchecked items in the master checklist:
 | Metric provenance | Implemented |
 | Attempt execution | Implemented |
 | Benchmark execution | Implemented |
-| Cloud execution | Approved |
+| Cloud execution | Implemented |
 | Package release | Approved |
 
 ## Validation

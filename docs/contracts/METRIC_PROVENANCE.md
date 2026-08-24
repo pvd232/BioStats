@@ -16,7 +16,7 @@ VIPER verifies that one metric value came from the frozen metric
 implementation, its declared dependencies, its frozen parameters, and its
 effective execution environment.
 
-## Current gap
+## Implemented path
 
 `MetricSpec` identifies exact implementation bytes and declares each permitted
 dependency. The runner and verifier construct

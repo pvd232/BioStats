@@ -30,7 +30,7 @@ Each contract uses one status:
 | [Artifact validation](ARTIFACT_VALIDATION.md) | Implemented | File identity, loadability, and reserved semantic validation |
 | [Attempt execution](ATTEMPT_EXECUTION.md) | Implemented | Failed attempts, successive attempt IDs, and retry |
 | [Benchmark execution](BENCHMARK_EXECUTION.md) | Implemented | Independent confirmation produced from a frozen run plan |
-| [Cloud execution](CLOUD_EXECUTION.md) | Approved | Execution on a pre-provisioned GCE instance |
+| [Cloud execution](CLOUD_EXECUTION.md) | Implemented | Execution on a pre-provisioned GCE instance |
 | [Package release](PACKAGE_RELEASE.md) | Approved | Installed-distribution and publication acceptance |
 
 The [master execution checklist](../PUBLICATION_TODO.md) orders these contracts. The

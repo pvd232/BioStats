@@ -11,17 +11,16 @@ implemented.
 VIPER reports the strongest artifact guarantee established by the available
 evidence: representation identity, loadability, or reserved semantic validity.
 
-## Current gap
+## Implemented path
 
 [`verify_snapshot_artifact()`](../../viper/verifier.py) verifies every resolved
 file. [`load_verified_artifact()`](../../viper/verifier.py) invokes the declared
 loader and returns its value. The same function applies `ResumeState` validation
 only when the artifact name is `resume_state`.
 
-Loader success currently uses reconstruction language for generic artifacts.
-The generic path has verified bytes and a successful loader return. Those
-facts establish loadability. Semantic equality requires an expected value or a
-protocol-owned validator.
+Generic loader success establishes loadability after byte verification.
+Reserved artifact names invoke protocol-owned semantic validators when the
+protocol defines an expected value.
 
 ## Contract models
 
@@ -62,14 +61,14 @@ Bundle minimality remains an authoring decision based on actual consumer needs.
 
 ## Propagation
 
-| Surface | Required change |
+| Surface | Implemented mechanism |
 |---|---|
-| Protocol | Replace loader paths with `ArtifactLoaderRef`. |
-| Stage publication | Preserve complete bundle enumeration. |
-| Worker | Invoke loaders through a dedicated trusted-local worker process. |
-| Verification | Separate representation, loadability, and semantic checks. |
-| Errors | Name the failed guarantee level. |
-| Tests | Cover generic loadability, reserved semantic validation, same-length tampering, missing members, and extra members. |
+| Protocol | `ArtifactLoaderRef` fixes loader identity. |
+| Stage publication | Complete bundle enumeration fixes every member. |
+| Worker | A dedicated trusted-local worker invokes the selected loader. |
+| Verification | Separate checks establish representation, loadability, and semantic validity. |
+| Errors | Each failure names its guarantee level. |
+| Tests | Generic loadability, reserved semantic validation, same-length tampering, missing members, and extra members exercise the contract. |
 
 ## Acceptance case
 
@@ -80,7 +79,7 @@ both files. The frozen loader accepts the materialized directory, so
 The rejection case replaces one member with different bytes of the same
 length. `artifact.representation` fails on SHA-256.
 
-## Implementation order
+## Completed implementation sequence
 
 1. Add `ArtifactLoaderRef` and migrate authored specs.
 2. Align verifier results and errors with the three guarantee levels.
