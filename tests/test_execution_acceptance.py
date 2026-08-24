@@ -11,6 +11,7 @@ from tests.fixtures import (
     builtin_http_transport,
     http_policy,
     http_request,
+    python_environment,
 )
 from viper.local_store import LocalArtifactStore
 from viper.paths import retrieval_body_path
@@ -120,6 +121,9 @@ class StageExecutionAcceptanceTests(unittest.TestCase):
                     },
                     "environment": {
                         "kind": "local",
+                        "python_environment": python_environment().model_dump(
+                            mode="json"
+                        ),
                         "lockfile": {
                             "kind": "git",
                             "repository": "https://github.com/example/project",
