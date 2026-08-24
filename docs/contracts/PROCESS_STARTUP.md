@@ -26,9 +26,10 @@ The public package supplies the decorated callable and
 The verifier applies `startup.backend` to backend kind, CUDA device count, and
 CUDA model.
 
-The remaining acceptance gate runs one CPU stage and one single-device CUDA
-stage on the L4 host. That test confirms the observed backend against real GPU
-hardware.
+The designated L4 acceptance gate ran one CPU stage and one single-device CUDA
+stage. The CPU stage recorded `CPUBackendContext`. The CUDA stage performed a
+CUDA calculation and recorded the matching `CUDABackendContext` for one NVIDIA
+L4. The complete Phase 1 VM gate passed 33 tests.
 
 ## Project interface
 

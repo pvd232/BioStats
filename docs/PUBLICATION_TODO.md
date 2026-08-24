@@ -98,7 +98,7 @@ Every implementation contract appears once in the execution sequence.
 |---|---|---|---|
 | [Parameter models](contracts/PARAMETER_MODELS.md) | Implemented | Regression coverage in Phases 1 and 2 | The exact project class validates the frozen parameter mapping. Phase 1 owns typed delivery. |
 | [Stage invocation](contracts/STAGE_INVOCATION.md) | Implemented | Phase 1 | The frozen callable receives typed parameters and declared paths. Python and CLI execution share one verified coordinator path. |
-| [Process startup](contracts/PROCESS_STARTUP.md) | In progress | Phase 1 | The controlled child records its startup environment, applied controls, initialized generators, delivered generators, and observed runtime. CPU-on-GPU-host and one-L4 acceptance remain open. |
+| [Process startup](contracts/PROCESS_STARTUP.md) | Implemented | Phase 1 | The controlled child records its startup environment, applied controls, initialized generators, delivered generators, and observed runtime. The designated L4 acceptance gate passed for CPU and CUDA stages. |
 | [HTTP retrieval](contracts/HTTP_RETRIEVAL.md) | Implemented | Phase 2 | Each declared input binds its frozen request, expected body identity, selected transport, terminal response, external executable identity, and delivered context handle. HTTPX and project transports pass one conformance suite. |
 | [Artifact validation](contracts/ARTIFACT_VALIDATION.md) | Implemented | Phase 3 | The verifier reports representation identity, loadability, or reserved semantic validity at its established level. |
 | [Metric provenance](contracts/METRIC_PROVENANCE.md) | Implemented | Phase 4 | Recomputed metrics bind exact dependencies and two run-owned worker executions; live metrics bind a controlled metric handle and measurement sink. |
@@ -255,7 +255,7 @@ python -m pytest tests/test_contract_audit.py -q
   their typed parameters and declared paths.
 - [x] Prove that `python train.py --run RUN --stage train` and `viper run RUN`
   produce terminal results accepted by the same verifier.
-- [ ] Prove that a CPU stage on a GPU-capable host records
+- [x] Prove that a CPU stage on a GPU-capable host records
   `CPUBackendContext`, while a one-L4 CUDA stage records the matching
   `CUDABackendContext`.
 - [x] Reject a changed callable, parameter mapping, context binding, and second

@@ -3,8 +3,10 @@
 ## Decision
 
 The mechanical audit passes. All ten contracts pass the schema, value-lifecycle,
-traceability, counterexample, and propagation gates. Parameter models are
-implemented. The other nine contracts are approved for implementation.
+traceability, counterexample, and propagation gates. Parameter models, stage
+invocation, process startup, HTTP retrieval, artifact validation, metric
+provenance, and attempt execution are implemented. Benchmark execution, cloud
+execution, and package release are approved for implementation.
 
 ## Reviewed scope
 
@@ -12,7 +14,7 @@ The review covers the ten contracts indexed by [README.md](README.md), the
 [formal protocol](../ProvenanceS1_v3.md), the
 [application API](../APPLICATION_API.md), the [public API](../PUBLIC_API.md),
 the [master checklist](../PUBLICATION_TODO.md), the active `viper` package, and
-the test suite. The inspected baseline commit is `6228ee6`. The audit result
+the test suite. The inspected baseline commit is `3397f7c`. The audit result
 applies to the complete document set in the Git commit containing this report.
 
 Historical material under `archive/` and reference material under `prior/`
@@ -28,7 +30,7 @@ remain outside the active design state.
 | Python blocks parsed | 73 |
 | Repeated classes compared | 50 |
 | Repeated aliases compared | 7 |
-| Implemented Pydantic schemas generated | 104 |
+| Implemented Pydantic schemas generated | 132 |
 | Named verifier rules traced to the checklist | 63 |
 | Deterministic result | Pass |
 
@@ -107,21 +109,12 @@ constraints expressed through field declarations, and repeated aliases.
 
 ## Propagation findings
 
-The approved contract layer and formal protocol now agree. The application API,
-public API, checklist, and repository layout use the same stage, HTTP, metric,
-attempt, benchmark, and cloud concepts.
+The contract layer, formal protocol, application API, public API, checklist,
+implementation, verifier, and tests agree for Phases 1 through 5. The remaining
+implementation work appears as unchecked items in the master checklist:
 
-The active Python package still implements the earlier pre-release state. The
-missing classes and operations appear as unchecked work in the master
-checklist. This is expected implementation lag:
-
-| Planned surface | Current implementation |
+| Approved surface | Current implementation |
 |---|---|
-| Stage callables and typed contexts | Script path and stage-spec argument |
-| Host-neutral run and retry | `run()` and attempt `1` |
-| Frozen HTTP retrieval | `RemoteFileRef` plus project download script |
-| Dedicated metric workers | In-process post-stage invocation and recomputation |
-| Durable failed attempts | Success-only terminal construction |
 | Benchmark execution | Benchmark verification only |
 | GCE execution | Local-environment gate and CPU observer |
 | Project scaffold and release | Build smoke tests precede the complete installed-project path |
@@ -131,12 +124,12 @@ checklist. This is expected implementation lag:
 | Contract | Decision |
 |---|---|
 | Parameter models | Implemented |
-| Stage invocation | Approved |
-| Process startup | Approved |
-| HTTP retrieval | Approved |
-| Artifact validation | Approved |
-| Metric provenance | Approved |
-| Attempt execution | Approved |
+| Stage invocation | Implemented |
+| Process startup | Implemented |
+| HTTP retrieval | Implemented |
+| Artifact validation | Implemented |
+| Metric provenance | Implemented |
+| Attempt execution | Implemented |
 | Benchmark execution | Approved |
 | Cloud execution | Approved |
 | Package release | Approved |

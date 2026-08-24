@@ -551,14 +551,11 @@ def test_signal_closes_attempt_with_active_stage_evidence(
         if reference.stored_at.path.endswith("train.stdout.log")
     )
     assert store.fetch(stdout_ref.stored_at) == b"blocking train started\n"
-    assert (
-        DurableJournal(
-            root / ".viper/workspaces" / RUN_ID / "attempt-1/control/journal.jsonl"
-        )
-        .latest()
-        .state
-        == "terminal"
-    )  # type: ignore[union-attr]
+    journal_entry = DurableJournal(
+        root / ".viper/workspaces" / RUN_ID / "attempt-1/control/journal.jsonl"
+    ).latest()
+    assert journal_entry is not None
+    assert journal_entry.state == "terminal"
     verified = verify_run_result(
         run,
         policy=VerificationPolicy(trusted_source_repositories=frozenset({REPOSITORY})),
