@@ -29,7 +29,7 @@ make check
 
 This gate runs Ruff, the Ruff formatter check, Pyright, and every test marked
 `unit` or `contract`. The current gate contains 165 tests and completed in
-42.77 seconds on the development machine on August 24, 2026.
+41.23 seconds on the development machine on August 24, 2026.
 
 Run the integration gate after changing process launch, the runner, the CLI,
 resume behavior, metric recomputation, or durable attempts:
@@ -54,6 +54,9 @@ host with:
 ```bash
 make check-live
 ```
+
+The release tier contains one generated-project acceptance test. That test
+completed in 144.20 seconds on the development machine.
 
 ## Test classification
 
