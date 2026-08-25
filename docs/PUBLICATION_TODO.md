@@ -664,7 +664,8 @@ python -m pytest tests/test_application.py tests/test_application_json.py \
 ### Package metadata
 
 - [ ] **Owner input:** select and add the package license.
-- [ ] **Owner input:** confirm author names and contact metadata.
+- [x] Record Peter Driscoll as package author and maintainer with the confirmed
+  publication email.
 - [x] Confirm the repository and documentation project URLs.
 - [x] Set the distribution version to `0.1.0a1`.
 - [x] Confirm classifiers and supported Python versions against the tested CI
