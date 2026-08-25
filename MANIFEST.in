@@ -1,5 +1,6 @@
 prune archive
 exclude viper_provenance.egg-info/*
+exclude docs/PUBLICATION_TODO.md
 include docs/ProvenanceS1_v3.md
 include docs/VERSIONING.md
 recursive-include examples/provenance *.yaml
