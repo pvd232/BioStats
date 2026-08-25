@@ -666,17 +666,17 @@ python -m pytest tests/test_application.py tests/test_application_json.py \
 
 ### Deterministic release gate
 
-- [x] Run the repository gate from a clean checkout at the current candidate.
+- [ ] Run the repository gate from a clean checkout at the current candidate.
 - [x] Build the source distribution and wheel.
 - [x] Run `twine check` on both distributions.
-- [x] Install the wheel into clean Python 3.11, 3.12, 3.13, and 3.14
+- [ ] Install the wheel into clean Python 3.11, 3.12, 3.13, and 3.14
   environments.
 - [x] Run every public import, schema, capability, CLI help, and JSON smoke test
   from the installed wheel.
 - [x] Create the scaffold outside the VIPER checkout and execute its complete
   local run and benchmark.
 - [ ] Complete the live GCE acceptance case from the same wheel.
-- [x] Require successful remote CI for the exact candidate commit.
+- [ ] Require successful remote CI for the exact candidate commit.
 - [x] Record every command, result, environment, and distribution digest in the
   release-candidate report.
 

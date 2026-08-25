@@ -2,10 +2,9 @@
 
 ## Status
 
-The parameter-namespace candidate passes the local repository, distribution,
-installed-wheel, and external generated-project gates under Python 3.14. It
-also passes the complete GitHub Actions matrix under Python 3.11–3.14. Live GCE
-acceptance remains pending for the exact wheel.
+The tiered-validation candidate passes the local repository, distribution,
+installed-wheel, and external generated-project gates under Python 3.14. Its
+redesigned Python 3.11–3.14 CI run and live GCE acceptance remain pending.
 
 ## Required claim
 
@@ -19,10 +18,10 @@ and receive equivalent verified results outside the source checkout.
 The exact local candidate distributions and their SHA-256 digests are recorded
 in the [release-candidate report](../releases/0.1.0a1.md). The generated source
 completed the acquisition, five-stage candidate, and benchmark-confirmation
-path from the installed wheel. The exact candidate passed the four-version CI
-matrix. Release requires a GCE result for the exact wheel, owner-selected
-license and author metadata, registry credentials, publication authorization,
-and the release-tag signing identity.
+path from the installed wheel. Release requires a four-version CI result and a
+GCE result for the exact candidate, owner-selected license and author metadata,
+registry credentials, publication authorization, and the release-tag signing
+identity.
 
 ## Public surface
 
