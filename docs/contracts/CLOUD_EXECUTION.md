@@ -30,7 +30,7 @@ requested, resolved, and observed relationship before returning success.
 GCE supports two provisioning sources used by this project. A VM created from
 a boot image exposes that source through `instance/image`. A VM restored from a
 machine image has an empty `instance/image` value because machine-image restore
-does not preserve `disks.sourceImage`. The provisioning contract must represent
+leaves `disks.sourceImage` empty. The provisioning contract must represent
 both sources: [Machine images](https://docs.cloud.google.com/compute/docs/machine-images),
 [machine-image restore limitations](https://docs.cloud.google.com/compute/docs/machine-images/create-machine-images#instance-and-disk-properties-not-supported-by-machine-image),
 and [VM metadata](https://docs.cloud.google.com/compute/docs/metadata/querying-metadata#querying).
@@ -120,8 +120,9 @@ and [Compute Engine `machineImages.get`](https://docs.cloud.google.com/compute/d
 
 The machine-image metadata keys form a provisioner attestation under the 0.1
 trusted-host boundary. They establish which immutable machine-image resource
-the provisioner selected. GCE does not persist a server-owned source-machine-
-image field on the resulting instance or restored disk.
+the provisioner selected. The resulting instance and restored disk expose
+their realized disk identity, so the provisioner supplies the source-machine-
+image identity through these keys.
 
 `GCEEnvironmentSpec.python_environment` stores the exact Python version and
 the sorted installed-distribution mapping selected by the author. VIPER exposes
@@ -222,14 +223,14 @@ installed distribution version and fails `gce.python`.
 
 ## Live acceptance evidence
 
-On 2026-08-24, the final candidate wheel executed on `viper-l4-live`. Its
+On 2026-08-25, the public 0.1.0a1 wheel executed on `mantra-g2-spot`. Its
 SHA-256 was
-`10f906d824c6017b8d0b452a6a62e48bfc6a168ff36630828b8277f63787576a`.
-Pytest imported VIPER from the wheel in the VM's `mantra` environment. Four
-live process-startup checks passed on one NVIDIA L4. The generated project then
-completed acquisition, the five-stage candidate, Python entrypoint execution,
+`7edbc6d36bf2d8226ddeab153411bfb531fbf79dd8d13979cc6fa2c188523fec`.
+Python 3.14.5 imported VIPER from the installed wheel. Six live process and
+stage checks passed on one NVIDIA L4 in 73.63 seconds. The generated project
+then completed acquisition, the five-stage candidate, Python entrypoint,
 benchmark confirmation, and verification under a frozen GCE environment in
-272.93 seconds. The worker recorded machine-image ID
+282.71 seconds. The worker recorded machine-image ID
 `4030260845309136958`, machine type `g2-standard-12`, the host and CPU context,
 and the installed Python environment.
 

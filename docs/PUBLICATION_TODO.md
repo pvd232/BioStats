@@ -105,7 +105,7 @@ Every implementation contract appears once in the execution sequence.
 | [Attempt execution](contracts/ATTEMPT_EXECUTION.md) | Implemented | Phase 5 | VIPER publishes canonical attempt documents, references them immutably, retries the same frozen plan, and closes real cancellation and preemption signals with active-stage evidence. |
 | [Benchmark execution](contracts/BENCHMARK_EXECUTION.md) | Implemented | Phase 6 | `execute_benchmark()` produces one independent confirmation and persists the artifact and metric comparison receipts accepted by `verify_benchmark()`. |
 | [Cloud execution](contracts/CLOUD_EXECUTION.md) | Implemented | Phase 7 | The installed wheel executes in place on GCE and verifies the host, backend, and exact Python environment. |
-| [Package release](contracts/PACKAGE_RELEASE.md) | Approved | Phases 8–10 | Clean installations complete the documented project path from TestPyPI and PyPI. |
+| [Package release](contracts/PACKAGE_RELEASE.md) | Implemented | Phases 8–10 | Clean installations complete the documented project path from TestPyPI and PyPI. |
 
 ## Implemented baseline
 
@@ -683,7 +683,7 @@ python -m pytest tests/test_application.py tests/test_application_json.py \
   from the installed wheel.
 - [x] Create the scaffold outside the VIPER checkout and execute its complete
   local run and benchmark.
-- [ ] Complete the live GCE acceptance case from the same wheel.
+- [x] Complete the live GCE acceptance case from the same wheel.
 - [x] Require successful remote CI for the exact candidate commit.
 - [x] Record every command, result, environment, and distribution digest in the
   release-candidate report.
@@ -704,27 +704,27 @@ those checks execute outside this repository environment.
 
 - [x] Add the dedicated Trusted Publishing workflow for TestPyPI and tagged
   PyPI releases.
-- [ ] **Owner input:** register `.github/workflows/release.yml` for the
+- [x] **Owner input:** register `.github/workflows/release.yml` for the
   `testpypi` and `pypi` GitHub environments in both package indexes.
 - [x] Register Peter Driscoll's existing ED25519 public key with GitHub as a
   signing key and configure this repository to sign release tags with it.
-- [ ] Create the signed tag `v0.1.0a1`, verify its signature, and push the tag.
-- [ ] Confirm that the release workflow accepts the tag signature and publishes
+- [x] Create the signed tag `v0.1.0a1`, verify its signature, and push the tag.
+- [x] Confirm that the release workflow accepts the tag signature and publishes
   the validated source distribution and wheel to TestPyPI.
-- [ ] Install `viper-provenance==0.1.0a1` from TestPyPI in a clean environment.
-- [ ] Repeat the scaffold, local execution, benchmark, verification, and public
+- [x] Install `viper-provenance==0.1.0a1` from TestPyPI in a clean environment.
+- [x] Repeat the scaffold, local execution, benchmark, verification, and public
   API smoke tests against the TestPyPI installation.
-- [ ] Confirm that the TestPyPI file digests equal the release-candidate
+- [x] Confirm that the TestPyPI file digests equal the release-candidate
   digests.
-- [ ] **Owner input:** approve the protected `pypi` environment after the
+- [x] **Owner input:** approve the protected `pypi` environment after the
   TestPyPI verification job succeeds.
-- [ ] Publish those exact files to PyPI.
-- [ ] Install `viper-provenance==0.1.0a1` from PyPI in a clean environment.
-- [ ] Repeat the installed-package smoke and complete example tests.
-- [ ] Publish the final release report with local, CI, GCE, TestPyPI, and PyPI
+- [x] Publish those exact files to PyPI.
+- [x] Install `viper-provenance==0.1.0a1` from PyPI in a clean environment.
+- [x] Repeat the installed-package smoke and complete example tests.
+- [x] Publish the final release report with local, CI, GCE, TestPyPI, and PyPI
   results.
-- [ ] Verify that `main`, `origin/main`, and the release tag identify the
-  validated release commit.
+- [x] Verify that `main` equals `origin/main` and that `v0.1.0a1` identifies the
+  validated source commit recorded in the release report.
 
 ## Deferred work
 

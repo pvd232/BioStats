@@ -6,7 +6,7 @@ The mechanical audit passes. All ten contracts pass the schema, value-lifecycle,
 traceability, counterexample, and propagation gates. Parameters, stage
 invocation, process startup, HTTP retrieval, artifact validation, metric
 provenance, attempt execution, benchmark execution, and cloud execution are
-implemented. Package release remains approved for implementation.
+implemented. Package release is implemented.
 
 ## Reviewed scope
 
@@ -133,7 +133,7 @@ release work appears as unchecked items in the master checklist:
 | Attempt execution | Implemented |
 | Benchmark execution | Implemented |
 | Cloud execution | Implemented |
-| Package release | Approved |
+| Package release | Implemented |
 
 ## Validation
 

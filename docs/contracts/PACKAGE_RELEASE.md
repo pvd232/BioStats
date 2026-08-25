@@ -2,9 +2,9 @@
 
 ## Status
 
-The tiered-validation candidate passes the local repository, distribution,
-installed-wheel, external generated-project, and redesigned Python 3.11–3.14
-CI gates. Live GCE acceptance remains pending.
+VIPER 0.1.0a1 passes the local repository, distribution, installed-wheel,
+external generated-project, Python 3.11–3.14 CI, and live GCE gates. PyPI and
+TestPyPI contain the validated distribution files.
 
 ## Required claim
 
@@ -13,15 +13,13 @@ CLI. A user can create or open a project, execute a decorated stage through
 ordinary Python, execute the same frozen plan through the installed command,
 and receive equivalent verified results outside the source checkout.
 
-## Current gap
+## Release result
 
-The exact local candidate distributions and their SHA-256 digests are recorded
-in the [release-candidate report](../releases/0.1.0a1.md). The generated source
-completed the acquisition, five-stage candidate, and benchmark-confirmation
-path from the installed wheel. The exact candidate passed the four-version CI
-gate. Release requires a GCE result for the exact candidate, owner-selected
-license and author metadata, trusted-publisher registration, production
-environment approval, and the release-tag signing identity.
+The [release report](../releases/0.1.0a1.md) records the source commit, signed
+tag, distribution digests, CI runs, registry checks, and live GCE result. Clean
+environments installed the indexed wheel from both package registries and
+completed the generated acquisition, five-stage candidate, benchmark
+confirmation, and terminal verification.
 
 ## Public surface
 

@@ -1,9 +1,8 @@
 # VIPER project briefing
 
-The next release action is to add the selected license and author metadata,
-register the trusted publishers, and push the signed `v0.1.0a1` tag. The
-release workflow publishes its files to TestPyPI and repeats the installed-package
-acceptance test from that registry.
+VIPER 0.1.0a1 is available from PyPI. The next project action is to use the
+public package in a real experiment and record the first interface problem that
+blocks or complicates that run.
 
 ## Why VIPER exists
 
@@ -52,13 +51,15 @@ checks its byte identity, and checks every declared relationship.
 
 ## Verified current position
 
-The release candidate has crossed its implementation and deployment gates.
+The public alpha has crossed its implementation, deployment, and publication
+gates.
 The repository marks the parameter, stage-invocation, startup, HTTP, metric,
-artifact, attempt, benchmark, and cloud contracts as implemented. The package
-release contract remains approved pending registry publication.
+artifact, attempt, benchmark, cloud, and package-release contracts as
+implemented.
 
 The exact candidate passed the complete repository suite under Python 3.14.6:
-218 tests passed, six hardware-gated tests were skipped, and 33 subtests passed.
+225 host-independent tests and 33 subtests passed. Six hardware-gated tests ran
+separately on the L4 host.
 The same commit passed GitHub Actions under Python 3.11 through 3.14. Clean
 environments for all four Python versions imported the built wheel from
 `site-packages` and passed the public-interface checks.
@@ -72,23 +73,17 @@ deleted after the gate; the approved machine image remains available. The
 [release-candidate report](releases/0.1.0a1.md) records the exact commit,
 distribution digests, commands, environments, and results.
 
-The release process is currently idle. The validated wheel and source archive
-remain local release-candidate files.
+PyPI and TestPyPI contain the same wheel and source archive. The signed tag
+`v0.1.0a1` identifies the validated source commit.
 
-## Remaining publication gate
+## Public release
 
-Public publication requires the repository owner to supply four values or
-authorizations in this order:
+Install the public alpha with:
 
-1. Add the selected package license and confirmed author metadata. Rebuild the
-   distributions because those files change package metadata.
-2. Register the TestPyPI and PyPI trusted publishers for
-   `.github/workflows/release.yml`.
-3. Push the signed `v0.1.0a1` tag. The workflow publishes and verifies the
-   indexed TestPyPI files.
-4. Approve the protected `pypi` environment. Repeat the installed
-   package checks from PyPI.
+```bash
+python -m pip install "viper-provenance==0.1.0a1"
+```
 
-The [publication checklist](PUBLICATION_TODO.md) owns the detailed release
-sequence. Completing that sequence converts the validated deployment candidate
-into an independently installable public alpha.
+The [release report](releases/0.1.0a1.md) records the complete validation and
+publication evidence. The [publication checklist](PUBLICATION_TODO.md) records
+every completed release obligation.

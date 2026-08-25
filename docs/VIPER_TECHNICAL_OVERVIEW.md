@@ -401,10 +401,9 @@ artifacts receive core semantic validation. A custom loader's scientific
 interpretation remains part of the trusted project implementation unless the
 protocol defines a corresponding semantic schema.
 
-The current release candidate is deployable from its validated wheel. Public
-installation from TestPyPI or PyPI awaits the owner actions listed in the
-[project briefing](PROJECT_BRIEFING.md) and
-[publication checklist](PUBLICATION_TODO.md).
+VIPER 0.1.0a1 is available from PyPI. The
+[release report](releases/0.1.0a1.md) records the signed source tag, published
+file identities, installed-package checks, and live GCE result.
 
 ## 13. Conclusion
 
