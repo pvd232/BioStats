@@ -706,8 +706,8 @@ those checks execute outside this repository environment.
   PyPI releases.
 - [ ] **Owner input:** register `.github/workflows/release.yml` for the
   `testpypi` and `pypi` GitHub environments in both package indexes.
-- [ ] **Owner input:** provide the release-tag signing identity and signing
-  configuration.
+- [x] Register Peter Driscoll's existing ED25519 public key with GitHub as a
+  signing key and configure this repository to sign release tags with it.
 - [ ] Create the signed tag `v0.1.0a1`, verify its signature, and push the tag.
 - [ ] Confirm that the release workflow accepts the tag signature and publishes
   the validated source distribution and wheel to TestPyPI.
