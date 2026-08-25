@@ -8,6 +8,8 @@ version = "0.1.0a1"
 description = "Reproducible execution and artifact provenance for computational experiments"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
     { name = "Peter Driscoll", email = "peterdriscoll27@gmail.com" },
 ]

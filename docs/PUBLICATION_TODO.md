@@ -663,7 +663,8 @@ python -m pytest tests/test_application.py tests/test_application_json.py \
 
 ### Package metadata
 
-- [ ] **Owner input:** select and add the package license.
+- [x] License the package under Apache License 2.0 and include the canonical
+  license text in each distribution.
 - [x] Record Peter Driscoll as package author and maintainer with the confirmed
   publication email.
 - [x] Confirm the repository and documentation project URLs.
