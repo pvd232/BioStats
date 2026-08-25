@@ -61,7 +61,22 @@ convention = "google"
 [tool.pytest.ini_options]
 pythonpath = [".", "examples/project/src"]
 markers = [
+    "unit: isolated behavior within one implementation boundary",
+    "contract: one public or cross-document contract with bounded collaborators",
+    "integration: execution across a process, runner, CLI, or durable-attempt boundary",
+    "release: complete generated-project or installed-distribution acceptance",
     "live_cuda: requires the designated host with one real CUDA device",
+    "domain_application: application API, CLI, project scaffold, or public imports",
+    "domain_artifacts: artifact loading and semantic validation",
+    "domain_authoring: plan construction and canonical authoring",
+    "domain_execution: stage, worker, runner, resume, benchmark, or host execution",
+    "domain_http: controlled HTTP retrieval",
+    "domain_metrics: metric declaration, execution, and verification",
+    "domain_parameters: project parameter identity and validation",
+    "domain_protocol: protocol models, serialization, and contract audit",
+    "domain_release: generated-project and distribution acceptance",
+    "domain_storage: local immutable storage",
+    "domain_verification: preflight, inspection, and provenance verification",
 ]
 
 [tool.setuptools]

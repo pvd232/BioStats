@@ -91,6 +91,12 @@ The release candidate must satisfy each check:
 | CI | The exact release commit passes every supported Python version. |
 | Release | The signed tag verifies against the release owner identity, and the PyPI files match the validated distributions. |
 
+The CI fast job runs lint, formatting, type checking, unit tests, and contract
+tests under Python 3.14. Its success starts the integration, release-candidate,
+and compatibility jobs. Python 3.14 runs every host-independent test. Python
+3.11–3.13 run the unit and contract tiers, build both distributions, and import
+the installed wheel.
+
 The Python Packaging User Guide documents the standard build, TestPyPI, and
 publication sequence: [Building and
 publishing](https://packaging.python.org/en/latest/guides/section-build-and-publish/).

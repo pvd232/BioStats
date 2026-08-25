@@ -193,21 +193,26 @@ The approved mechanics live in the [stage-invocation](docs/contracts/STAGE_INVOC
 
 ## Validation
 
-Run these commands from the repository root after activating the `mantra`
-Conda environment described in the [development guide](docs/DEVELOPMENT.md):
+Run the fast development gate from the repository root after activating the
+`mantra` Conda environment described in the
+[development guide](docs/DEVELOPMENT.md):
 
 ```bash
-ruff check viper tests examples/project/src tools
-pyright --pythonpath "$(command -v python)"
-python -m pytest -q
+make check
 ```
 
-Ruff checks active Python source and required code documentation. Pyright checks
-the protocol, verifier, authoring, resume, and stage-execution type contracts.
-Pytest exercises model invariants, active YAML examples, plan authoring, command
-dispatch, one real stage process, artifact loaders, metrics, resumption,
-cross-file relationships, the complete provenance fixture, and tampered-byte
-rejection.
+The command runs Ruff, formatting, Pyright, and the unit and contract tests. The
+integration gate exercises process, runner, CLI, resume, and durable-attempt
+boundaries. The release gate adds the complete generated-project acceptance
+case:
+
+```bash
+make check-integration
+make check-release
+```
+
+Pytest still honors direct file selection. For example,
+`python -m pytest tests/test_runner_acceptance.py -q` runs that complete module.
 
 ## Current boundaries
 

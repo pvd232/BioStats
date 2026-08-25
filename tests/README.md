@@ -19,7 +19,7 @@ loaders, metric implementations, and exact training resume behavior.
 | [artifact-loader tests](test_artifact_loaders.py) | A user-owned loader reconstructs its declared JSON artifact. |
 | [artifact-validation tests](test_artifact_validation.py) | Exact loader identities and typed loadability or semantic-validation outcomes are enforced. |
 | [metric tests](test_metrics.py) | Metric implementations compute their declared values and reject nonfinite inputs. |
-| [shared fixtures](fixtures.py) | Independent test modules construct the same valid metric and resume records without importing from another test module. |
+| [shared fixtures](fixtures.py) | Independent test modules use shared builders to construct the same valid metric and resume records. |
 
 `test_verifier_acceptance.py` exercises the verifier with an in-memory document
 store. `test_execution_acceptance.py` crosses the process boundary and inspects
@@ -57,32 +57,52 @@ real stage process
 declared output hashes
 ```
 
-Runtime resumption and artifact loaders have separate tests because they
-operate on live Python objects and materialized files, not only protocol
-records.
+Runtime resumption and artifact loaders have separate tests because their
+boundaries use live Python objects and materialized files. Protocol tests
+exercise serialized records.
 
 ## Running the tests
 
-From the repository root, activate the `mantra` Conda environment and run:
+From the repository root, activate the `mantra` Conda environment. Use the
+fast development gate during implementation:
 
 ```text
-python -m pytest tests -q
+make check
 ```
 
-A successful run reports every test passing. To check the package and test
-documentation contract as well:
+The fast gate runs Ruff, formatting, Pyright, and every unit and contract test.
+The integration gate crosses the process, runner, CLI, resume, and durable
+attempt boundaries:
 
 ```text
-ruff check viper tests examples/project/src tools
+make check-integration
 ```
 
-The Ruff command enforces imports, supported Python syntax, and public
-docstrings. The pytest command establishes behavioral contracts.
+The release gate adds the generated-project acceptance path:
+
+```text
+make check-release
+```
+
+Tests carry one cost tier and one owned-domain marker through the manifests in
+[`conftest.py`](conftest.py). Pytest can select either dimension. This command
+runs the parameter domain:
+
+```text
+python -m pytest tests -q -m domain_parameters
+```
+
+Direct file selection runs the requested file independently of its tier:
+
+```text
+python -m pytest tests/test_runner_acceptance.py -q
+```
 
 ## Adding coverage
 
 Place a test beside the narrowest contract it proves. Reuse
 [shared fixtures](fixtures.py) when several modules need the same valid record.
-Import production classes from `viper`; never import a
-production dependency through another test module. Give every test a docstring
-that states the accepted behavior or rejected failure.
+Import production classes directly from `viper`. Keep production dependencies
+out of test-to-test imports. Give every test a docstring that states the
+accepted behavior or rejected failure. Add the module to both classification
+manifests in `conftest.py`.
