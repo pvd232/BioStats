@@ -16,6 +16,8 @@ both named `viper`.
 | [technical overview](docs/VIPER_TECHNICAL_OVERVIEW.md) | Explains VIPER from frozen plan through execution, evidence, verification, and deployment | Complete system mechanism and guarantee boundary |
 | [v3 protocol](docs/ProvenanceS1_v3.md) | Defines the active formal and protocol contract | Sections 1–23 |
 | [application API](docs/APPLICATION_API.md) | Defines the typed Python, CLI, and agent-facing operation contract | Operations, parameters, results, errors, and discovery |
+| [public Python API](docs/PUBLIC_API.md) | Defines supported imports, extension points, compatibility, and repository validation | Public modules, stage interface, test tiers, and release boundary |
+| [development guide](docs/DEVELOPMENT.md) | Defines the repository environment and validation commands | Fast, integration, release, live-CUDA, and domain gates |
 | [getting started](docs/GETTING_STARTED.md) | Shows the installed project, stage, run, retry, benchmark, and GCE path | `viper init`, decorators, Python execution, and CLI execution |
 | [implementation contracts](docs/contracts/README.md) | Defines each release claim from declaration through acceptance | Parameter delivery, HTTP retrieval, metrics, artifacts, attempts, benchmarks, cloud execution, and packaging |
 | [publication checklist](docs/PUBLICATION_TODO.md) | Tracks implementation and release work | Protocol, runner, package, and distribution tasks |

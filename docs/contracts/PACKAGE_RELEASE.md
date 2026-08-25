@@ -20,8 +20,8 @@ in the [release-candidate report](../releases/0.1.0a1.md). The generated source
 completed the acquisition, five-stage candidate, and benchmark-confirmation
 path from the installed wheel. The exact candidate passed the four-version CI
 gate. Release requires a GCE result for the exact candidate, owner-selected
-license and author metadata, registry credentials, publication authorization,
-and the release-tag signing identity.
+license and author metadata, trusted-publisher registration, production
+environment approval, and the release-tag signing identity.
 
 ## Public surface
 
@@ -80,6 +80,7 @@ The release candidate must satisfy each check:
 | Check | Required result |
 |---|---|
 | Public imports | Every name in `PUBLIC_API.md` imports from the installed wheel. |
+| Inline types | The installed `viper` package contains `py.typed`, and type checkers use its distributed annotations. |
 | CLI | Every command returns documented human output, JSON, and exit status. |
 | Python execution | The generated project's decorated stage executes through `python train.py` and returns a verified result. |
 | Metadata | License, authors, URLs, classifiers, and version are complete. |
@@ -96,9 +97,12 @@ and compatibility jobs. Python 3.14 runs every host-independent test. Python
 3.11–3.13 run the unit and contract tiers, build both distributions, and import
 the installed wheel.
 
-The Python Packaging User Guide documents the standard build, TestPyPI, and
-publication sequence: [Building and
-publishing](https://packaging.python.org/en/latest/guides/section-build-and-publish/).
+The Python Packaging User Guide defines the package metadata fields and
+recommends SPDX license expressions with distributed license files:
+[Writing `pyproject.toml`](https://packaging.python.org/en/latest/guides/writing-pyproject-toml/).
+Its publication guide recommends PyPI Trusted Publishing because each upload
+uses a short-lived, project-scoped credential:
+[Publishing with GitHub Actions](https://packaging.python.org/en/latest/guides/publishing-package-distribution-releases-using-github-actions-ci-cd-workflows/).
 
 ## Propagation
 
@@ -106,11 +110,12 @@ publishing](https://packaging.python.org/en/latest/guides/section-build-and-publ
 |---|---|
 | Metadata | Add the approved license, authors, project URLs, classifiers, and `0.1.0a1` version. |
 | Public API | Freeze imports, result schemas, errors, exit statuses, and capability discovery. |
+| Inline types | Package `viper/py.typed` and verify it from the installed wheel. |
 | Python execution | Export stage decorators, typed contexts, and `viper.run(stage_callable)`. |
 | CLI | Implement `viper init` and route every command through the application API. |
 | Template | Add one maintained runnable project template. |
 | CI | Build, install, and exercise the wheel from outside the checkout. |
-| Release | Publish to TestPyPI, validate, tag, and publish the exact artifacts to PyPI. |
+| Release | Push the signed version tag, publish its files to TestPyPI, validate those indexed files, approve the protected `pypi` environment, and publish the same files to PyPI. |
 
 Tag signing is an owner-supplied release prerequisite. The release report
 records the signing identity and the successful signature-verification command.
@@ -135,5 +140,11 @@ Deleting one documented public import causes the installed-wheel test to fail.
 3. Add the project scaffold and acceptance template.
 4. Complete package metadata and set version `0.1.0a1`.
 5. Build and test the wheel in clean local environments.
-6. Repeat the acceptance path from TestPyPI.
-7. Tag and publish the exact validated distributions.
+6. Register `.github/workflows/release.yml` as the trusted publisher for the
+   `testpypi` and `pypi` GitHub environments.
+7. Create and push the signed version tag. The workflow verifies GitHub's tag
+   signature result before building.
+8. Publish the workflow's files to TestPyPI and repeat the installed-package
+   acceptance path.
+9. Approve the protected `pypi` environment and publish the same stored files
+   to PyPI.

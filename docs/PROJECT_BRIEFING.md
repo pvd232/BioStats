@@ -1,7 +1,8 @@
 # VIPER project briefing
 
 The next release action is to add the selected license and author metadata,
-publish the validated `0.1.0a1` files to TestPyPI, and repeat the installed-package
+register the trusted publishers, and push the signed `v0.1.0a1` tag. The
+release workflow publishes its files to TestPyPI and repeats the installed-package
 acceptance test from that registry.
 
 ## Why VIPER exists
@@ -81,12 +82,12 @@ authorizations in this order:
 
 1. Add the selected package license and confirmed author metadata. Rebuild the
    distributions because those files change package metadata.
-2. Supply TestPyPI credentials. Publish the rebuilt files and rerun the
-   generated-project acceptance test from the TestPyPI installation.
-3. Authorize publication of those exact files to PyPI. Repeat the installed
+2. Register the TestPyPI and PyPI trusted publishers for
+   `.github/workflows/release.yml`.
+3. Push the signed `v0.1.0a1` tag. The workflow publishes and verifies the
+   indexed TestPyPI files.
+4. Approve the protected `pypi` environment. Repeat the installed
    package checks from PyPI.
-4. Supply the signing identity. Create and push the signed `v0.1.0a1` tag on the
-   validated release commit.
 
 The [publication checklist](PUBLICATION_TODO.md) owns the detailed release
 sequence. Completing that sequence converts the validated deployment candidate

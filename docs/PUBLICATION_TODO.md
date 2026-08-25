@@ -57,8 +57,8 @@ Five owner inputs enter at fixed points:
 |---|---|
 | Package license | Phase 9 metadata gate |
 | Author names and contact metadata | Phase 9 metadata gate |
-| TestPyPI credentials | Phase 10 TestPyPI upload |
-| PyPI publication authorization | Phase 10 PyPI upload |
+| TestPyPI trusted-publisher registration | Phase 10 TestPyPI upload |
+| PyPI environment approval | Phase 10 PyPI upload |
 | Release-tag signing identity and configuration | Phase 10 signed tag |
 
 ## Checklist rules
@@ -615,6 +615,12 @@ python -m pytest tests/test_runtime.py tests/test_cloud_execution.py \
 - [x] Freeze one `PreflightCheckCode` for every release-gated preflight rule.
 - [x] Freeze the operation, schema, capability, decorator, context, and helper
   imports listed in `PUBLIC_API.md`.
+- [x] Define the unit, contract, integration, release, live-CUDA, and domain
+  validation interface in `PUBLIC_API.md` and `DEVELOPMENT.md`.
+- [x] Register strict pytest configuration and require one tier and one domain
+  for every test module.
+- [x] Package `viper/py.typed` and verify the marker through the public API
+  acceptance test.
 - [x] Include `retry`, `execute_benchmark`, and `init_project` in application
   dispatch, CLI dispatch, schema discovery, and capability discovery.
 
@@ -694,21 +700,25 @@ those checks execute outside this repository environment.
 
 ## Phase 10. Publish VIPER 0.1.0a1
 
-- [ ] **Owner input:** provide TestPyPI credentials through the configured
-  credential provider.
-- [ ] Publish the validated source distribution and wheel to TestPyPI.
+- [x] Add the dedicated Trusted Publishing workflow for TestPyPI and tagged
+  PyPI releases.
+- [ ] **Owner input:** register `.github/workflows/release.yml` for the
+  `testpypi` and `pypi` GitHub environments in both package indexes.
+- [ ] **Owner input:** provide the release-tag signing identity and signing
+  configuration.
+- [ ] Create the signed tag `v0.1.0a1`, verify its signature, and push the tag.
+- [ ] Confirm that the release workflow accepts the tag signature and publishes
+  the validated source distribution and wheel to TestPyPI.
 - [ ] Install `viper-provenance==0.1.0a1` from TestPyPI in a clean environment.
 - [ ] Repeat the scaffold, local execution, benchmark, verification, and public
   API smoke tests against the TestPyPI installation.
 - [ ] Confirm that the TestPyPI file digests equal the release-candidate
   digests.
-- [ ] **Owner input:** authorize publication of the validated files to PyPI.
-- [ ] **Owner input:** provide the release-tag signing identity and signing
-  configuration.
+- [ ] **Owner input:** approve the protected `pypi` environment after the
+  TestPyPI verification job succeeds.
 - [ ] Publish those exact files to PyPI.
 - [ ] Install `viper-provenance==0.1.0a1` from PyPI in a clean environment.
 - [ ] Repeat the installed-package smoke and complete example tests.
-- [ ] Create the signed tag `v0.1.0a1`, verify its signature, and push the tag.
 - [ ] Publish the final release report with local, CI, GCE, TestPyPI, and PyPI
   results.
 - [ ] Verify that `main`, `origin/main`, and the release tag identify the

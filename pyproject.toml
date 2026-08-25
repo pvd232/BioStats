@@ -60,6 +60,8 @@ convention = "google"
 
 [tool.pytest.ini_options]
 pythonpath = [".", "examples/project/src"]
+strict_config = true
+strict_markers = true
 markers = [
     "unit: isolated behavior within one implementation boundary",
     "contract: one public or cross-document contract with bounded collaborators",
@@ -85,3 +87,6 @@ include-package-data = false
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["viper*"]
+
+[tool.setuptools.package-data]
+viper = ["py.typed"]

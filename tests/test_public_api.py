@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from importlib import resources
 
 import viper
 from viper import application
@@ -87,3 +88,8 @@ def test_parameter_categories_form_the_public_extension_namespace() -> None:
         "Train",
     )
     assert issubclass(viper.parameters.Train, viper.parameters.ParameterSet)
+
+
+def test_installed_package_declares_inline_type_information() -> None:
+    """Ship the PEP 561 marker beside VIPER's inline type annotations."""
+    assert resources.files(viper).joinpath("py.typed").is_file()
