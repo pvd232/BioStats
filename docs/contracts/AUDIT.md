@@ -6,7 +6,8 @@ The mechanical audit passes. All ten contracts pass the schema, value-lifecycle,
 traceability, counterexample, and propagation gates. Parameters, stage
 invocation, process startup, HTTP retrieval, artifact validation, metric
 provenance, attempt execution, benchmark execution, and cloud execution are
-implemented. Package release is implemented.
+implemented. The 0.1.0a2 package-release revision is approved for
+implementation.
 
 ## Reviewed scope
 
@@ -27,7 +28,7 @@ remain outside the active design state.
 | Check | Result |
 |---|---:|
 | Active contracts | 10 |
-| Python blocks parsed | 73 |
+| Python blocks parsed | 74 |
 | Repeated classes compared | 49 |
 | Repeated aliases compared | 8 |
 | Implemented Pydantic schemas generated | 136 |
@@ -58,6 +59,7 @@ constraints expressed through field declarations, and repeated aliases.
 | Retry eligibility was implicit. | VIPER 0.1 accepts failed and cancelled runs and rejects successful runs. |
 | Stored pointer files were required to contain the commit that would later contain their consuming benchmark. | Each `StoredInputRef` now preserves the pointer file's own immutable commit; source-owned code and lockfiles remain bound to `RunSpec.source.commit`. |
 | Public API prose retained the superseded HTTP and metric interfaces. | Both API documents now use required responses, preflight executables, metric modes, and dedicated workers. |
+| Public entities shared one monolithic protocol module and several operation modules with overlapping public responsibilities. | The 0.1.0a2 package contract assigns each entity and operation to one defining module and requires deletion of the retired source modules after migration. |
 
 ## Value lifecycles
 
@@ -91,7 +93,7 @@ constraints expressed through field declarations, and repeated aliases.
 | Attempt execution | Frozen run and terminal event | Allocate, journal, close, and publish | Run attempt and evidence refs | Eight `attempt.*` checks | Fail attempt 1, retry as attempt 2, and preserve attempt 1 |
 | Benchmark execution | Benchmark spec and candidate run | Execute one independent confirmation | Benchmark result and comparison receipts | Five `benchmark.*` checks | Pass one confirmation; reject altered predictions |
 | Cloud execution | Effective GCE environment | Execute on active VM and observe it | Resolved environment and execution context | Eight environment, GCE, runtime, and result checks | Accept matching L4 VM; reject machine and package drift |
-| Package release | Versioned distribution and public inventory | Build, install, scaffold, execute, and publish | Distributions and release report | Distribution gate | Run the generated project from clean local and GCE installations |
+| Package release | Versioned distribution and public inventory | Build, install, scaffold, execute, and publish | Distributions and release report | Distribution and import-ownership gates | Run the generated project from clean local and GCE installations; reject a symbol with a second defining module |
 
 ## Counterexamples
 
@@ -106,19 +108,21 @@ constraints expressed through field declarations, and repeated aliases.
 | Attempt execution | A stage fails and the coordinator exits before publishing the terminal attempt. | `attempt.terminal` |
 | Benchmark execution | The confirmation reuses the candidate attempt or its stage snapshot. | `benchmark.confirmation` |
 | Cloud execution | The run executes on another machine type. | `gce.machine_type` |
-| Package release | The installed wheel omits one documented import. | Installed-wheel public-import gate |
+| Package release | One documented symbol imports from two defining modules. | Installed-wheel import-ownership gate |
 
 ## Propagation findings
 
 The contract layer, formal protocol, application API, public API, checklist,
-implementation, verifier, and tests agree through Phase 8. The remaining
-release work appears as unchecked items in the master checklist:
+implementation, verifier, and tests agree for the published 0.1.0a1 release.
+The approved 0.1.0a2 revision has one implementation sequence in the master
+checklist:
 
 | Approved surface | Current implementation |
 |---|---|
-| Package metadata | License and author values require owner selection. |
-| Release validation | The final candidate needs a clean-checkout gate, exact-wheel local and GCE acceptance, remote CI, and a release report. |
-| Publication | TestPyPI, PyPI, and signed-tag operations require owner credentials and authorization. |
+| Module ownership | Move each public entity to its approved owner and delete the retired modules. |
+| Public repository | Create `pvd232/viper` with the approved source, tests, documentation, example, and release configuration. |
+| Release validation | Build 0.1.0a2, verify its imports and contents, install it across supported Python versions, and run the exact wheel on the designated L4 host. |
+| Publication | Publish matching files to TestPyPI and PyPI, then repeat the public example from clean installations. |
 
 ## Contract decisions
 
@@ -133,7 +137,7 @@ release work appears as unchecked items in the master checklist:
 | Attempt execution | Implemented |
 | Benchmark execution | Implemented |
 | Cloud execution | Implemented |
-| Package release | Implemented |
+| Package release | Approved |
 
 ## Validation
 

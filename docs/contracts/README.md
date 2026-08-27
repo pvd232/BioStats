@@ -31,7 +31,7 @@ Each contract uses one status:
 | [Attempt execution](ATTEMPT_EXECUTION.md) | Implemented | Failed attempts, successive attempt IDs, and retry |
 | [Benchmark execution](BENCHMARK_EXECUTION.md) | Implemented | Independent confirmation produced from a frozen run plan |
 | [Cloud execution](CLOUD_EXECUTION.md) | Implemented | Execution on a pre-provisioned GCE instance |
-| [Package release](PACKAGE_RELEASE.md) | Implemented | Installed-distribution and publication acceptance |
+| [Package release](PACKAGE_RELEASE.md) | Approved | Clean public repository, installed-distribution, and publication acceptance |
 
 The [master execution checklist](../PUBLICATION_TODO.md) orders these contracts. The
 [protocol](../ProvenanceS1_v3.md) remains the authority for serialized VIPER

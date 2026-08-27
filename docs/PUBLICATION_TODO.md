@@ -1,7 +1,8 @@
-# VIPER 0.1 master execution checklist
+# VIPER master execution checklist
 
 This file is the single implementation and publication checklist for
-`viper-provenance==0.1.0a1`. The
+VIPER. Phases 0–10 record the completed `0.1.0a1` release. Phases 11–21 govern
+the `0.1.0a2` public-repository revision. The
 [protocol](ProvenanceS1_v3.md) owns serialized provenance semantics. The
 [application API](APPLICATION_API.md) owns public operations. The
 [contract index](contracts/README.md) owns the mechanics required to support
@@ -24,7 +25,18 @@ each release claim.
 13. [Phase 8: public interface and project scaffold](#phase-8-freeze-the-public-interface-and-project-scaffold)
 14. [Phase 9: release candidate](#phase-9-build-and-validate-the-release-candidate)
 15. [Phase 10: publication](#phase-10-publish-viper-010a1)
-16. [Deferred work](#deferred-work)
+16. [Phase 11: publication procedure](#phase-11-author-the-publication-procedure)
+17. [Phase 12: module ownership](#phase-12-freeze-module-ownership)
+18. [Phase 13: public repository](#phase-13-create-the-public-repository)
+19. [Phase 14: protocol decomposition](#phase-14-decompose-the-protocol)
+20. [Phase 15: execution and verification](#phase-15-decompose-execution-and-verification)
+21. [Phase 16: application consolidation](#phase-16-consolidate-the-application-surface)
+22. [Phase 17: runnable example](#phase-17-replace-the-example-suite)
+23. [Phase 18: public documentation](#phase-18-rewrite-the-public-documentation)
+24. [Phase 19: release candidate](#phase-19-build-and-validate-010a2)
+25. [Phase 20: live GCE acceptance](#phase-20-run-live-gce-acceptance)
+26. [Phase 21: publication](#phase-21-publish-viper-010a2)
+27. [Deferred work](#deferred-work)
 
 ## Release boundary
 
@@ -105,7 +117,7 @@ Every implementation contract appears once in the execution sequence.
 | [Attempt execution](contracts/ATTEMPT_EXECUTION.md) | Implemented | Phase 5 | VIPER publishes canonical attempt documents, references them immutably, retries the same frozen plan, and closes real cancellation and preemption signals with active-stage evidence. |
 | [Benchmark execution](contracts/BENCHMARK_EXECUTION.md) | Implemented | Phase 6 | `execute_benchmark()` produces one independent confirmation and persists the artifact and metric comparison receipts accepted by `verify_benchmark()`. |
 | [Cloud execution](contracts/CLOUD_EXECUTION.md) | Implemented | Phase 7 | The installed wheel executes in place on GCE and verifies the host, backend, and exact Python environment. |
-| [Package release](contracts/PACKAGE_RELEASE.md) | Implemented | Phases 8–10 | Clean installations complete the documented project path from TestPyPI and PyPI. |
+| [Package release](contracts/PACKAGE_RELEASE.md) | Approved | Phases 11–21 | The clean public repository, installed distributions, generated example, and registry files pass the release gate. |
 
 ## Implemented baseline
 
@@ -726,9 +738,223 @@ those checks execute outside this repository environment.
 - [x] Verify that `main` equals `origin/main` and that `v0.1.0a1` identifies the
   validated source commit recorded in the release report.
 
+## Phase 11. Author the publication procedure
+
+**Purpose:** establish one reusable procedure for preparing, validating, and
+publishing a Python package.
+
+- [x] Create `python-package-publication` under the shared skill repository.
+- [x] Define gates for repository contents, public imports, metadata,
+  documentation, examples, distributions, CI, registry publication, and clean
+  installation.
+- [x] Require the built wheel and source distribution as validation inputs.
+- [x] Compose the procedure with direct prose, nomenclature, impact analysis,
+  source grounding, environment activation, Git synchronization, and system
+  specification review.
+- [x] Validate the skill package and commit it to the local skill repository.
+
+**Completion evidence:** the skill validator and direct-prose checker pass for
+the new skill package.
+
+**Commit:** `Add Python package publication skill`
+
+## Phase 12. Freeze module ownership
+
+**Contract:** [Package release](contracts/PACKAGE_RELEASE.md).
+
+- [x] Assign every public entity and operation to one defining module.
+- [x] Define the small root package interface used by project code.
+- [x] Declare `viper.protocol`, `viper.runner`, `viper.verifier`, and
+  `viper.application` retired for 0.1.0a2.
+- [x] Preserve serialized document fields and discriminators across the Python
+  import refactor.
+- [x] Define an installed-wheel import inventory that verifies each documented
+  symbol and its defining module during Phase 19.
+- [x] Apply the specification-system review gate to the revised release
+  contract and record the result.
+
+**Focused gate**
+
+```bash
+python tools/audit_contracts.py
+python -m pytest tests/test_contract_audit.py tests/test_public_api.py -q
+```
+
+**Commit:** `Freeze VIPER module ownership`
+
+## Phase 13. Create the public repository
+
+- [ ] Create the empty public GitHub repository `pvd232/viper`.
+- [ ] Initialize `/Users/machina/Developer/ChatGPT/viper` as its local
+  checkout.
+- [ ] Copy the approved package source, tests, workflows, configuration,
+  license, and current contract documentation.
+- [ ] Move package source beneath `src/viper/` and update build and test paths.
+- [ ] Exclude `tools/`, `prior/`, `sources/`, `archive/`, journals, editor state,
+  generated metadata, and the two end-to-end essays and UUID-named image.
+- [ ] Move enduring contract and package-index checks into tests or CI.
+- [ ] Verify that the initial commit and `origin/main` identify the same commit.
+
+**Acceptance gate:** the source tree contains only approved public files, the
+package imports from `src/viper/`, and the baseline tests run from the new
+checkout.
+
+**Commit:** `Create public VIPER repository`
+
+## Phase 14. Decompose the protocol
+
+- [ ] Move shared Pydantic foundations to `viper._schema`.
+- [ ] Move parameter categories and parameter references to
+  `viper.parameters`.
+- [ ] Move stage, experiment, run, artifact, reference, metric, benchmark,
+  HTTP, runtime, and resume entities into their approved owner modules.
+- [ ] Update each caller, schema test, fixture, example, and document in the
+  same increment as its moved entities.
+- [ ] Delete `viper.protocol` after the last consumer moves.
+- [ ] Confirm that canonical serialized documents remain byte-stable for the
+  maintained fixtures.
+
+**Acceptance gate:** a repository search returns zero `viper.protocol` imports;
+every public type has one definition; schema and serialization tests pass.
+
+**Commit rule:** one commit per owner module, followed by
+`Delete the monolithic protocol module`.
+
+## Phase 15. Decompose execution and verification
+
+- [ ] Move public run, retry, and benchmark orchestration to
+  `viper.execution`.
+- [ ] Move public verification operations to `viper.verification`.
+- [ ] Move bounded helper operations into private modules named for their
+  stable responsibility.
+- [ ] Move child-process entrypoints into `viper._workers`.
+- [ ] Update public requests, results, CLI dispatch, schemas, tests, and docs in
+  the same increment.
+- [ ] Delete `viper.runner` and `viper.verifier` after their last consumers
+  move.
+
+**Acceptance gate:** direct Python execution, CLI execution, retry, benchmark
+confirmation, and terminal verification pass through the new owner modules.
+
+**Commit rule:** separate execution and verification commits, followed by one
+deletion commit for retired modules.
+
+## Phase 16. Consolidate the application surface
+
+- [ ] Assign typed application requests, results, dispatch, schema discovery,
+  and capability discovery to `viper.api`.
+- [ ] Update the CLI and root package to call `viper.api`.
+- [ ] Delete `viper.application` after its last consumer moves.
+- [ ] Inventory repeated coordinators, worker launchers, serializers, storage
+  adapters, and validation helpers.
+- [ ] Delete dead code and merge exact-operation duplicates whose inputs,
+  outputs, side effects, failure semantics, environment handling, signal
+  handling, and persisted evidence match.
+- [ ] Preserve distinct contracts when any of those properties differ.
+
+**Acceptance gate:** one call path owns each public operation, all public JSON
+fixtures remain valid, and repository coverage equals or exceeds its recorded
+baseline.
+
+**Commit rule:** one application-surface commit, then one bounded cleanup
+commit for each proven duplicate family.
+
+## Phase 17. Replace the example suite
+
+- [ ] Delete the fragmentary examples and version-stale persisted examples.
+- [ ] Generate one synthetic project through `viper init`.
+- [ ] Commit its source, authored specifications, tests, and concise usage
+  guide.
+- [ ] Execute acquisition, the five-stage candidate plan, benchmark
+  confirmation, and terminal verification from the installed wheel.
+- [ ] Run the committed example in CI outside the VIPER checkout.
+
+**Acceptance gate:** a new user can install the wheel and complete the entire
+documented example using only files contained in the public repository.
+
+**Commit:** `Replace examples with one runnable project`
+
+## Phase 18. Rewrite the public documentation
+
+- [ ] Rewrite the root README around installation, the first verified run, the
+  core guarantee, and the complete example.
+- [ ] Move the formal protocol to `docs/reference/protocol.md`.
+- [ ] Rewrite the technical overview as
+  `docs/explanation/how-viper-works.md`.
+- [ ] Merge `PUBLIC_API.md` and `APPLICATION_API.md` into
+  `docs/reference/api.md`.
+- [ ] Move the getting-started guide to
+  `docs/tutorials/getting-started.md`.
+- [ ] Move versioning to `docs/reference/versioning.md`.
+- [ ] Convert `DEVELOPMENT.md` into root `CONTRIBUTING.md` and move detailed
+  validation instructions to `docs/development/testing.md`.
+- [ ] Keep the approved implementation contracts beneath `docs/contracts/`.
+- [ ] Delete obsolete plans, editorial files, end-to-end essays, and the
+  UUID-named image.
+- [ ] Audit the README, documentation, example prose, metadata, CLI help, and
+  release notes with the direct-prose procedure.
+- [ ] Validate internal links and PyPI rendering.
+
+**Acceptance gate:** documentation uses the final imports, every command runs,
+every internal link resolves, and the direct-prose check passes.
+
+**Commit:** `Rewrite VIPER public documentation`
+
+## Phase 19. Build and validate 0.1.0a2
+
+- [ ] Set the version to `0.1.0a2` and point project URLs to `pvd232/viper`.
+- [ ] Verify Apache-2.0, Peter Driscoll's author and maintainer identity,
+  classifiers, supported Python versions, dependency bounds, and CLI entry
+  points.
+- [ ] Run lint, formatting, type checking, unit, contract, integration, and
+  release tests from a clean checkout.
+- [ ] Build the source distribution and wheel and run `twine check`.
+- [ ] Inspect both archives for approved files and metadata.
+- [ ] Install the wheel outside the checkout under Python 3.11–3.14.
+- [ ] Run the public import inventory, CLI smoke tests, and generated example
+  from each supported environment.
+- [ ] Require successful CI for the exact candidate commit.
+- [ ] Record commands, environments, results, source commit, and distribution
+  digests in `docs/releases/0.1.0a2.md`.
+
+**Commit:** `Prepare VIPER 0.1.0a2 release candidate`
+
+## Phase 20. Run live GCE acceptance
+
+- [ ] Provision the designated single-GPU L4 Spot instance with the approved
+  deployment script.
+- [ ] Install the exact 0.1.0a2 wheel produced in Phase 19.
+- [ ] Execute the generated example through CPU and CUDA stage startup and
+  terminal verification.
+- [ ] Record the machine, accelerator, Python environment, commands, results,
+  and wheel digest in the release report.
+- [ ] Tear down the ephemeral VM and attached SSD while preserving the backup
+  machine image.
+
+**Acceptance gate:** the recorded wheel digest equals the release-candidate
+wheel, CPU and CUDA acceptance pass, the terminal run verifies, the ephemeral
+resources are deleted, and the backup image remains available.
+
+## Phase 21. Publish VIPER 0.1.0a2
+
+- [ ] Configure the `pvd232/viper` GitHub environments and both registry
+  trusted publishers for `.github/workflows/release.yml`.
+- [ ] Create and verify the signed tag `v0.1.0a2` on the recorded candidate
+  commit.
+- [ ] Publish the validated files to TestPyPI.
+- [ ] Confirm TestPyPI digests and repeat the clean-install public example.
+- [ ] Approve the protected PyPI environment and publish the same files.
+- [ ] Confirm PyPI digests and repeat the clean-install public example.
+- [ ] Publish the completed release report and GitHub release.
+- [ ] Verify that local `main`, `origin/main`, the signed tag, both registries,
+  and the release report identify the same source and distribution files.
+
+**Completion gate:** `pip install viper-provenance==0.1.0a2` succeeds in a clean
+environment and the installed package completes the public example.
+
 ## Deferred work
 
-The following workstreams begin after `0.1.0a1`:
+The following workstreams begin after `0.1.0a2`:
 
 - OCI mounts, network confinement, secret mounts, resource limits, and
   adversarial execution tests.
@@ -739,7 +965,5 @@ The following workstreams begin after `0.1.0a1`:
   state, and verify collective membership.
 - Epoch-completion receipts and `OversightPolicy` capability requirements.
 - Agent mutation dry-runs and downstream-lineage indexing.
-- Internal splits of `protocol.py` and `verifier.py` after their public
-  boundaries stabilize.
 - Additional built-in metrics, loaders, retrieval strategies, and graphical
   interfaces.
